@@ -671,3 +671,34 @@ Parent's verification, not the child's claim: `l40.png` has **one** ink band, y[
 **Two parent documents corrected** (they would otherwise misdirect the next fixer): `docs/lockscreen-transcript-facts.md` fact 2 rewritten and the conflict section marked RESOLVED with the comparison-image evidence; `docs/slop-audit.md` F7 rewritten — `src/lockscreen.rs:199` is `#AAF9FE`, **pale not saturated**, and the defect is the **material**, so the fix is **not white**. Any flat fill is wrong. Not a two-hue-drift tell: the hue is sampled from the wallpaper.
 **Still unresolved, marked in the spec:** original shader/true alpha, exact font binary/weight/tracking, shadow parameters, settled password padding, exact easing and shake waveform.
 **Carried into r1c:** lock-screen replication is an explicit user ask and is now specified well enough to build. The brief must state the corrected premise, because a fixer reading the old doc builds the wrong screen.
+
+### Parent-proved perf candidate: `scripts/perf/upscale_bench.rs` (chain 6t)
+Critic #6's headline was prose ("the upscale costs 30 ms"). A fixer given prose produces a plausible change I then have to re-measure. So the parent **extracted both implementations, compiled standalone with `rustc -O`, and proved a candidate** — no crate, no Cargo change, **no `src/` edit** (the fixer owns `src/`).
+**Bit-exactness is the gate, not speed.** The current code rounds the horizontal blend to an integer *before* the vertical blend; fusing into one 16-weight sum shifts output by ±1. A faster upscale that changes pixels is a regression.
+Result — **bit-exact at all 7 sizes** (1×1, 1×7, 7×1, 2×2, 3×5, 17×13, 64×48, random premultiplied data, exercising both edge clamps):
+| size | current | hoisted | speedup |
+|---|---|---|---|
+| full stage 1176×636 | **62.10 ms** | **38.61 ms** | **1.61×** |
+| pill only 110×41 | 388.00 µs | 242.79 µs | 1.60× |
+`RESULT PASS`. Reproduce: `rustc -O -o /tmp/upscale_bench scripts/perf/upscale_bench.rs && /tmp/upscale_bench`.
+**The candidate hoists the horizontal blends out of the inner loop**: for a given output row the two source rows are fixed, and the horizontal weights depend only on `dx%2`, so each source row's two phase-blends are computed once and cached across the two output rows that share it. Same double-rounding order ⇒ bit-exact by construction.
+**Honest caveat: 1.61× is not the 6× the doc comment implies is available.** Absolute numbers here are inflated by contention (loadavg 3.21, fixer building); the *ratio* is the trustworthy part. And the **pill-only row is the real lesson**: 388 µs vs 62 ms is **160×**, so critic #6's "don't upscale what you're about to overwrite" beats any loop optimisation by two orders of magnitude. **r1c should do the skip-region fix first and treat the hoist as a bonus.**
+
+### Score trend ledger: `scripts/scorecard.py` + `docs/scorecard.jsonl`
+The owner asked to *see the numbers go up*. A number with no history is not a trend, so every measurement is now appended with the binary's mtime, so a row can never be mistaken for a different build. Refuses to record a frame `measure.py` calls `not-collapsed` — a lie in the trend is worse than a gap.
+Two bugs caught by running it, not by reading it: (a) it compared each live row to the **previous row**, which for the first live row is the *reference* — so every improvement printed as "further"; fixed by separating `kind:"ref"` from `kind:"live"` and reporting **gap-to-reference** plus **live→live progress**. (b) `proc_stats()` is merged at the **top level** of measure.py's JSON, not under a `"proc"` key, so `rss_mb`/`cpu_pct` were silently dropped from every row.
+| metric | round start | live r1b mid-flight | reference | gap now |
+|---|---|---|---|---|
+| aspect | 4.029 | **2.553** | 2.643 | 3.4% |
+| cap_over_pill_h | 0.486 | **0.342** | 0.357 | 4.2% |
+| stroke_over_cap | — | **0.154** | 0.200 | 23.0% |
+| lapvar_norm | — | **1619.8** | 1277.0 | 26.8% |
+| RSS | 44.2 MB | **33.7 MB** | — | — |
+**Real progress**: aspect 4.029 → 2.553 and cap ratio 0.486 → 0.342 are large moves toward the reference. Weight (23% off) is now the dominant remaining gap, exactly as critic #1's simulation predicted.
+
+### ⚠️ Parent self-correction #6 — my derived config target was wrong on the height axis
+I instructed r1b to set `collapsed_width=66 bar_height=25`, derived from critic #3's measured factor **1.473**. Live result: **97×38**, not the ~111×42 intended. **My arithmetic, not the fixer's execution.**
+Root cause: width factor measures 1.4697 but height 1.5200. The true scale is **1.5 on both axes** — 25×1.5=37.5→38 (rounds up), 66×1.5=99→97 (**loses 2 px**). The difference is entirely the dark-pixel detector's edge behaviour on a **stadium**: rounded caps lose more dark columns than flat top/bottom lose rows. Critic #3's 1.473 was that same artefact.
+**Lesson, recorded so no later round repeats it: derive config from the known scale 1.5, never from a detector-derived factor.**
+**Exact-integer solution I failed to test:** 111/1.5 = **74** and 42/1.5 = **28** exactly ⇒ **`collapsed_width=74 bar_height=28`** should give 111×42 before edge effects (~109×42 after). Alternatives 75×27→110×41 (aspect 2.683) and 76×28→112×43 (2.605) are both ~0.04 off.
+**Not applied now**: the fixer is mid-flight and changing the live config under it would confound its own measurements — the same rule I applied to the stress harness. Handed to r1c as a measured instruction: *set 74×28, then measure, do not compute*.
