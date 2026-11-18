@@ -880,9 +880,10 @@ def group_load(app, out):
             for w, d in ((b"lockscreen", settle * 2), (b"unlock", settle * 2),
                          (b"launcher", settle), (b"wallpaper", settle),
                          (b"collapsed", settle)):
-                r = app.send_ok(w)
+                r = app.send_drained(w)
                 # Each transition must be accepted; a refusal under load is a
                 # real defect, so assert per transition rather than per cycle.
+                # EAGAIN is flow control, not a defect: drain before judging.
                 out.asserts += 1
                 if r != "ok":
                     out.fails += 1
@@ -979,9 +980,10 @@ def group_load(app, out):
             for w, d in ((b"lockscreen", settle * 2), (b"unlock", settle * 2),
                          (b"launcher", settle), (b"wallpaper", settle),
                          (b"collapsed", settle)):
-                r = app.send_ok(w)
+                r = app.send_drained(w)
                 # Each transition must be accepted; a refusal under load is a
                 # real defect, so assert per transition rather than per cycle.
+                # EAGAIN is flow control, not a defect: drain before judging.
                 out.asserts += 1
                 if r != "ok":
                     out.fails += 1
