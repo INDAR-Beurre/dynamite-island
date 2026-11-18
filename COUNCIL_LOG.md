@@ -725,3 +725,35 @@ Read the smoothness child's outputs before letting anyone score them. **They are
 **Real defect that remains:** the "settled" control shows **median nonzero delta 13.834 and 4 spikes on a pill that cannot move**. The old 260-logical-px window around a 65-px pill is **~75% wallpaper**, inflating the noise floor enough to mask a genuine stall. Fix 3 addresses it.
 `scripts/motion/selftest.py` still **PASS** (perfect 60 Hz 10-pose morph = 100, static = nothing, ordering perfect > duplicate > slideshow > teleport).
 **Do not score any existing motion output.** Re-run in a quiet window; loadavg was 4.19 with a `rustc` running at the time of writing.
+
+### Instrument repair #8 — dark wallpaper failed 138 assertions (chain 6t)
+Full suite returned **`TOTAL tests=1207 asserts=5897 fails=138`**, every group failing with the same line: `no pill edge contrast (outside dark=0.95) | x[1018,1193] y[0,85] w=175`.
+**Not a panel regression.** The reported box starts at y=0 and is 175 wide; the real pill is x1079 y19 w98 h37. Measured the actual pixels: the **wallpaper is now dark** — p25 = **21** on both sides of the pill, mean luminance 24–26 across y0..45. The detector's `DARK = 40` therefore classified the wallpaper itself as capsule:
+| threshold | inside dark | outside dark |
+|---|---|---|
+| 40 | 0.83 | **0.90** ← indistinguishable |
+| 12 | 0.79 | **0.00** ← clean |
+**Fix:** `DARK 40 → 12` (capsule interior p25 = **2**; a dark UI theme sits at 18–30, so 12 separates both), plus the same **`y0 == 0` spanning-window refusal** measure.py already had.
+**New `scripts/stress/detector_selftest.py`** — 4 synthetic ground-truth frames, all PASS: bright wallpaper finds the capsule · **dark wallpaper still separates** · fullscreen dark refused · dark window below the bar not merged. The detector has now been wrong three times in ways that produced confident false verdicts; each regression is pinned so it cannot return silently.
+**Re-run after the fix: `TOTAL tests=1207 asserts=5897 fails=0 groups=5` / `RESULT PASS`.** Latency **p50 86.8 / p95 98.5 / p99 187.6 / max 188.7** against a 400 ms bound — the earlier 411.9 ms failure is confirmed as contention, now with a 4× margin. RSS flat 62 MB across 200 lock/unlock cycles, growth **−0.0 MB**.
+
+### ✅ r1b's frame-callback back-pressure WORKS — measured, not claimed
+Critic #6's blocker was 401 packets offered → **64 accepted, 51 blocked sends, 103% of one core**. Re-ran the identical probe on the new binary:
+| | before (critic #6) | now |
+|---|---|---|
+| offered | 401 in 4.0 s | 400 in 4.09 s |
+| accepted | **64** | **400** |
+| blocked sends | **51** | **0** |
+| CPU | **103.0%** | **57.7%** |
+The mic stream is no longer back-pressured. Mechanism verified in the tree: `draw_if_ready` records `redraw_wanted = true` and returns while `frame_pending` is outstanding (`src/main.rs:5108-5114`), `surface.frame()` is requested after every commit (`src/main.rs:5376`), and `CompositorHandler::frame` repaints only if a wish was recorded (`src/main.rs:5417-5421`). A 250 ms cap guards a compositor that never acks a hidden surface.
+**Idle: main thread 1.83% of one core over 6 s** (was 0.65%, but the old figure excluded children). Tree sampling caught **5 distinct children in 6 s** — `mmsg`, `wpctl`, `grim`×2, `pactl` — summing ≥3.17%. So the 1 Hz `grim` probe is **still spawning** (critic #6's finding stands, unfixed), but it is no longer the dominant cost.
+
+### Score trend (the owner asked to see numbers move)
+| metric | round start | r1b mid | r1b landed | r1b verified | reference |
+|---|---|---|---|---|---|
+| aspect | 4.029 | 2.553 | 2.553 | **2.595** | 2.643 |
+| cap_over_pill_h | 0.486 | 0.342 | 0.342 | **0.351** | 0.357 |
+| stroke_over_cap | — | 0.154 | **0.231** | 0.231 | 0.200 |
+| RSS MB | 44.2 | 33.7 | 31.5 | **33.1** | — |
+| idle CPU % | 2.0–9.0 | 10.0 | 3.0 | **1.0** | — |
+Geometry is now within **1.8%** on aspect and **1.7%** on cap ratio. **Weight overshot**: 0.154 → 0.231 passed the 0.200 target, so the remaining sharpness gap (lapvar_norm 37.8% high) is now **too heavy**, not too thin — the opposite defect from the one the round started with. That is the next fixer's headline, and it is a small numeric correction, not a redesign.
