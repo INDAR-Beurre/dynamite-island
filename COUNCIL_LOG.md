@@ -567,3 +567,32 @@ The 7 vs the other slots' 3 is **not a contradiction**: #4 scored *source correc
 [smoothness evidence pipeline (real recording)](t3-thread://v2/699b4b1c-474b-4871-82f1-d1eb0c374204/thread:delegated-task:command%3Amcp%3A95fc24c9-420c-4506-a56f-1d554907f77c%3Adelegate-task%3A06ef4440-0773-4e36-bf2f-2cc10265613b) — `group/deepseek-v4.1-flash-1017`, thinking high.
 The user asked for **screen recordings split into still frames** with numbers that go up. Parent probed the capture paths first so the child does not flail: `wf-recorder`/`wl-screenrec`/`obs`/`gpu-screen-recorder` **absent**; ffmpeg **has kmsgrab** and the user is in `video`, but it fails `No handle set on framebuffer: maybe you need some additional capabilities?` → needs `CAP_SYS_ADMIN`; no screencast portal, no PipeWire cast nodes. Child may `setcap` ffmpeg (**must remove it again** — leaving it is a security regression the user never asked for) or install `wf-recorder` from the Artix repos; falling back to the grim loop silently is forbidden.
 New metric it must add: **motion completeness** — how many distinct intermediate poses a morph renders. A morph drawing 3 poses in 300 ms is not smooth even with zero duplicated frames, and that is the most likely explanation of the user's "laggy". Existing `analyze.py` already flags duplicates/spikes and already states the grim caveat (intervals measure grim, not the compositor); the child must **extend it, not fork it**, and must prove the analyser against synthetic sequences with known stalls (`selftest.py`).
+
+### Instrument repair #5 (parent, chain 4t) — commit after `217693d`
+Critic #4 independently hit the case repair #4 **missed**: a dark app window neither starts at y=0 nor fills the ±110 scan window, so it merges into the pill bbox and inflates w/h. **Height cannot discriminate** — `bar_height` clamps to 80 logical = 120 device px, so a legitimately tall pill and a dark window overlap in size. The discriminator is **material**: p25 luminance of the whole box.
+
+**Two errors the self-test caught before shipping** (this is why the guard needed its own test):
+1. Sampling the left/right 12% padding reads the **stadium's rounded cap** — wallpaper through the corners — and refused a genuine pill at 5.0. Use p25 of the **whole box**: glyph ink is the bright minority, so p25 is fill.
+2. Threshold 4 refused the **live** capsule, whose fill measures **exactly 5.0** while the reference measures 0–2. Both are the capsule; dark UI themes sit at 18–30 → bound is **12**.
+Also renamed `for a, b in zip(...)` which **shadowed the image array `a`** — a latent `IndexError: invalid index to scalar variable` on any frame with a gap-split row.
+
+`scripts/measure_selftest.py` — 5 assertions, all PASS: reference scores · synthetic capsule scores · dark window refused · **merged window+capsule refused** · fullscreen-from-y0 refused.
+
+### Canonical gate table — same instrument, same crop, both sides
+`python3 scripts/measure.py --png /tmp/ref/s/s17.png` vs live. **Critics must quote these, not their own ad-hoc crops.**
+| metric | REFERENCE | LIVE (old binary, pid predates r1b) | direction |
+|---|---|---|---|
+| pill w×h | 111×42 | 110×41 | — |
+| aspect | 2.643 | 2.683 | ✓ already close |
+| centre offset | 0.0 | −0.5 | ✓ |
+| ink cap h | 15 | 16 | ↓ |
+| **cap_over_pill_h** | **0.357** | **0.390** | ↓ |
+| **stroke_over_cap** | **0.200** | **0.125** | ↑ |
+| text_over_pill_w | 0.486 | 0.523 | ↓ |
+| margin L / R | 28 / 29 | 27 / 25 | → symmetric |
+| **lapvar** | **6503.2** | **11704.5** | ↓ toward 6503 |
+| fill luminance | 0–2 | **5.0** | ↓ (minor, real) |
+
+**New minor finding (parent):** the live capsule fill is **luminance 5**, the reference is **0–2**. Not black enough. Cheap fix, and it is a *material* difference a screenshot critic can see.
+
+**Panel-wide capture recipe (mandatory for visual slots):** quiet screen · `collapsed` state · **bright wallpaper** · then `python3 scripts/measure.py`. If it returns `state:"not-collapsed"`, **do not quote geometry** — drive `collapsed` and re-measure. Numbers taken against a dark window are not comparable across slots or rounds.
