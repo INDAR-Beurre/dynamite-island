@@ -17,7 +17,10 @@ repo="$(cd "$here/../.." && pwd)"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 export WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-0}"
 
-for tool in python3 grim ffmpeg ffprobe ss; do
+# Only what every group needs. ffmpeg/ffprobe are used solely by pill_metrics'
+# raw-RGB decode, so requiring them up front aborted socket-only groups before
+# a single test ran (critic #11 reproduced this with a shadow PATH).
+for tool in python3 grim ss; do
     command -v "$tool" >/dev/null 2>&1 || {
         echo "FATAL: $tool not found in PATH" >&2
         exit 2

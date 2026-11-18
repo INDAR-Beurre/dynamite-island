@@ -128,7 +128,20 @@ def lapvar(a: np.ndarray, box) -> dict | None:
     if g.shape[0] < 4 or g.shape[1] < 4:
         return None
     lap = np.abs(4 * g[1:-1, 1:-1] - g[:-2, 1:-1] - g[2:, 1:-1] - g[1:-1, :-2] - g[1:-1, 2:])
-    return {"lapvar": round(float(lap.var()), 1), "lapmean": round(float(lap.mean()), 2)}
+    # Raw lapvar scales with the SQUARE of contrast, so it cannot be compared
+    # across sources: live ink clips at 255 while the video-sourced reference
+    # peaks at 225.7 and never reaches 255. Critic #1 measured that clamping the
+    # live ink to 225 alone drops lapvar 12100 -> 9436, i.e. roughly half the
+    # apparent 1.86x gap was amplitude, not edge structure. Normalise by the
+    # crop's own floor-to-peak range so the number describes edges only.
+    span = float(g.max() - g.min())
+    out = {"lapvar": round(float(lap.var()), 1), "lapmean": round(float(lap.mean()), 2),
+           "ink_peak": round(float(g.max()), 1), "ink_span": round(span, 1)}
+    if span > 1.0:
+        ln = lap / span
+        out["lapvar_norm"] = round(float(ln.var()) * 1e4, 2)
+        out["lapmean_norm"] = round(float(ln.mean()) * 1e2, 3)
+    return out
 
 
 def screen_relative(a: np.ndarray, bb: dict) -> dict:

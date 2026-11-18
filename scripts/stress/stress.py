@@ -385,20 +385,35 @@ class App:
         return p.returncode == 0 and os.path.exists(path)
 
     def pill_metrics(self, png):
-        """Locate the pill capsule in the top band. Returns dict or None."""
-        probe = subprocess.run(
-            ["ffprobe", "-v", "error", "-select_streams", "v:0",
-             "-show_entries", "stream=width,height", "-of", "csv=p=0", png],
-            capture_output=True, text=True)
-        try:
-            W, H = [int(x) for x in probe.stdout.strip().split(",")[:2]]
-        except ValueError:
-            return None
+        """Locate the pill capsule in the top band. Returns dict or None.
+
+        PIL first: ffmpeg/ffprobe are optional here, and requiring them aborted
+        socket-only groups before a single test ran (critic #11). Same rgb24
+        bytes either way, so the detector below is unchanged.
+        """
         band = 120
-        raw = subprocess.run(
-            ["ffmpeg", "-v", "error", "-i", png,
-             "-vf", f"crop={W}:{band}:0:0", "-f", "rawvideo",
-             "-pix_fmt", "rgb24", "-"], capture_output=True).stdout
+        raw, W = None, 0
+        try:
+            from PIL import Image
+            im = Image.open(png).convert("RGB")
+            W, H = im.size
+            band = min(band, H)
+            raw = im.crop((0, 0, W, band)).tobytes()
+        except Exception:
+            raw = None
+        if raw is None:
+            probe = subprocess.run(
+                ["ffprobe", "-v", "error", "-select_streams", "v:0",
+                 "-show_entries", "stream=width,height", "-of", "csv=p=0", png],
+                capture_output=True, text=True)
+            try:
+                W, H = [int(x) for x in probe.stdout.strip().split(",")[:2]]
+            except ValueError:
+                return None
+            raw = subprocess.run(
+                ["ffmpeg", "-v", "error", "-i", png,
+                 "-vf", f"crop={W}:{band}:0:0", "-f", "rawvideo",
+                 "-pix_fmt", "rgb24", "-"], capture_output=True).stdout
         if len(raw) < W * band * 3:
             return None
 
@@ -901,6 +916,18 @@ def group_load(app, out):
             problems.append(f"iteration {i}: VmRSS unreadable")
             break
         rss.append(kb)
+        # Assert EVERY sample, not just the last one. Critic #11: 200 counted
+        # "tests" behind a single growth bound is one assertion, and it cannot
+        # say which iteration leaked. The warmup window is exempt (one-time
+        # lazy allocations), so the bound applies from iteration 20 on.
+        if i >= 20:
+            base_i = statistics.median(rss[:20])
+            out.asserts += 1
+            if (kb - base_i) / 1024.0 > 8.0:
+                out.fails += 1
+                problems.append(
+                    f"iteration {i}: RSS {(kb - base_i)/1024.0:+.1f} MB over "
+                    f"warmup median (bound 8 MB)")
 
     if len(rss) == iters:
         warm = rss[:20]                      # one-time lazy allocations:
@@ -909,6 +936,7 @@ def group_load(app, out):
         growth = (tail[-1] - base) / 1024.0
         peak = (max(tail) - base) / 1024.0
         bound = 8.0
+        out.asserts += 1
         if growth > bound:
             out.fails += 1
             problems.append(
@@ -945,6 +973,13 @@ def group_latency(app, out):
             out.fails += 1
             problems.append(f"sample {i}: no observable effect within 2 s")
             continue
+        # Per-sample assertion, so the count reflects checks actually made and
+        # a slow sample is attributed to its iteration rather than hidden in a
+        # percentile (critic #11). 1500 ms is the existing per-test budget.
+        out.asserts += 1
+        if ms > 1500.0:
+            out.fails += 1
+            problems.append(f"sample {i}: accepted in {ms:.0f} ms (> 1500 ms)")
         lat.append(ms)
         time.sleep(0.03)
 
@@ -956,6 +991,7 @@ def group_latency(app, out):
             return lat[max(idx, 0)]
 
         bound = 400.0
+        out.asserts += 1
         if pct(0.95) > bound:
             out.fails += 1
             problems.append(
