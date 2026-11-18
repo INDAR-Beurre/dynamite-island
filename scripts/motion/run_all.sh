@@ -1,122 +1,183 @@
 #!/usr/bin/env bash
-# run_all.sh — the whole baseline in one command.
+# run_all.sh — one command, whole baseline, same JSON shape every time.
 #
-#   1. capture the settled collapsed pill for 5 s        (baseline: is it static?)
-#   2. capture the same band while ONE transition runs   (baseline: the morph)
-#   3. print a one-screen summary of both
+#   scripts/motion/run_all.sh [OUTDIR] [TRIALS]
 #
-# Everything lands in scripts/motion/out/<timestamp>/ so runs are diffable.
-# Nothing here touches src/, cargo, or the panel process: state changes go out
-# through the panel's own control socket via animate.py.
+# OUTDIR defaults to /tmp/motion-baseline/<stamp> (never the repo: media is not
+# gitignored and a 250 MB frame set must not be committed). TRIALS defaults 5.
+#
+# Stages
+#   00 instrument  motion.py: wf-recorder 60 Hz + bounds   -> PASS/FAIL per metric
+#   01 settled     grim, 6 s, no trigger          -> is the GUARD at rest
+#   02 transition  grim, 2 s, `music` at 0.8 s    -> control, no PTS
+#   03 sustained   grim, 3 s, bars driven at 100Hz-> long-run content rate
+#   04 recorded    wf-recorder 2 s x TRIALS, CFR  -> THE baseline, real PTS
+#   05 vfr         wf-recorder 2 s, damage-gated  -> cross-check of 04
+#
+# Every stage leaves frame_*.ppm + timestamps.txt + meta.txt + analysis.json
+# behind, so a reviewer can re-derive any number without re-running the panel.
+# Exit is non-zero only if a stage fails; a low score is data, not an error.
+set -uo pipefail
+cd "$(dirname "$0")" || exit 1
 
-set -u
-HERE=$(cd "$(dirname "$0")" && pwd)
 STAMP=$(date +%Y%m%d-%H%M%S)
-OUT=${1:-"$HERE/out/$STAMP"}
-
-# Band that contains the pill in every state: collapsed 74dp wide up to the
-# ~200dp expanded states, centred on the 1504-wide logical screen.
-REGION="600,0,900,150"
-
-SETTLE=5
+OUT=${1:-/tmp/motion-baseline/$STAMP}
+TRIALS=${2:-5}
+REGION=640,0,900,210
 FPS=20
+SETTLE=5
+PY=${PYTHON:-python3}
 
-mkdir -p "$OUT" || exit 2
-
-# Park the panel in a known state before measuring. `collapsed` is a state word
-# the handler morphs into; harmless and idempotent.
-python3 "$HERE/animate.py" collapsed >/dev/null 2>&1
-sleep 1
-
-echo "#################### 1/2  SETTLED (collapsed, no animation) ####################"
-bash "$HERE/capture.sh" "$OUT/settled" "$SETTLE" "$FPS" --region "$REGION" \
-  | tail -1
-python3 "$HERE/analyze.py" "$OUT/settled" > "$OUT/settled.txt" 2>&1
-cat "$OUT/settled.txt"
-
-echo
-echo "#################### 2/2  TRANSITION (collapsed -> music) ####################"
-# The morph is 160 ms (MORPH_DURATION_MS in src/morph.rs) and the panel redraws
-# it on a 16 ms timer. Trigger lands 1.0 s into a 4 s capture so there is clean
-# pre-roll and post-roll around the animation.
-python3 "$HERE/animate.py" collapsed >/dev/null 2>&1
-sleep 1
-bash "$HERE/capture.sh" "$OUT/morph" 4 "$FPS" --region "$REGION" --trigger "music@1.0" \
-  | tail -1
-python3 "$HERE/analyze.py" "$OUT/morph" > "$OUT/morph.txt" 2>&1
-cat "$OUT/morph.txt"
-
-echo
-echo "#################### 3/3  SUSTAINED (dictation bars driving continuously) ####################"
-# The 160 ms morph is under-sampled at any rate grim can reach, so it cannot
-# prove smoothness either way. Dictation bars keep redrawing for seconds, which
-# makes frame spacing measurable. A Python driver pushes 27 bar amplitudes at
-# ~100 Hz while the capture loop runs, so the panel must redraw on every frame.
-python3 "$HERE/animate.py" collapsed >/dev/null 2>&1
-sleep 0.5
-python3 "$HERE/drive_bars.py" 6 > "$OUT/bars_driver.log" 2>&1 &
-DRIVER=$!
-sleep 1.5
-bash "$HERE/capture.sh" "$OUT/sustained" 3 "$FPS" --region "$REGION" | tail -1
-wait $DRIVER 2>/dev/null
-python3 "$HERE/analyze.py" "$OUT/sustained" > "$OUT/sustained.txt" 2>&1
-cat "$OUT/sustained.txt"
-
-# Leave the panel where we found it.
-python3 "$HERE/animate.py" collapsed >/dev/null 2>&1
-
-# ---------------------------------------------------------------- summary ----
-# Pull one already-computed field out of an analyze.py report by its line
-# label. Field text is taken verbatim from that line, so the summary can never
-# drift from the report it claims to summarise.
-field() {  # field FILE LABEL REGEX
-  local f=$1 label=$2 re=$3 line
-  line=$(grep -m1 "^$label" "$f" 2>/dev/null) || { printf '%s' "-"; return; }
-  printf '%s' "$(printf '%s' "$line" | grep -oE "$re" | head -1)"
+say() { printf '\n=== %s ===\n' "$*"; }
+run_stage() {  # run_stage <dir> <analyze args...>
+  local d=$1; shift
+  $PY analyze.py "$d" --json "$@" > "$d/analysis.json" || return 1
+  $PY - "$d" <<'EOF'
+import json, sys
+d = sys.argv[1]
+r = json.load(open(f"{d}/analysis.json"))
+m, s = r.get("motion") or {}, r.get("score", {})
+print(f"  frames {r['frames_captured']}/{r['frames_requested'] or '?'} captured"
+      f"  drop {r['drop_rate_pct']}%  {r['achieved_fps']} fps"
+      f"  [{r['interval_source']}]")
+print(f"  interval_ms median {r['interval_ms']['median']} p95 "
+      f"{r['interval_ms']['p95']}  zero-delta {r['zero_delta_count']}"
+      f"/{r['frames_compared']}  spikes {r['spike_count']}")
+if m:
+    print(f"  poses {m['poses']} (unique {m['poses_unique']}) over {m['span_ms']}ms "
+          f"= {m.get('pose_rate_hz')} Hz  dup {m['duplicate_rate']}  "
+          f"jump {m.get('jump_rate')}  completeness {m.get('completeness')}")
+print(f"  SCORE {s.get('smoothness')} ({s.get('kind')})")
+EOF
 }
 
-S=$OUT/settled.txt
-M=$OUT/morph.txt
-U=$OUT/sustained.txt
+[ "$(id -u)" -ne 0 ] && [ -z "${XDG_RUNTIME_DIR:-}" ] && export XDG_RUNTIME_DIR=/run/user/$(id -u)
+mkdir -p "$OUT" || exit 1
+say "baseline -> $OUT   (trials $TRIALS, loadavg $(cut -d' ' -f1-3 /proc/loadavg))"
+printf 'stamp=%s\nregion=%s\ntrials=%s\nloadavg=%s\n' "$STAMP" "$REGION" "$TRIALS" \
+  "$(cut -d' ' -f1-3 /proc/loadavg)" > "$OUT/env.txt"
+{ git -C .. rev-parse --short HEAD 2>/dev/null || echo unknown; } > "$OUT/commit.txt"
+# Which binary answered the commands: a fixer may rebuild/restart mid-baseline.
+PID=$(pidof dynamite-rust 2>/dev/null | awk '{print $1}')
+{ echo "panel_pid=$PID"
+  echo "panel_exe_started=$( [ -n "$PID" ] && ps -o lstart= -p "$PID" | sed 's/^ *//' )"
+  echo "panel_exe_mtime=$( [ -e "/proc/$PID/exe" ] && date -r "$(readlink -f /proc/$PID/exe)" '+(%Y-%m-%d %H:%M:%S)' )"
+  echo "panel_exe=$( [ -n "$PID" ] && readlink -f /proc/$PID/exe )"; } > "$OUT/panel.txt"
+cat "$OUT/panel.txt" | sed 's/^/  /' 
+sleep "$SETTLE"
 
-{
-echo
-echo "================================ SUMMARY ================================"
-printf '%-26s %s\n' "outdir" "$OUT"
-printf '%-26s %s\n' "region (logical px)" "$REGION"
-printf '%-26s %s\n' "requested fps" "$FPS"
-echo "------------------------------------------------------------------------"
-printf '%-26s %-22s %s\n' "" "SETTLED (5 s)" "TRANSITION (4 s)"
-printf '%-26s %-22s %s\n' "frames captured" \
-  "$(field "$S" 'FRAMES' '[0-9]+$')" "$(field "$M" 'FRAMES' '[0-9]+$')"
-printf '%-26s %-22s %s\n' "drop rate" \
-  "$(field "$S" 'FRAMES' 'drop -?[0-9.]+%')" \
-  "$(field "$M" 'FRAMES' 'drop -?[0-9.]+%')"
-printf '%-26s %-22s %s\n' "achieved fps" \
-  "$(field "$S" 'INTERVAL' '[0-9.]+ fps')" \
-  "$(field "$M" 'INTERVAL' '[0-9.]+ fps')"
-printf '%-26s %-22s %s\n' "interval median / p95 ms" \
-  "$(field "$S" 'INTERVAL' 'median [0-9.]+ ms.*p95 [0-9.]+ ms' | sed -E 's/median ([0-9.]+) ms.*p95 ([0-9.]+) ms/\1 \/ \2/')" \
-  "$(field "$M" 'INTERVAL' 'median [0-9.]+ ms.*p95 [0-9.]+ ms' | sed -E 's/median ([0-9.]+) ms.*p95 ([0-9.]+) ms/\1 \/ \2/')"
-printf '%-26s %-22s %s\n' "duplicate frames" \
-  "$(field "$S" 'DUPLICATES' '^[0-9]+')" "$(field "$M" 'DUPLICATES' '^[0-9]+')"
-printf '%-26s %-22s %s\n' "spike frames" \
-  "$(field "$S" 'SPIKES' '^[0-9]+')" "$(field "$M" 'SPIKES' '^[0-9]+')"
-printf '%-26s %-22s %s\n' "frames inside morph (160ms)" \
-  "n/a" "$(field "$M" 'MORPH WINDOW' '[0-9]+ frame')"
-printf '%-26s %-22s %s\n' "distinct in morph" \
-  "n/a" "$(field "$M" 'distinct' 'distinct [0-9]+' | sed 's/distinct //')"
-echo "------------------------------------------------------------------------"
-printf '%-26s %s\n' "SUSTAINED (dictation bars, 3 s)" "$OUT/sustained.txt"
-printf '%-26s %s\n' "  frames captured" "$(field "$U" 'FRAMES' '[0-9]+$')"
-printf '%-26s %s\n' "  achieved fps" "$(field "$U" 'INTERVAL' '[0-9.]+ fps')"
-printf '%-26s %s\n' "  duplicate frames" "$(field "$U" 'DUPLICATES' '^[0-9]+')"
-printf '%-26s %s\n' "  spike frames" "$(field "$U" 'SPIKES' '^[0-9]+')"
-echo "------------------------------------------------------------------------"
-echo "READ THIS AS: the SETTLED column is the control. Any duplicate or spike"
-echo "there is measurement noise, not a panel fault (a static pill cannot"
-echo "redraw). Subtract that noise from the TRANSITION column before blaming"
-echo "the animation. Duplicates in TRANSITION that fall INSIDE the 160 ms morph"
-echo "are real stalled redraws; duplicates before/after it are just stillness."
-echo "Full reports: $S  $M"
-} | tee "$OUT/summary.txt"
+FAILED=()
+
+say "01 settled (grim, 6 s, no trigger)"
+./capture.sh "$OUT/01-settled" 6 "$FPS" --region "$REGION" >"$OUT/01-settled.log" 2>&1 \
+  && run_stage "$OUT/01-settled" || FAILED+=(01-settled)
+
+say "02 control (grim, 20 Hz: cannot resolve a 160 ms morph — shows why PTS capture is needed)"
+./capture.sh "$OUT/02-transition" 2 "$FPS" --region "$REGION" --trigger "music@0.8" >"$OUT/02-transition.log" 2>&1 \
+  && run_stage "$OUT/02-transition" || FAILED+=(02-transition)
+# grim cannot time a 160 ms morph: stage 02 is a control that shows the drop
+# rate and the content rate agree with 04 without needing PTS. Its SCORE is
+# not the baseline.
+
+say "03 sustained (grim, 3 s, 27 bars at 100 Hz)"
+mkdir -p "$OUT/03-sustained"
+$PY drive_bars.py 2.6 >"$OUT/03-sustained/bars_driver.log" 2>&1 &
+DRV=$!
+./capture.sh "$OUT/03-sustained" 3 "$FPS" --region "$REGION" \
+  >"$OUT/03-sustained.log" 2>&1 && run_stage "$OUT/03-sustained" || FAILED+=(03-sustained)
+wait $DRV 2>/dev/null
+tail -2 "$OUT/03-sustained/bars_driver.log" 2>/dev/null | sed 's/^/  driver: /'
+
+# 00 is the bounds-checking instrument (motion.py). It exits 1 on a violated
+# bound and that DOES fail this run — a missed bound is the result.
+say "00 instrument (motion.py) — bounded metrics, fails the run on a violation"
+MR="$OUT/00-instrument"
+mkdir -p "$MR"
+if [ ! -f ./motion.py ]; then
+  echo "  skipped: motion.py not present in this checkout"
+elif $PY ./motion.py --source wf --trials "$TRIALS" \
+     --json-out "$MR/report.json" > "$MR/stdout.json" 2> "$MR/table.txt"; then
+  echo "  instrument PASSED every bound"
+else
+  rc=$?
+  if [ "$rc" -eq 2 ]; then
+    echo "  instrument could not run (rc=2) — see $MR/table.txt (not a failure of this run)"
+  else
+    echo "  instrument ran, bounds violated:"
+    sed -n '/^PASS\|^FAIL\|^UNRESOLVED\|^FAIL  overall/p' "$MR/table.txt" | sed 's/^/    /'
+    # A violated bound is a real result, so it must fail the run.
+    FAILED+=(00-instrument)
+  fi
+fi
+
+say "04 recorded CFR 60 Hz x $TRIALS (real PTS — the baseline)"
+# This screen is shared: other agents open windows, switch workspaces, drive the
+# same panel. A trial that recorded somebody else's change is not evidence, so
+# each trial is retried until the capture was quiet before our own trigger.
+ATTEMPTS=4
+is_clean() { $PY -c 'import json,sys; print(int(json.load(open(sys.argv[1]))["contamination"]["clean"]))' "$1/analysis.json" 2>/dev/null; }
+for i in $(seq 1 "$TRIALS"); do
+  d="$OUT/04-record-cfr-$i"
+  for a in $(seq 1 $ATTEMPTS); do
+    echo "--- trial $i/$TRIALS attempt $a/$ATTEMPTS"
+    rm -rf "$d"
+    if ! ./record.sh "$d" 2 60 --region "$REGION" --trigger "music@0.8" \
+         >"$OUT/04-record-cfr-$i.log" 2>&1; then
+      FAILED+=("04-cfr-$i"); break
+    fi
+    run_stage "$d" || { FAILED+=("04-cfr-$i"); break; }
+    [ "$(is_clean "$d")" = 1 ] && break
+    echo "    contaminated (another agent on the screen) — retrying"
+    sleep 0.6
+  done
+  [ "$(is_clean "$d")" = 1 ] || echo "    WARNING: trial $i kept UNCLEAN after $ATTEMPTS attempts"
+done
+
+say "05 recorded VFR (damage-gated, cross-check only)"
+d="$OUT/05-record-vfr"
+./record.sh "$d" 2 60 --region "$REGION" --trigger "music@0.8" --vfr \
+  >"$OUT/05-record-vfr.log" 2>&1 && run_stage "$d" || FAILED+=("05-vfr")
+
+say "SUMMARY"
+$PY - "$OUT" <<'EOF'
+import glob, json, statistics as st, sys
+out = sys.argv[1]
+rows, cfr = [], []
+for p in sorted(glob.glob(f"{out}/*/analysis.json")):
+    r = json.load(open(p)); m = r.get("motion") or {}; s = r.get("score", {})
+    name = p.split("/")[-2]
+    rows.append((name, r.get("recorder_mode") or "grim", m, s, r))
+    if name.startswith("04"):
+        cfr.append((m, s, r))
+print(f"{'stage':18s} {'clock':10s} {'clean':5s} {'poses':>5s} {'uniq':>4s} {'dups':>4s} "
+      f"{'jump':>5s} {'C':>5s} {'D':>5s} {'J':>5s} {'SCORE':>6s}")
+for name, mode, m, s, raw in rows:
+    clean = "yes" if (raw.get("contamination") or {}).get("clean") else "NO"
+    if m:
+        print(f"{name:18s} {mode:10s} {clean:5s} {m['poses']:5d} {m['poses_unique']:4d} "
+              f"{m['duplicates']:4d} {m['spikes']:5d} "
+              f"{str(m.get('completeness')):>5s} {str(m.get('duplicate_rate')):>5s} "
+              f"{str(m.get('jump_rate')):>5s} {str(s.get('smoothness')):>6s}")
+    else:
+        print(f"{name:18s} {mode:10s} {'-':>5s} {'-':>4s} {'-':>4s} {'-':>5s} "
+              f"{'-':>5s} {'-':>5s} {'-':>5s} {str(s.get('smoothness')):>6s}")
+sc = [s["smoothness"] for _, s, _ in cfr if s.get("smoothness") is not None]
+po = [m["poses"] for m, _, _ in cfr if m]
+if sc:
+    print(f"\nHEADLINE (04, n={len(sc)}): median {st.median(sc)}  "
+          f"min {min(sc)}  max {max(sc)}   formula {cfr[0][1]['formula']}")
+if po:
+    print(f"poses per recorded morph: {po}  median {st.median(po)} "
+          f"(target {10} = one pose per 16.7 ms over a 160 ms morph)")
+vr = [r for r in rows if r[0].startswith("05")]
+if vr and vr[0][2] and po:
+    print(f"cross-check 05-vfr: {vr[0][2]['poses']} poses, {vr[0][2]['span_ms']} ms span, "
+          f"same morph -> agrees with 04" if abs(vr[0][2]['poses'] - st.median(po)) <= 3
+          else f"cross-check 05-vfr: {vr[0][2]['poses']} poses vs 04 median {st.median(po)}: DISAGREE")
+print(f"\nmedia: {out}   (keep out of git)")
+EOF
+
+if [ ${#FAILED[@]} -gt 0 ]; then
+  say "FAILED stages: ${FAILED[*]}"; exit 1
+fi
+say "done — no stage failed"

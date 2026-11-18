@@ -9,9 +9,16 @@ Why this exists: the 160 ms morph is shorter than one grim round-trip on a
 loaded box, so it cannot be sampled. Sustained motion can.
 """
 import math
+import os
 import socket
 import sys
 import time
+
+# connect-less AF_UNIX SOCK_DGRAM: `send()` fails with ENOTCONN (107), only
+# `sendto(path)` reaches the panel. The panel binds the socket; this side must
+# name it on every datagram.
+SOCK = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"),
+                    "dynamite-rust.sock")
 
 REFRESH_HZ = 100
 BARS = 27
@@ -24,7 +31,7 @@ def main() -> int:
     s = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
     s.settimeout(1.0)
     try:
-        s.send(b"dictation_start")
+        s.sendto(b"dictation_start", SOCK)
     except OSError as e:
         print(f"driver: cannot send: {e}", file=sys.stderr)
         return 3
@@ -36,7 +43,7 @@ def main() -> int:
             vals = " ".join(
                 f"{0.5 + 0.5 * math.sin(2 * math.pi * WAVE_HZ * t + i * PHASE_STEP):.3f}"
                 for i in range(BARS))
-            s.send(f"dictation_bars: {vals}".encode())
+            s.sendto(f"dictation_bars: {vals}".encode(), SOCK)
             sent += 1
             time.sleep(1.0 / REFRESH_HZ)
     except OSError as e:
@@ -44,7 +51,7 @@ def main() -> int:
         return 4
     finally:
         try:
-            s.send(b"dictation_end")
+            s.sendto(b"dictation_end", SOCK)
         except OSError:
             pass
         s.close()

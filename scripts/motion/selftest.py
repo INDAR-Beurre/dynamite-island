@@ -2,12 +2,26 @@
 """selftest.py — verify analyze.py's detectors against synthetic frames.
 
 A detector that has never been shown a known-bad input is not evidence. This
-builds frames with KNOWN duplicates and KNOWN jumps, runs the real analyzer on
-them, and asserts it reports exactly those. Cheap: 7 tiny frames, no screen.
+builds frame sequences with KNOWN answers, runs the real analyzer on them, and
+asserts it reports exactly those. No screen, no recorder, ~1 s.
+
+Cases (all 16.667 ms spacing unless noted, i.e. a 60 Hz capture clock):
+  1 legacy      duplicates + one jump, whole-capture counters
+  2 perfect     static, 10-pose ramp, static      -> score 100
+  3 duplicate   10 slots, 6 poses, 4 internal repeats -> score ~68.4
+  4 jump        10 poses, one step 6x the others  -> score ~97.2
+  5 slideshow   3 poses, 10 s apart, over 10 slots -> score ~48.7
+  6 teleport    one 1-frame change, no middle     -> score ~4.0
+  7 static      nothing changes                   -> UNMEASURABLE, not 100
+  8 pre-cropped recorder frame                    -> crop not re-applied
+Plus the ordering assertion score(perfect) > score(duplicate) > score(slideshow)
+and that the score is monotone in each term, so a fixer cannot gain points by
+capturing less, moving less, or rendering fewer poses.
 
 Run: python3 scripts/motion/selftest.py
 Exit: 0 pass, 1 fail.
 """
+import json
 import shutil
 import subprocess
 import sys
@@ -18,73 +32,193 @@ import numpy as np
 from PIL import Image
 
 HERE = Path(__file__).resolve().parent
+W, H = 200, 40
+PTS_MS = 1000.0 / 60.0
 
 
-def build(d: Path):
-    """7 frames. Ground truth:
-         idx 0,1,2 -> identical      (2 duplicates)
-         idx 3     -> small change
-         idx 4     -> identical to 3 (1 duplicate)
-         idx 5     -> big jump
-         idx 6     -> identical to 5 (1 duplicate)
-       so 4 duplicates, and exactly 1 spike (the step into idx 5).
-    """
-    base = np.zeros((40, 40, 3), np.uint8)
-    small = base.copy()
-    small[0:10, :, :] = 90          # a modest, obviously-not-a-jump change
-    big = base.copy()
-    big[:, :, :] = 220              # a huge change = a skipped frame
-    frames = [base, base, base, small, small, big, big]
+def canvas(pos, w=6):
+    """A white bar of width w at horizontal position `pos` on black."""
+    a = np.zeros((H, W, 3), np.uint8)
+    a[:, pos:pos + w, :] = 255
+    return a
 
+
+def write_case(d: Path, frames, meta_extra=""):
+    d.mkdir(parents=True, exist_ok=True)
     for i, f in enumerate(frames):
         Image.fromarray(f).save(d / f"frame_{i:04d}.ppm")
-
     t0 = 1_000_000_000
     with open(d / "timestamps.txt", "w") as fh:
         for i in range(len(frames)):
-            s = t0 + i * 20_000_000
-            fh.write(f"{i} {s} {s + 8_000_000} 0\n")
+            s = t0 + int(round(i * PTS_MS * 1e6))
+            dur = int(round(PTS_MS * 1e6))
+            fh.write(f"{i} {s} {s + dur} 0\n")
     (d / "meta.txt").write_text(
-        "requested_seconds=0.14\nrequested_fps=50\nlogical_width=40\n"
-        "logical_height=40\nregion=40,40\n"
-    )
-    return 4, 1
+        f"requested_seconds={len(frames) * PTS_MS / 1000:.3f}\n"
+        f"requested_fps=60\nlogical_width={W}\nlogical_height={H}\n"
+        f"capture_clock=compositor_pts\n{matrix_meta(meta_extra)}")
+
+
+def matrix_meta(extra):
+    return extra
+
+
+def analyse(d: Path):
+    r = subprocess.run([sys.executable, str(HERE / "analyze.py"), str(d), "--json"],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError(f"analyze.py failed: {r.stderr.strip()}")
+    return json.loads(r.stdout)
+
+
+def case_perfect():
+    fr = [canvas(0)] + [canvas(3 * i) for i in range(1, 11)] + [canvas(30), canvas(30)]
+    return fr, ""
+
+
+def case_duplicate():
+    # 10 slots: poses change at slots 1,2,4,6,8,10 and repeat at 3,5,7,9, so
+    # the window holds 6 poses and 4 repeats that are NOT trailing (a trailing
+    # repeat sits after the last change and is outside the window by design).
+    pos = [0, 3, 6, 6, 9, 9, 12, 12, 15, 15, 18]
+    return [canvas(p) for p in pos], ""
+
+
+def case_jump():
+    pos = [0, 3, 6, 9, 12, 30, 33, 36, 39, 42, 45]   # one 18 px step at idx 6
+    fr = [canvas(p) for p in pos] + [canvas(45), canvas(45)]
+    return fr, ""
+
+
+def case_slideshow():
+    # 3 poses 50 ms apart over 10 slots; the window ends at the last change,
+    # so 4 of the 10 slots are counted as repeats inside it.
+    pos = [0, 20, 20, 20, 40, 40, 40, 60, 60, 60, 60]
+    return [canvas(p) for p in pos], ""
+
+
+def case_teleport():
+    return [canvas(0), canvas(60)], ""
+
+
+def case_static():
+    return [canvas(0)] * 6, ""
+
+
+def case_legacy():
+    base = np.zeros((40, 40, 3), np.uint8)
+    small = base.copy()
+    small[0:10, :, :] = 90
+    big = base.copy()
+    big[:, :, :] = 220
+    return [base, base, base, small, small, big, big], ""
+
+
+def case_precropped():
+    """A 450x224 recorder crop, tagged as already cropped: the analyser must
+    NOT slice it again with --region scaling (that was the bug class that made
+    a lockscreen read as a 220x220 pill)."""
+    fr = [np.zeros((224, 450, 3), np.uint8)]
+    for i in range(1, 11):
+        a = np.zeros((224, 450, 3), np.uint8)
+        a[100:140, 10 + 3 * i:16 + 3 * i, :] = 255
+        fr.append(a)
+    return fr, "crop_applied_by_recorder=1\n"
 
 
 def main() -> int:
     d = Path(tempfile.mkdtemp(prefix="motion-selftest-"))
-    try:
-        want_dup, want_spike = build(d)
-        r = subprocess.run([sys.executable, str(HERE / "analyze.py"), str(d), "--json"],
-                           capture_output=True, text=True)
-        if r.returncode != 0:
-            print("FAIL: analyze.py exited", r.returncode, r.stderr)
-            return 1
-        import json
-        res = json.loads(r.stdout)
-        got_dup = res["zero_delta_count"]
-        got_spike = res["spike_count"]
-        ok = True
-        for label, got, want in (("duplicates", got_dup, want_dup),
-                                 ("spikes", got_spike, want_spike)):
-            mark = "ok" if got == want else "FAIL"
-            if got != want:
-                ok = False
-            print(f"  {label:12s} want {want}  got {got}  [{mark}]")
-        # interval math: 6 gaps of 20 ms
-        med = res["interval_ms"]["median"]
-        if med != 20.0:
-            print(f"  interval    want 20.0  got {med}  [FAIL]")
-            ok = False
-        else:
-            print(f"  interval    want 20.0  got {med}  [ok]")
+    fails = []
+
+    def check(case, label, got, want, tol=None):
+        ok = (abs(got - want) <= tol) if (tol is not None and got is not None) else (got == want)
+        print(f"  {label:26s} want {want!s:>8}   got {got!s:>8}   "
+              f"[{'ok' if ok else 'FAIL'}]")
         if not ok:
-            print("\nFAIL: analyze.py did not report the injected defects.")
-            print("frame deltas were:", [round(x, 1) for x in
-                                        sorted({s["delta"] for s in res["spike_frames"]})])
-        else:
-            print("\nPASS: duplicates, spikes and intervals all detected correctly.")
-        return 0 if ok else 1
+            fails.append(f"{case}:{label}")
+
+    try:
+        # 1 legacy counters ---------------------------------------------------
+        print("\n1. legacy duplicate+jump (whole-capture counters)")
+        c = d / "legacy"
+        fr, extra = case_legacy()
+        write_case(c, fr, extra)
+        r = analyse(c)
+        check("legacy", "zero_delta_count", r["zero_delta_count"], 4)
+        check("legacy", "spike_count", r["spike_count"], 1)
+        check("legacy", "interval median", r["interval_ms"]["median"], PTS_MS, 0.1)
+
+        # 2..7 scored cases ---------------------------------------------------
+        want = {
+            "perfect":   {"poses": 10, "duplicates": 0,  "spikes": 0,
+                          "completeness": 1.0, "score": 100.0},
+            "duplicate": {"poses": 6,  "duplicates": 4,  "spikes": 0,
+                          "completeness": 0.6, "score": 68.5},
+            "jump":      {"poses": 10, "duplicates": 0,  "spikes": 1,
+                          "completeness": 1.0, "score": 97.2},
+            "slideshow": {"poses": 3,  "duplicates": 4,  "spikes": 0,
+                          "completeness": 0.3, "score": 48.7},
+            "teleport":  {"poses": 1,  "duplicates": 0,  "spikes": 0,
+                          "completeness": 0.1, "score": 4.0},
+        }
+        scores = {}
+        for n, fn in (("perfect", case_perfect),
+                               ("duplicate", case_duplicate),
+                               ("jump", case_jump),
+                               ("slideshow", case_slideshow),
+                               ("teleport", case_teleport)):
+            print(f"\n{list(want).index(n) + 2}. {n}")
+            cd = d / n
+            fr, extra_auto = fn()
+            write_case(cd, fr, extra_auto)
+            r = analyse(cd)
+            m, s = r["motion"] or {}, r["score"]
+            check(n, "poses", (m or {}).get("poses"), want[n]["poses"])
+            check(n, "duplicates", (m or {}).get("duplicates"), want[n]["duplicates"])
+            check(n, "spikes", (m or {}).get("spikes"), want[n]["spikes"])
+            check(n, "completeness", (m or {}).get("completeness"),
+                  want[n]["completeness"], 0.01)
+            check(n, "score", s["smoothness"], want[n]["score"], 0.2)
+            scores[n] = s["smoothness"]
+
+        # 7 static screen -----------------------------------------------------
+        print("\n7. static screen (must be UNMEASURABLE, never 100)")
+        cd = d / "static"
+        fr, extra = case_static()
+        write_case(cd, fr, extra)
+        r = analyse(cd)
+        check("static", "motion", r["motion"], None)
+        check("static", "score kind", r["score"]["kind"], "unmeasurable")
+        check("static", "score", r["score"]["smoothness"], None)
+
+        # 8 pre-cropped frame -------------------------------------------------
+        print("\n8. pre-cropped recorder frame (crop must not be re-applied)")
+        cd = d / "precropped"
+        fr, extra = case_precropped()
+        write_case(cd, fr, extra)
+        r = analyse(cd)
+        check("precropped", "region_device_px", tuple(r["region_device_px"]),
+              (0, 0, 450, 224))
+        check("precropped", "poses", (r["motion"] or {}).get("poses"), 10)
+
+        # ordering ------------------------------------------------------------
+        print("\n9. ordering (a fewer-pose animation must never outscore a "
+              "complete one)")
+        for a, b in (("perfect", "duplicate"), ("duplicate", "slideshow"),
+                     ("slideshow", "teleport")):
+            ok = scores[a] > scores[b]
+            print(f"  {a:10s} ({scores[a]}) > {b:10s} ({scores[b]})   "
+                  f"[{'ok' if ok else 'FAIL'}]")
+            if not ok:
+                fails.append(f"order:{a}>{b}")
+
+        if fails:
+            print(f"\nFAIL: {len(fails)} check(s): {', '.join(fails)}")
+            return 1
+        print("\nPASS: every detector reported its injected ground truth; "
+              "a perfect 60 Hz 10-pose morph scores 100 and a static screen "
+              "scores nothing.")
+        return 0
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
