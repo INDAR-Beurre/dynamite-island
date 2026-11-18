@@ -596,3 +596,49 @@ Also renamed `for a, b in zip(...)` which **shadowed the image array `a`** — a
 **New minor finding (parent):** the live capsule fill is **luminance 5**, the reference is **0–2**. Not black enough. Cheap fix, and it is a *material* difference a screenshot critic can see.
 
 **Panel-wide capture recipe (mandatory for visual slots):** quiet screen · `collapsed` state · **bright wallpaper** · then `python3 scripts/measure.py`. If it returns `state:"not-collapsed"`, **do not quote geometry** — drive `collapsed` and re-measure. Numbers taken against a dark window are not comparable across slots or rounds.
+
+## Four more r1 verdicts (wake chains 7t batched)
+
+| slot | lens | model | score |
+|---|---|---|---|
+| #1 | glyph sharpness | logfare/deepseek-v4.1-flash-1017 | **6** (was 3) |
+| #5 | fill / frost / slop | group/deepseek-v4.1-flash-1017 | **6** |
+| #6 | idle CPU + redraw proof | logfare/deepseek-v4.1-flash-1017 | **4** |
+| #11 | stress / does-it-reproduce | logfare/deepseek-v4.1-flash-1017 | **3** |
+
+Eight slots in: #1 6 · #2 5 · #3 3 · #4 7 · #5 6 · #6 4 · #8 3 · #11 3 → **median 4.5**. Gate ≥9 **not met**.
+Failed again: **#18** panel regressions (glm image-blind + RPM), **#19** rust idiom (RPM). Both are provider failures, not refusals.
+
+### ★ #6 CPU is the first critic to EXPLAIN "laggy" with a mechanism — this is the r1c headline
+Three blockers that compose into one story:
+1. **`src/main.rs:6001` redraws the full stage once per microphone packet** — no dirty flag, no coalescing, no bars comparison. Measured: offered 401 packets in 4.0 s at 100 Hz, panel **accepted only 64**, 51 sends blocked >5 ms, **103.0% of one core** = **64.5 ms CPU per accepted packet**. The renderer back-pressures the microphone stream itself — a correctness bug, not just CPU.
+2. **`upscale_canvas_2x_into` (`src/main.rs:504-539`) costs 30.2/31.7 ms** (rustc -O; gcc -O2 51.5/57.4). The critic **extracted the loop verbatim and benchmarked it without cargo**, honouring the lock I imposed. 2,991,744 dst px, 47.9 M strided reads, **23.9 M integer divisions per call**. Its doc (`src/main.rs:499`) claims ~5 ms and its guard (`src/main.rs:7851`) asserts **<200 ms** — a 40×-too-loose budget let a 6–11× regression ship green. memset of the same dst is 0.70 ms, so copy is not the cost.
+3. **Idle CPU is NOT the draw loop.** `probe_loop` (`src/wallpaper_blur.rs:447-478`) is an unconditional 1 Hz `grim` spawn: **13 spawns / 20 s at 150–311 ms CPU each = 9.75% of a core from children alone**; tree total 19.8–24.6% vs the 1.5% gate. Main thread is only 0.65% idle and the 1 Hz timer is properly fingerprint-guarded. **This invalidates the parent's earlier assumption that idle CPU was redraw-driven.**
+
+**The composition:** on the settled collapsed path **99.723% of that 30 ms upscale is thrown away** — `draw_collapsed_pill_2x` repaints the whole pill rect over it, and the pill is **8,288 px of 2,991,744**. So the fix is *not* "optimise the upscale" but **"do not upscale what you are about to overwrite"**. Per-packet parsing is cheap (~11 µs: 600 bars/s with no redraw = 8.25% vs 4.25% idle), so **coalescing, not parser surgery**. The empty `CompositorHandler::frame` (`src/main.rs:4923`) is the general fix that makes the dictation case a one-liner.
+Also from #6: 35 `DBG eprintln` sites with no env gate, `word.trim().to_string()` allocates per packet before validation; static discs/tray re-rasterised per packet (`WS_DISC_SS = 8`, ~136k `disc_shadow_alpha_r` calls/redraw for unchanging output); full-buffer `damage_buffer(0,0,bw,bh)` + a fresh `wl_region` per redraw. **Its negative results are valuable too:** minflt +0 per draw, RSS flat 65→65 MB over 10 draws — smithay's SlotPool reuses freelist slots, so per-frame buffers are **not** mmap'ing and the unbounded-glyph-map worry is unfounded (px is constant).
+
+### ★ #1 + #5 converged INDEPENDENTLY on one root cause: only the settled pill got the 2× path
+- **#1:** morph frames and the menu-open pill fall back to 1×. `draw_collapsed_pill_2x` runs only under `if self.morph.is_none() && state == Collapsed` (`src/main.rs:4883-4885`). Two other paths draw the same clock at 1×: `draw_state_into` Collapsed branch (`src/main.rs:2947-2961`) and `draw_pill_over_stage` (`src/main.rs:2276`, called :2357/:2363/:3223). **Measured lapvar 12100 → 2087.5 with a menu open — a 5.8× crispness collapse on every expand**, plus a visible weight change.
+- **#5:** the discs and tray are still 1×-bilinear-doubled beside a razor-sharp pill — pill edge 2 device px (66→33→5) vs disc edge 4–5 px (86→51→26). **Two sharpness classes on one row.**
+**One fix, not two findings**, and the user sees it on every interaction.
+
+### #1 settles the weight question quantitatively (independent of #4)
+Simulated the identical pipeline (2× raster → 0.75 box downsample): **Regular@28.8px → lapvar 8300 / lapmean 79 / soc 0.188**; **Inter-Medium@28.8px → lapvar 6358 / lapmean 81.15 / soc 0.219** vs reference **6503.2 / 80.89 / 0.200**. The baked asset is confirmed correct by a second method, and these are the predicted post-rebuild numbers.
+**New instrument caveat — lapvar is amplitude-confounded:** live ink clips at 255 (33.8% of px ≥240), the reference peaks at **225.7** and never reaches 255 (video tone-limited). Clamping live to ~225 drops lapvar **12100 → 9436**; contrast-normalised excess is **~1.46×, not 1.86×**. `measure.py` must report a contrast-normalised lapvar or every sharpness score stays confounded. **Owed.**
+Also #1: cap centre sits 0.33 logical px high (`src/lock_timer.rs:259-262` baseline centring); glyph blit uses **per-channel `max()` instead of alpha-over** (`src/lock_timer.rs:276-280`) — invisible on today's dark frost, but it erases the AA ramp wherever the backdrop is brighter than the coverage value. Latent, and the same idiom is in every panel's text path.
+
+### #11's blockers are partly STALE — parent verified in the tree, do not forward them
+#11 ran `run_all.sh --group latency` twice and got `pill width 599px … x[828,1427]`. **That defect is already fixed** (commit `d92301a`): `pill_metrics` now takes the widest contiguous dark run through centre and rejects window-edge runs — the comment in the file describes that exact min/max bug. Unknown-group validation exists (`scripts/stress/stress.py:1058-1061`), `MIN_ASSERTS = 1000` is enforced (`:1139`). Its blockers 1 and 5 and part of 4 are **stale**; forwarding them would waste a round.
+**Still live, verified by the parent:** `scripts/stress/run_all.sh:20` still checks `ffmpeg ffprobe` upfront although only `pill_metrics` uses them.
+**Its counting critique is substantively right and I must not defend the headline:** ~345 protocol tests assert only that `sendto` returned ok, and 200 load "tests" are RSS samples behind **one** 8 MB assertion. My assert counter inherits whatever the code labels an assertion. So **"5595 assertions" ≠ "5595 meaningful checks"**. The ≥1000 gate stands on the instrument's own accounting, but the morning report must state its composition, and the next harness round must **assert per-iteration, not per-batch**.
+Also live from #11: `check_pill` drops the `(rc, ms)` return and relies on `sleep(0.45)`; no `trap`/cleanup so the last group decides the next gate's state; latency measures **send→eprintln**, not send→presented frame (p99 swung 596→308 ms between identical runs).
+
+### #5's design findings (the user's "no AI slop" requirement)
+- **blocker** — dictation is still teal bloom + the codebase's only gradient, verified live: fill (20,24,34) vs pill (2,2,2), aura ~20 device px, `GLOW_K 3.2 / GLOW_REACH 22 / BLOOM 0.32 / GLOW_IDLE 0.18`, `wave_color()` over `GRAD_L(125,165,165) → GRAD_C(140,220,220) → GRAD_R(80,118,178)`. **The reference has no waveform, glow or gradient at all — this is invented.** (`src/dictation_canvas.rs:126-132, :400-588, :148`)
+- **major** — the spec's single accent **#F2A65A appears zero times** in src/docs/assets; the live active disc is #93A4F5 and that hue is hand-typed 4 more times. `library::ACCENT`/`theme_accent()` exist but drive none of them, **so theming cannot work**.
+- **major** — type ladder is #FFFFFF/#C0C4C9 instead of #E8E8E8/#8B8FA0; secondary ~40% too bright, flattening hierarchy; one role split across five greys.
+- **major** — discs cast a shadow the shadowless pill doesn't have (−29% cloud, 4–5 px), and `RIM_LIGHT` is drawn but **measurably invisible** (137,152,215 vs fill 135,150,224).
+- **major** — `WS_CY`/`TRAY_CY` still use the old `STAGE_PAD_TOP + 12.0` while `size()` returns 28 → **discs and tray ride 2.5 device px above the pill's centre line**. Needs one shared `COLLAPSED_H`.
+- **minor** — surface can stay pinned at x=0 after launch (observed 22:32–22:35), and `stage_screen_origin()`'s hardcoded `(1504-1176)/2 = 164` then mis-samples every frost by 246 device px.
+**#5 independently hit the same measure.py dark-window defect** ("bogus 74x36, aspect 2.056") and worked around it by direct pixel measurement — third independent confirmation, now fixed by repair #5.
