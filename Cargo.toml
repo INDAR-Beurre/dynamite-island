@@ -1,0 +1,30 @@
+[package]
+name = "dynamite-rust"
+version = "0.1.0"
+edition = "2021"
+description = "Dynamic Island pill for MangoWM (wlr-layer-shell), Rust, minimal RAM"
+license = "GPL-3.0-or-later"
+
+[dependencies]
+smithay-client-toolkit = "0.19"
+fontdue = "0.9"
+libc = "0.2"
+png = "0.17"
+zune-jpeg = "0.5"
+zbus = "5" # iter108: SNI tray host (blocking API, async-io executor)
+zvariant = "5" # iter108: OwnedValue for DBusMenu GetLayout
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
+
+[patch.crates-io]
+# iter29: the sparse-index cache has no `png` metadata (an offline build
+# cannot resolve it from the registry), but the png-0.17.16 .crate IS
+# cached — vendor it as a path dep. Its deps (bitflags / crc32fast /
+# fdeflate / flate2 / miniz_oxide) all have index metadata and resolve
+# offline from the cache.
+png = { path = "vendor/png-0.17.16" }
