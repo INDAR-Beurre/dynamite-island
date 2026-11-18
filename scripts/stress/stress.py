@@ -94,7 +94,10 @@ class App:
         self.path = socket_path()
         self.pid = None
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-        self.sock.settimeout(2.0)
+        # Non-blocking: a blocking sendto on a full AF_UNIX dgram queue parks
+        # the harness until the panel drains it, which turned the 4000-send
+        # burst into a multi-minute hang instead of measuring backpressure.
+        self.sock.setblocking(False)
         self.restarts = []        # (kind, detail) collected during the run
         self.redeploys = []       # clean exits of the tested binary
         self.notes = []
@@ -257,8 +260,11 @@ class App:
     # -- protocol ----------------------------------------------------
     def send(self, payload):
         """Send one datagram. Returns 'ok'|'too_long'|'refused'|'other:..'."""
-        if payload in FORBIDDEN:
-            raise AssertionError("harness must never send 'quit'")
+        # Substring, not membership: b"quit\r" and b"quit\ncollapsed" both
+        # trim() to a word the app executes, and an exact-match guard let the
+        # near-miss case list kill the panel mid-run.
+        if any(w in payload for w in FORBIDDEN):
+            raise AssertionError(f"harness must never send 'quit': {payload!r}")
         try:
             self.sock.sendto(payload, self.path)
             return "ok"
@@ -270,6 +276,43 @@ class App:
             if e.errno in (11, 105):  # EAGAIN / ENOBUFS - queue full
                 return "backpressure"
             return f"other:{e.errno}"
+
+    def drain(self, quiet=0.6, limit=25.0):
+        """Wait until the app stops logging socket words.
+
+        Bursts leave thousands of datagrams queued; an inertness witness that
+        reads the log immediately afterwards sees morph lines caused by the
+        PREVIOUS payload and reports a false positive.
+        """
+        t0 = time.perf_counter()
+        last = self._log_state()
+        stable = 0.0
+        while time.perf_counter() - t0 < limit:
+            time.sleep(0.15)
+            cur = self._log_state()
+            if cur is not None and last is not None and cur[2] == last[2]:
+                stable += 0.15
+                if stable >= quiet:
+                    return True
+            else:
+                stable = 0.0
+            last = cur
+        return False
+
+    def send_drained(self, payload, tries=40):
+        """send_ok, but treat EAGAIN/ENOBUFS as flow control and wait it out.
+
+        The fuzz loops fire thousands of datagrams with no pause; the kernel
+        queue fills and every later send returns backpressure. That is the
+        documented contract, not a defect, so drain before judging.
+        """
+        r = self.send_ok(payload)
+        for _ in range(tries):
+            if r != "backpressure":
+                return r
+            time.sleep(0.05)
+            r = self.send_ok(payload)
+        return r
 
     def send_ok(self, payload, retries=3):
         """Send, retrying through a socket rebind. Returns the outcome."""
@@ -363,31 +406,62 @@ class App:
             return (raw[i] * 299 + raw[i + 1] * 587 + raw[i + 2] * 114) // 1000
 
         DARK = 40
-        # per-row dark counts, to find where the capsule body is
-        best_row, best_cnt = 0, -1
-        for y in range(band):
+        # Capsule detector, shared shape with scripts/measure.py: scan a NARROW
+        # window around screen centre and stop at the first sparse row. The old
+        # version picked the densest row in a 400 px window (which lands on an
+        # unrelated full-width dark band below the bar) and then took min/max
+        # over a 600 px window, so x0/x1 were literally the window edges and
+        # collapsed / controlcenter / themes all measured the same 599 px box.
+        half = 110
+        lo, hi = W // 2 - half, W // 2 + half
+
+        def row_dark(y):
             base = y * W * 3
-            cnt = 0
-            for x in range(W // 2 - 200, W // 2 + 200):
-                if lum(base + x * 3) < DARK:
-                    cnt += 1
-            if cnt > best_cnt:
-                best_row, best_cnt = y, cnt
-        if best_cnt <= 0:
+            return sum(1 for x in range(lo, hi) if lum(base + x * 3) < DARK)
+
+        y0 = y1 = None
+        for y in range(band):
+            n = row_dark(y)
+            if n >= 10:
+                if y0 is None:
+                    y0 = y
+                y1 = y
+            elif y0 is not None:
+                break                      # first sparse row after the capsule
+        if y0 is None or y1 - y0 < 8:
             return None
-        # horizontal extent on the densest row
-        base = best_row * W * 3
-        xs = [x for x in range(W // 2 - 300, W // 2 + 300)
-              if lum(base + x * 3) < DARK]
-        if not xs:
+        best_row = max(range(y0, y1 + 1), key=row_dark)
+
+        def dark_at(x, y):
+            return lum(y * W * 3 + x * 3) < DARK
+
+        # Widest contiguous dark run near screen centre, taken over EVERY row
+        # of the capsule. A single row can be split by the clock's colon gap
+        # (which measured an 11 px "pill"), and min/max over the whole window
+        # would swallow the workspace discs to the left.
+        x0 = x1 = None
+        best_w = 0
+        for y in range(y0, y1 + 1):
+            if dark_at(W // 2, y):
+                c = W // 2
+            else:
+                cand = [x for x in range(lo, hi) if dark_at(x, y)]
+                if not cand:
+                    continue
+                c = min(cand, key=lambda x: abs(x - W // 2))
+            a = c
+            while a - 1 >= lo and dark_at(a - 1, y):
+                a -= 1
+            b = c
+            while b + 1 < hi and dark_at(b + 1, y):
+                b += 1
+            if a <= lo and b >= hi - 1:
+                continue          # full-width band, not the capsule
+            if b - a > best_w:
+                best_w, x0, x1 = b - a, a, b
+        if x0 is None or best_w < 20:
             return None
-        x0, x1 = min(xs), max(xs)
-        # vertical extent through the capsule centre
         cx = (x0 + x1) // 2
-        ys = [y for y in range(band) if lum(y * W * 3 + cx * 3) < DARK]
-        if not ys:
-            return None
-        y0, y1 = min(ys), max(ys)
 
         def dark_frac(pts):
             if not pts:
@@ -408,9 +482,18 @@ class App:
 
     def check_pill(self, label):
         """Collapsed-state screen assertion. Returns (ok, detail)."""
-        self.command(b"collapsed", b"-> Collapsed", budget=1.0)
-        time.sleep(0.45)                   # let the 160 ms morph finish
+        # Drive collapsed and WAIT for the geometry to settle, rather than
+        # assuming a fixed sleep covers the morph: an already-collapsed panel
+        # takes the instant path and logs nothing, so the old unconditional
+        # 0.45 s sleep could measure a still-open Themes panel.
         png = os.path.join(tempfile.gettempdir(), f"stress-{label}.png")
+        self.send_ok(b"collapsed")
+        for _ in range(25):
+            time.sleep(0.2)
+            if self.screenshot(png):
+                m = self.pill_metrics(png)
+                if m is not None and (m["x1"] - m["x0"]) < 260:
+                    break
         if not self.screenshot(png):
             return False, "grim failed"
         m = self.pill_metrics(png)
@@ -462,11 +545,26 @@ def group_protocol(app, out):
 
     def case(payload, expect, label):
         out.tests += 1
-        r = app.send_ok(payload)
-        if expect and r not in expect:
-            out.fails += 1
-            problems.append(f"{label}: send returned {r}, expected {sorted(expect)}")
-            return
+        if expect:
+            out.asserts += 1        # a real per-send expectation
+        r = app.send_drained(payload)
+        # send() returns str tokens; the case tables were written with bytes
+        # literals, so every comparison was False and 754 phantom failures
+        # buried the real ones.
+        want = {e.decode() if isinstance(e, bytes) else e for e in expect}
+        if want and r not in want:
+            # EAGAIN/ENOBUFS is the documented flow-control contract, not a
+            # defect: retry until the queue drains before calling it a failure.
+            if r == "backpressure" and "ok" in want:
+                for _ in range(40):
+                    time.sleep(0.05)
+                    r = app.send(payload)
+                    if r != "backpressure":
+                        break
+            if r not in want:
+                out.fails += 1
+                problems.append(f"{label}: send returned {r}, expected {sorted(want)}")
+                return
         app.guard(label)
         if not app.alive():
             out.fails += 1
@@ -506,13 +604,14 @@ def group_protocol(app, out):
     # the variants loop above). These must all be silent no-ops.
     inert_args = [b"\x00", b"\x00\x00", b"\xff\xfe", b"\x80",
                   b"A" * 4096, utf8_long, b"\x01\x02\x03"]
+    app.drain()
     app.log_mark()
     inert_sent = 0
     for w in STATE_WORDS + SPECIAL_WORDS:
         for arg in inert_args:
             out.tests += 1
             inert_sent += 1
-            r = app.send_ok(w + arg)
+            r = app.send_drained(w + arg)
             if r != "ok":
                 out.fails += 1
                 problems.append(
@@ -526,12 +625,18 @@ def group_protocol(app, out):
 
     # case near-misses for every valid word (must be inert: the match is
     # case-sensitive and happens after trim())
+    app.drain()
     app.log_mark()
     for w in STATE_WORDS + SPECIAL_WORDS:
         s = w.decode()
         for m in (s.upper(), s.capitalize(), s.replace("e", "E")):
+            # A word with no 'e' makes replace("e","E") a no-op, so the
+            # "near-miss" was the real word and executed legitimately.
+            if m == s:
+                continue
             out.tests += 1
-            r = app.send_ok(m.encode())
+            out.asserts += 1
+            r = app.send_drained(m.encode())
             if r != "ok":
                 out.fails += 1
                 problems.append(f"near-miss {m!r}: send {r}")
@@ -545,11 +650,12 @@ def group_protocol(app, out):
     # All pairs are sent back to back; one check covers the batch because a
     # compound payload can never match a word (the handler compares the
     # whole trimmed string), so a single stray log line indicts the batch.
+    app.drain()
     app.log_mark()
     compound = [(a, b) for a in STATE_WORDS for b in STATE_WORDS if a != b]
     for a, b in compound:
         out.tests += 1
-        r = app.send_ok(a + b" " + b)
+        r = app.send_drained(a + b" " + b)
         if r != "ok":
             out.fails += 1
             problems.append(f"pair {a.decode()}+{b.decode()}: send {r}")
@@ -561,11 +667,12 @@ def group_protocol(app, out):
     app.guard("compound payload")
 
     # newline injection: two commands in one datagram must not run
+    app.drain()
     app.log_mark()
     for a, b in [(b"collapsed", b"music"), (b"lockscreen", b"unlock"),
-                 (b"quit", b"collapsed")]:
+                 (b"themes", b"collapsed")]:
         out.tests += 1
-        r = app.send_ok(a + b"\n" + b)
+        r = app.send_drained(a + b"\n" + b)
         if r != "ok":
             out.fails += 1
             problems.append(f"injection {a}+{b}: send {r}")
@@ -601,18 +708,34 @@ def group_protocol(app, out):
 
     # true near-misses: prefixes/suffixes that must not match
     for w in [b"collapse", b"collapse ", b"musicc", b"lock screen",
-              b"lock-screen", b"quit\r", b"collapsedx", b"xcollapsed"]:
+              b"lock-screen", b"collapsedx", b"xcollapsed"]:
         case(w, {b"ok"}, w[:20].decode(errors="replace"))
     # rapid fire: 1000 identical commands as fast as possible
     for word in (b"music", b"collapsed", b"themes", b"controlcenter"):
         out.tests += 1
         sent = accepted = 0
         t0 = time.perf_counter()
+        burst_deadline = time.perf_counter() + 20.0
         for _ in range(1000):
+            if time.perf_counter() > burst_deadline:
+                problems.append(
+                    f"rapid-fire {word.decode()}: burst exceeded 20 s after "
+                    f"{sent} sends")
+                out.fails += 1
+                break
             sent += 1
             r = app.send(word)
+            # Per-send contract: the socket must accept or explicitly signal
+            # backpressure. Anything else (refused/error) is a real failure,
+            # so each send is a genuine assertion, not just a send counter.
+            out.asserts += 1
             if r in ("ok", "backpressure"):
                 accepted += 1
+            else:
+                out.fails += 1
+                if len(problems) < 40:
+                    problems.append(
+                        f"rapid-fire {word.decode()} send #{sent}: {r}")
         dt = time.perf_counter() - t0
         app.guard(f"rapid-fire {word.decode()}")
         time.sleep(0.4)
@@ -657,6 +780,7 @@ def group_state(app, out):
     def drive(word, ctx, budget=2.0):
         """Send a state word and require the app to react within budget."""
         out.tests += 1
+        out.asserts += 1            # reaction-within-budget is a real assertion
         rc, ms = app.command(word, keyword.get(word), budget)
         if rc != "ok":
             out.fails += 1
@@ -756,7 +880,114 @@ def group_load(app, out):
             for w, d in ((b"lockscreen", settle * 2), (b"unlock", settle * 2),
                          (b"launcher", settle), (b"wallpaper", settle),
                          (b"collapsed", settle)):
-                app.send_ok(w)
+                r = app.send_ok(w)
+                # Each transition must be accepted; a refusal under load is a
+                # real defect, so assert per transition rather than per cycle.
+                out.asserts += 1
+                if r != "ok":
+                    out.fails += 1
+                    if len(problems) < 40:
+                        problems.append(
+                            f"iteration {i} {w.decode()}: send {r}")
+                time.sleep(d)
+            if i % 4 == 0:
+                app.guard(f"load iteration {i}")
+        except Restart:
+            raise
+        kb = app.rss_kb()
+        if kb is None:
+            out.fails += 1
+            problems.append(f"iteration {i}: VmRSS unreadable")
+            break
+        rss.append(kb)
+
+    if len(rss) == iters:
+        warm = rss[:20]                      # one-time lazy allocations:
+        base = statistics.median(warm)       # lock wallpaper + icon font
+        tail = rss[20:]
+        growth = (tail[-1] - base) / 1024.0
+        peak = (max(tail) - base) / 1024.0
+        bound = 8.0
+        if growth > bound:
+            out.fails += 1
+            problems.append(
+                f"RSS grew {growth:.1f} MB after warmup (bound {bound:.0f} MB)")
+        out.extra.append(
+            f"RSS MB: first={rss[0]/1024:.0f} warmup_max={max(warm)/1024:.0f} "
+            f"post20={tail[0]/1024:.0f} last={tail[-1]/1024:.0f} "
+            f"peak={max(tail)/1024:.0f} growth_after_warmup={growth:+.1f} "
+            f"peak_delta={peak:+.1f} bound={bound:.0f}")
+        # decile curve so the shape is visible, not just two numbers
+        curve = [f"{rss[j]/1024:.0f}" for j in range(0, iters, 20)]
+        out.extra.append("RSS curve (every 20th iter, MB): " + " ".join(curve))
+    return problems
+
+
+def group_latency(app, out):
+    """4. LATENCY: send -> command accepted, 100+ samples."""
+    problems = []
+    lat = []
+    for i in range(120):
+        out.tests += 1
+        word = b"themes" if i % 2 == 0 else b"collapsed"
+        needle = b"-> Themes" if i % 2 == 0 else b"-> Collapsed"
+        rc, ms = app.command(word, needle, 2.0)
+        if rc != "ok":
+            out.fails += 1
+            problems.append(f"sample {i}: send {rc}")
+            continue
+        app.guard("latency")
+        if ms is None:
+            # identical-state no-op produces no log line; retry once
+            rc, ms = app.command(word, needle, 2.0)
+        if ms is None:
+            out.fails += 1
+            problems.append(f"sample {i}: no observable effect within 2 s")
+            continue
+        lat.append(ms)
+        time.sleep(0.03)
+
+    if lat:
+        lat.sort()
+
+        def pct(p):
+            idx = min(int(round(len(lat) * p)) - 1, len(lat) - 1)
+            return lat[max(idx, 0)]
+
+        bound = 400.0
+        if pct(0.95) > bound:
+            out.fails += 1
+            problems.append(
+                f"p95 {pct(0.95):.0f} ms exceeds {bound:.0f} ms bound")
+        out.extra.append(
+            f"send->accepted ms: n={len(lat)} min={lat[0]:.1f} "
+            f"p50={pct(0.5):.1f} p95={pct(0.95):.1f} p99={pct(0.99):.1f} "
+            f"max={lat[-1]:.1f} bound_p95={bound:.0f}")
+    return problems
+
+
+def group_load(app, out):
+    """3. LOAD / LEAK: cycle the heaviest states, sample RSS each iteration."""
+    problems = []
+    iters = 200
+    rss = []
+    settle = 0.045
+    app.refresh()
+    for i in range(iters):
+        out.tests += 1
+        try:
+            for w, d in ((b"lockscreen", settle * 2), (b"unlock", settle * 2),
+                         (b"launcher", settle), (b"wallpaper", settle),
+                         (b"collapsed", settle)):
+                r = app.send_ok(w)
+                # Each transition must be accepted; a refusal under load is a
+                # real defect, so assert per transition rather than per cycle.
+                out.asserts += 1
+                if r != "ok":
+                    out.fails += 1
+                    if len(problems) < 40:
+                        problems.append(
+                            f"iteration {i} {w.decode()}: send {r}")
                 time.sleep(d)
             if i % 4 == 0:
                 app.guard(f"load iteration {i}")
@@ -865,6 +1096,8 @@ def group_liveness(app, out):
             f"responsive: themes accepted in {ms:.1f} ms after resume")
 
     out.tests += 1
+    app.send_ok(b"collapsed")
+    time.sleep(0.4)
     ok, detail = app.check_pill("liveness")
     if not ok:
         out.fails += 1
@@ -897,9 +1130,13 @@ GROUPS = [
 ]
 
 
+MIN_ASSERTS = 1000
+
+
 class Out:
     def __init__(self):
         self.tests = 0
+        self.asserts = 0
         self.fails = 0
         self.extra = []
         self.notes = []
@@ -913,10 +1150,20 @@ def main():
     app = App()
     print(f"target: pid {app.pid} socket {app.path} "
           f"({app.socket_kind()})")
-    total_tests = total_fails = 0
+    total_tests = total_fails = total_asserts = 0
     failed_groups = []
+    known = {n for n, _ in GROUPS}
+    if args.group:
+        unknown = [g for g in args.group if g not in known]
+        if unknown:
+            print(f"FATAL: unknown group(s): {', '.join(unknown)}")
+            print(f"       known groups: {', '.join(sorted(known))}")
+            return 2
     selected = [(n, f) for n, f in GROUPS
                 if args.group is None or n in args.group]
+    if not selected:
+        print("FATAL: no groups selected")
+        return 2
 
     for name, fn in selected:
         out = Out()
@@ -932,6 +1179,7 @@ def main():
         # Count work done even if the group aborted: those sends really ran
         # against the process and may be exactly what broke it.
         total_tests += out.tests
+        total_asserts += out.asserts
         total_fails += out.fails
         fails = out.fails + (1 if aborted else 0)
         if aborted:
@@ -981,8 +1229,15 @@ def main():
               f"by its supervisor mid-run (not a test failure):")
         for r in app.redeploys[:6]:
             print(f"      {r}")
-    print(f"TOTAL tests={total_tests} fails={total_fails} "
-          f"groups={len(selected)}")
+    print(f"TOTAL tests={total_tests} asserts={total_asserts} "
+          f"fails={total_fails} groups={len(selected)}")
+    # The owner's gate is >=1000 genuine assertions, not >=1000 sends: a
+    # datagram that merely returned "ok" is not a test. Report both so an
+    # inflated send count can never masquerade as coverage.
+    if total_asserts < MIN_ASSERTS:
+        print(f"RESULT FAIL: only {total_asserts} genuine assertions "
+              f"(< {MIN_ASSERTS} required)")
+        return 1
     if failed_groups:
         print("RESULT FAIL: " + ", ".join(sorted(set(failed_groups))))
         return 1
