@@ -791,3 +791,17 @@ And it is not just the upscale — per morph frame the code also does `stage_1x.
 **✅ Crop repair verified**: the settled control now shows **zero-delta 119/121, spikes 0** — previously median nonzero delta 13.8 with 4 spikes on a pill that cannot move. Deriving the region from the live pill removed the wallpaper noise floor.
 
 **The 5 UNRESOLVED gates are correct behaviour, not instrument gaps** — `settle_duration_ms`, `width_reversals`, `overshoot_frac`, `in_flight_samples`, `duplicate_ratio` are all gated on `resolved_flight` (`scripts/motion/motion.py:797-830`), and `in_flight_samples = 0`: **no intermediate geometry was captured at all**. The harness refuses to grade a curve it never saw. Do not "fix" this. **These five resolving after the perf fix is itself evidence of improvement.**
+
+### Panel extension — 4 critics on FROZEN surfaces (chain 4t, revising my own "wait" plan)
+r1b is still running (12 modified `src/` files, 1438 insertions). Starting the src-dependent critics now would score a moving target — exactly what made critic #11's blockers stale on arrival. **But four surfaces are frozen and independent of the fixer's edits**, so reviewing them now produces findings that stay valid when r1b lands. Dispatched in one turn:
+| slot | lens | model | uuid |
+|---|---|---|---|
+| #20 | **reference spec from pixels** (expanded panels, discs, tray) — vision | `agentrouter/gpt-6.1-sol` | `c8338066-8130-46f3-b9ea-3a25cc9fbecd` |
+| #21 | dictation embedding (build, secrets, reboot, contract, RAM) | `logfare/deepseek-v4.1-flash-1017` | `ee2b9050-7f63-4ab7-872b-f83c40895a99` |
+| #22 | **stress-harness integrity** — is 1207 tests real evidence or theatre | `group/hy4` | `96631275-40de-4ec1-97ad-668780c738ad` |
+| #23 | **motion-harness integrity** — do the smoothness numbers tell the truth | `group/deepseek-v4.1-flash-1017` | `7839890c-35d9-4d8f-a6cd-d287b6e8c196` |
+Models follow the owner's instruction: primarily DeepSeek v4.1 Flash **from different providers** (`group/`, `logfare/`), `hy4` for diversity, and one `gpt-6.1-sol` slot — the only confirmed image-seeing route, spent on the highest-value visual lens.
+**#20 is the first critic to specify the EXPANDED panels numerically.** Every prior visual critic scored the collapsed pill; the owner's "Bluetooth at the side" and "the workspaces too" have never had a numeric spec. Deliverable `docs/expanded-panel-spec.md`.
+**#22 must mutation-test the suite** — deliberately break something reversible in /tmp and confirm the suite FAILS. A suite that cannot fail is not a gate, and the owner's ≥1000-test rule is meaningless without this.
+**#23's decisive question**: could height quantisation collapse a genuinely smooth 10-pose morph into 3 distinct heights and produce a FALSE teleport verdict? Travel is 48 px over 160 ms ≈ 5 px/frame, so it should not — but if it can, the next fixer would chase a non-bug. Also asked to break the selftest's ordering claim.
+Both harness critics are told the panel may restart under them (Errno 107) and to re-run rather than report a false failure.
