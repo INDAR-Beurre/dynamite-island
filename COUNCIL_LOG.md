@@ -713,3 +713,15 @@ The owner asked for the dictation tool to be "embedded nicely into the package".
 - `~/.config/mango/autostart.sh` repointed to the in-repo supervisor; previous version preserved as `autostart.sh.bak-dictation-embed-<timestamp>`; `bash -n` clean. **The running supervisor was not restarted**, so this session is undisturbed — the new path takes effect at next login.
 - **Contract preserved:** all four literals (`dictation_start`, `dictation_end`, `dictation_bars:…`, `collapsed`) are byte-identical in the copy and **all four were sent to the live panel and accepted** after the migration.
 Details: `tools/dictation/EMBEDDING.md`.
+
+### Instrument repair #7 — the motion captures contain NO animation (chain 6t)
+Read the smoothness child's outputs before letting anyone score them. **They are dead trials.**
+`scripts/motion/out/20261118-213403/morph.txt`: *"MORPH WINDOW n/a — the trigger command FAILED to send; this capture contains no animation"*, all **80 deltas 0**, and `bars_driver.log`: **`driver: cannot send: [Errno 107] Transport endpoint is not connected`**. ENOTCONN on an AF_UNIX dgram sendto means the path exists but nothing is bound — **the panel was restarting** while the fixer rebuilt. The capture raced a redeploy.
+**A dead capture printed a tidy summary and exited 0**, so it read as data. Three fixes, all in `scripts/` (the fixer owns `src/`):
+1. `scripts/motion/analyze.py` now **returns exit 3** with `RESULT FAIL: the trigger never reached the panel … must not be scored` when the trigger failed. Verified: real exit code **3** (not 0 — the first check was masked by a pipe).
+2. `scripts/motion/capture.sh` now writes **`crop_applied_by_recorder=1`**. `grim -g` already crops, but only `record.sh` declared it, so a caller also passing `--region` would **double-crop and slice the wrong pixels**. Latent, not the cause of this run.
+3. `scripts/motion/run_all.sh` **derives the crop from the live pill** instead of hardcoding `640,0,900,210`. Derived now: **`552,0,952,210`**. Falls back to the old window on any error rather than aborting.
+**Self-correction #7 during this chain:** I first read `CROP device px 0,0 -> 450,225` against `region=600,0,900,150` as a wrong-X bug. **It is not** — 450×225 device = 300×150 logical = exactly the region, i.e. the whole pre-cropped frame. Checked before reporting; fourth time verification changed my conclusion.
+**Real defect that remains:** the "settled" control shows **median nonzero delta 13.834 and 4 spikes on a pill that cannot move**. The old 260-logical-px window around a 65-px pill is **~75% wallpaper**, inflating the noise floor enough to mask a genuine stall. Fix 3 addresses it.
+`scripts/motion/selftest.py` still **PASS** (perfect 60 Hz 10-pose morph = 100, static = nothing, ordering perfect > duplicate > slideshow > teleport).
+**Do not score any existing motion output.** Re-run in a quiet window; loadavg was 4.19 with a `rustc` running at the time of writing.
