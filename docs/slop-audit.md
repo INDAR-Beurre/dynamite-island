@@ -158,11 +158,20 @@ pair already encodes text lines fine; drop #BB9AF7 and #7DCFFF.
 
 ### F7 — lone cyan lockscreen clock (severity: medium)
 
-`lockscreen.rs:199` `C_CYAN = (170, 249, 254)` — the entire rest of the
-island renders text near-white; the lock screen alone introduces a
-saturated cyan. One accent per system; cyan-as-second-accent is the
-"two-hue drift" tell. **Fix:** white/near-white clock, optionally the
-shared accent for the notification glyph only.
+`lockscreen.rs:199` `C_CYAN = (170, 249, 254)` = `#AAF9FE`, which is **pale,
+not saturated** — the original audit's adjective was wrong (corrected after
+the vision-route measurement).
+
+**The real defect is the MATERIAL, and the fix is not white.** Measured on
+`/tmp/ref/lock/l40.png`: the reference clock is **wallpaper-sampled frosting
+inside the letterforms** — median ink RGB `[87,235,206]`, 92.8% teal-ish,
+0.7% near-neutral, and it **varies across x** as the wallpaper changes. A flat
+fill of any single colour is wrong, white included. See
+`docs/lockscreen-spec.md` for the blur/zoom/veil recipe.
+
+So this is **not** a "two-hue drift" tell: the hue comes from the wallpaper, so
+it is one material honestly sampled, not a second invented accent. Do not
+"fix" it by desaturating to white — that would move further from the reference.
 
 ### F8 — music panel grey pile (severity: low-medium)
 
