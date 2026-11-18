@@ -482,6 +482,16 @@ def main() -> int:
         print(f"            = {SCORE_FORMULA}")
         print(f"            = 100*(0.40*{t['completeness']} + 0.35*{t['fresh_slots']}"
               f" + 0.25*{t['continuous_steps']})")
+    # A capture with no animation in it is not a smoothness measurement.
+    # Printing a tidy summary and exiting 0 let a dead trial read as data
+    # (the 20261118-213403 morph capture: trigger ENOTCONN, all 80 deltas 0).
+    # Fail loudly so no caller can score it.
+    if win and win.get("failed"):
+        print("\nRESULT FAIL: the trigger never reached the panel — this "
+              "capture contains NO animation and must not be scored.")
+        print("             (Errno 107 ENOTCONN usually means the panel was "
+              "restarting; re-run in a quiet window.)")
+        return 3
     return 0
 
 

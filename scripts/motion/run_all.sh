@@ -23,7 +23,28 @@ cd "$(dirname "$0")" || exit 1
 STAMP=$(date +%Y%m%d-%H%M%S)
 OUT=${1:-/tmp/motion-baseline/$STAMP}
 TRIALS=${2:-5}
-REGION=640,0,900,210
+# Derive the crop from the LIVE pill instead of hardcoding it. A 260-logical-px
+# window around a 65-px pill is 75% wallpaper, which inflates the noise floor
+# and can mask a real stall (the 20261118-213403 "settled" control showed
+# median delta 13.8 and 4 spikes on a pill that cannot move).
+# Margin is generous enough to contain the widest expanded panel.
+REGION=$("${PYTHON:-python3}" - <<'PY'
+import json, subprocess, sys
+try:
+    d = json.loads(subprocess.run(
+        [sys.executable, "../../scripts/measure.py"],
+        capture_output=True, text=True, check=True).stdout)
+    p = d["pill"]
+    if d.get("state") == "not-collapsed":
+        raise ValueError("not collapsed")
+    s = 1.5
+    cx = (p["x"] + p["w"] / 2) / s
+    x0 = max(0, int(cx - 200)); x1 = int(cx + 200)
+    print(f"{x0},0,{x1},210")
+except Exception:
+    print("640,0,900,210")   # fall back to the old window, never abort
+PY
+)
 FPS=20
 SETTLE=5
 PY=${PYTHON:-python3}

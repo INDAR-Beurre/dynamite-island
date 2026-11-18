@@ -117,6 +117,10 @@ CAPTURED=$(ls "$OUT"/frame_*."$FORMAT" 2>/dev/null | wc -l)
   echo "requested_fps=$FPS"
   echo "region=$REGION"
   echo "region_space=logical_px"
+  # grim -g already cropped these frames to the region. Without this flag
+  # analyze.py cannot know, and a caller passing --region as well would
+  # crop a second time and slice the wrong pixels.
+  echo "crop_applied_by_recorder=1"
   echo "logical_width=1504"
   echo "logical_height=1002"
   echo "geometry=$GEO"
