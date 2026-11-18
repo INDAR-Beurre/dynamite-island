@@ -3,3 +3,6 @@ target/
 src.bak-*/
 *.ppm
 *.log
+
+__pycache__/
+*.pyc
