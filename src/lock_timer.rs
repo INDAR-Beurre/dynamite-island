@@ -109,11 +109,10 @@
 pub const LOCK_W: u32 = 54;
 pub const LOCK_H: u32 = 24;
 
-/// Corrected text size for the collapsed pill (clock only — there
-/// is no timer; see the module docs (b)).
-/// Derivation: see the module docs — 13.0 gives digit height ~9 px
-/// (ratio 0.36–0.39), 17.0 gives ~12 px (ratio 0.50–0.53).
-pub const TEXT_PX: f32 = 17.0;
+/// Clock size for the collapsed pill (A2/A3): Inter's digit cap is
+/// 1510/2048 em, so 14.4 puts the clock cap at 10.6 logical px =
+/// 0.379 of the 28 px pill (target 0.375).
+pub const TEXT_PX: f32 = 14.4;
 /// Alias kept so call sites can name the intent.
 pub const CLOCK_PX: f32 = TEXT_PX;
 
@@ -206,6 +205,34 @@ pub fn draw_lock_icon(canvas: &mut [u8], w: u32, h: u32) {
     }
 }
 
+/// Rasterised glyphs, keyed on (char, px bits): glyph bitmaps depend on
+/// nothing else, so the pill's five glyphs stop re-rasterising per frame.
+static GLYPHS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<(char, u32), (fontdue::Metrics, Vec<u8>)>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+pub(crate) fn rasterize_cached(
+    font: &fontdue::Font,
+    ch: char,
+    px: f32,
+) -> (fontdue::Metrics, Vec<u8>) {
+    let key = (ch, px.to_bits());
+    if let Ok(mut cache) = GLYPHS.lock() {
+        if let Some((m, cov)) = cache.get(&key) {
+            return (*m, cov.clone());
+        }
+        let (m, cov) = font.rasterize(ch, px);
+        // Bounded: the pill/menu sets are tiny, but a dynamic label must
+        // never grow this map forever.
+        if cache.len() >= 512 {
+            cache.clear();
+        }
+        cache.insert(key, (m, cov.clone()));
+        return (m, cov);
+    }
+    font.rasterize(ch, px)
+}
+
 /// Centre `text` in the canvas at `px` size, Quicksand via fontdue.
 /// Same layout/blit algorithm as main.rs `draw()` (baseline centred on
 /// the line box, glyphs composited white with max()). The black capsule
@@ -227,7 +254,7 @@ pub fn draw_text_centred(
     let mut glyphs: Vec<(fontdue::Metrics, Vec<u8>)> = Vec::new();
     let mut width = 0.0f32;
     for ch in text.chars() {
-        let (m, cov) = font.rasterize(ch, px);
+        let (m, cov) = rasterize_cached(font, ch, px);
         width += m.advance_width;
         glyphs.push((m, cov));
     }

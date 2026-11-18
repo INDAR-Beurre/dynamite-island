@@ -198,7 +198,7 @@ impl IslandState {
     }
     fn size(self) -> (u32, u32) {
         match self {
-            Self::Collapsed => (cfg().collapsed_width, 24),
+            Self::Collapsed => (cfg().collapsed_width, 28),
             Self::Dictation => (220, 64),
             Self::Lock => (54, 24),
             Self::Power => (400, cfg().expanded_height),
@@ -215,7 +215,8 @@ impl IslandState {
     }
     fn radius(self) -> f32 {
         match self {
-            Self::Collapsed | Self::Lock => 12.0,
+            Self::Collapsed => 14.0,
+            Self::Lock => 12.0,
             Self::Dictation => 20.0,
             // Fullscreen rect: square corners, no capsule.
             Self::Lockscreen => 0.0,
@@ -436,7 +437,7 @@ const WHEEL_COOLDOWN: Duration = Duration::from_millis(150);
 // (iter30 a3b: oy + h/2 per view), not at the pill line.
 // The pill states sit at STAGE_PAD_TOP = 3 (screen gap_top 3); the
 // expanded menus hang BELOW the pill (iter30 a3c): panel top
-// PANEL_TOP_MENU = 3 + 24 + 2 = 29 (screen 29), so the pill stays
+// PANEL_TOP_MENU = 3 + 28 + 2 = 33 (screen 33), so the pill stays
 // visible above the panel with a 4 px gap.
 // The stage keeps slack for a ~10% expand overshoot (iter33: the
 // overshoot itself is REMOVED — EaseOutCubic now, see begin_morph —
@@ -458,9 +459,9 @@ const STAGE_PAD_X: f32 = 38.0;
 const STAGE_PAD_TOP: f32 = 3.0;
 /// Expanded-panel top inside the stage (iter30 a3c): the panel hangs
 /// BELOW the pill instead of swallowing it — pill top STAGE_PAD_TOP
-/// (screen gap_top 3), 24 tall, then a 4 px gap, so the panel top
-/// is 3 + 24 + 2 = 29 (screen 29). Pill states keep STAGE_PAD_TOP.
-const PANEL_TOP_MENU: f32 = STAGE_PAD_TOP + 24.0 + 2.0;
+/// (screen gap_top 3), 28 tall, then a 4 px gap, so the panel top
+/// is 3 + 28 + 2 = 33 (screen 33). Pill states keep STAGE_PAD_TOP.
+const PANEL_TOP_MENU: f32 = STAGE_PAD_TOP + 28.0 + 2.0;
 /// Fixed stage surface size (see the sizing note above).
 const STAGE_W: u32 = (1100.0 + 2.0 * STAGE_PAD_X) as u32;
 /// 636 = menu top 31 + ControlCenter overshoot height 577.5 (+5 slack)
@@ -753,14 +754,14 @@ fn stage_margin_top() -> i32 {
 }
 
 /// Reserved pill strip (iter34 a3d): the pill occupies
-/// gap_top..gap_top+24 on screen, so the compositor must never tile a
+/// gap_top..gap_top+28 on screen, so the compositor must never tile a
 /// window under it. The island surface's own exclusive zone reserves
 /// exactly that strip — collapsed or expanded, the zone never changes,
 /// so opening a menu never re-tiles anything (the expanded panel hangs
 /// below the strip and overlays windows like a menu should).
 /// Fullscreen apps are out of scope.
 fn pill_strip_px() -> i32 {
-    cfg().gap_top + 24
+    cfg().gap_top + 28
 }
 
 /// Screen-logical coords of the stage top-left: the layer is anchored
@@ -1835,7 +1836,7 @@ fn layout_text(font: &fontdue::Font, text: &str, px: f32) -> TextRow {
     let mut glyphs = Vec::new();
     let mut width = 0.0f32;
     for ch in text.chars() {
-        let (m, cov) = font.rasterize(ch, px);
+        let (m, cov) = lock_timer::rasterize_cached(font, ch, px);
         width += m.advance_width;
         glyphs.push((m, cov));
     }
@@ -1846,6 +1847,34 @@ fn layout_text(font: &fontdue::Font, text: &str, px: f32) -> TextRow {
         ascent: lm.ascent,
         height: lm.ascent - lm.descent,
     }
+}
+
+/// Inter (A3), parsed once for the process: the pill clock's face. On a
+/// missing/unparsable file this returns None and every caller falls back
+/// to the Quicksand UI font — never a startup panic.
+static CLOCK_FONT: std::sync::OnceLock<Option<fontdue::Font>> = std::sync::OnceLock::new();
+
+fn clock_font() -> Option<&'static fontdue::Font> {
+    CLOCK_FONT
+        .get_or_init(|| {
+            let path = std::env::var_os("HOME")
+                .map(PathBuf::from)?
+                .join(".local/share/fonts/Inter.ttf");
+            match std::fs::read(&path)
+                .ok()
+                .and_then(|b| fontdue::Font::from_bytes(b, fontdue::FontSettings::default()).ok())
+            {
+                Some(f) => Some(f),
+                None => {
+                    eprintln!(
+                        "dynamite-rust: {} missing/unparsable; clock falls back to Quicksand",
+                        path.display()
+                    );
+                    None
+                }
+            }
+        })
+        .as_ref()
 }
 
 fn load_icon_font() -> Option<fontdue::Font> {
@@ -2026,7 +2055,7 @@ fn draw_panel_into(
     }
     match state {
         IslandState::Collapsed => {
-            lock_timer::draw_collapsed(canvas, w, h, font, &hhmm());
+            lock_timer::draw_collapsed(canvas, w, h, clock_font().unwrap_or(font), &hhmm());
         }
         IslandState::Dictation => {
             let bars = *DICTATION_BARS.lock().unwrap();
@@ -2167,6 +2196,76 @@ fn blit_panel(
         let d = ((dy as usize * dst_w as usize) + (ox + x0) as usize) * 4;
         dst[d..d + n].copy_from_slice(&src[s..s + n]);
     }
+}
+
+/// Settled collapsed pill drawn at RENDER_SCALE straight into the 2x shm
+/// buffer (A1): the clock is rasterised at TEXT_PX * RENDER_SCALE and
+/// composited 1:1, so its coverage is never resampled by the 1x -> 2x
+/// upscale (the compositor still downsamples 2x -> 1.5x, once). The
+/// capsule fill repeats draw_panel_into's collapsed path exactly (same
+/// frost sample and formula, same 1-logical-px AA band), so geometry and
+/// margins are untouched and only the glyphs get sharper.
+fn draw_collapsed_pill_2x(canvas: &mut [u8], bw: u32, bh: u32, fallback: &fontdue::Font) {
+    let state = IslandState::Collapsed;
+    let (pw, ph) = state.size();
+    let s = RENDER_SCALE as f32;
+    let (w2, h2) = (pw * RENDER_SCALE, ph * RENDER_SCALE);
+    let (wf, hf) = (pw as f32, ph as f32);
+    let radius = state.radius();
+    let (sox, soy) = stage_screen_origin();
+    let (pox, poy) = panel_origin(state);
+    let bg_origin = (sox + pox, soy + poy);
+    let bg = wallpaper_blur::ensure_loaded();
+    let uniform_bg: [u8; 3] = match &bg {
+        Some(b) => b.sample_frost_uniform(bg_origin.0 + wf / 2.0, bg_origin.1 + hf / 2.0),
+        None => [0, 0, 0],
+    };
+    let mut scratch = vec![0u8; (w2 * h2 * 4) as usize];
+    for y in 0..h2 {
+        for x in 0..w2 {
+            let lx = (x as f32 + 0.5) / s;
+            let ly = (y as f32 + 0.5) / s;
+            let d = rounded_rect_sdf(lx, ly, wf, hf, radius);
+            let a = (0.5 - d).clamp(0.0, 1.0);
+            let p = match &bg {
+                Some(_) => frost_fill_px_blur(
+                    a,
+                    d,
+                    lx,
+                    ly,
+                    wf,
+                    hf,
+                    frost_alpha(state),
+                    uniform_bg,
+                    uniform_bg,
+                ),
+                None => frost_fill_px(a, d, lx, ly, wf, hf, frost_alpha(state)),
+            };
+            let i = ((y * w2 + x) * 4) as usize;
+            scratch[i] = p[2];
+            scratch[i + 1] = p[1];
+            scratch[i + 2] = p[0];
+            scratch[i + 3] = p[3];
+        }
+    }
+    lock_timer::draw_text_centred(
+        &mut scratch,
+        w2,
+        h2,
+        clock_font().unwrap_or(fallback),
+        &hhmm(),
+        lock_timer::TEXT_PX * s,
+    );
+    blit_panel(
+        canvas,
+        bw,
+        bh,
+        &scratch,
+        w2,
+        h2,
+        (pox * s).round() as i32,
+        (poy * s).round() as i32,
+    );
 }
 
 /// Draw the collapsed clock pill at its home position on top of the
@@ -2855,7 +2954,14 @@ fn draw_state_into(
         let px = lock_timer::TEXT_PX * content_scale;
         let (pw, ph) = state.size();
         let mut scratch = vec![0u8; (pw * ph * 4) as usize];
-        lock_timer::draw_text_centred(&mut scratch, pw, ph, font, &hhmm(), px);
+        lock_timer::draw_text_centred(
+            &mut scratch,
+            pw,
+            ph,
+            clock_font().unwrap_or(font),
+            &hhmm(),
+            px,
+        );
         let (ox, oy) = panel_origin(state);
         blit_panel(canvas, w, h, &scratch, pw, ph, ox as i32, oy as i32);
     } else {
@@ -4771,6 +4877,15 @@ impl Island {
         // iter108: upscale the 1x stage into the 2x shm buffer
         // (RENDER_SCALE) — the discs leave here at 32 buffer px.
         upscale_canvas_2x_into(&self.scale_scratch, w, h, canvas);
+        // A1: every settled frame whose topmost element is the collapsed
+        // pill (bare, or over an open menu) replaces that rect with a
+        // 2x-rendered copy, so the clock glyphs skip one resample. Morph
+        // frames own their canvas and keep the old path.
+        let pill_on_top = matches!(self.state, IslandState::Collapsed | IslandState::TrayMenu)
+            || MENU_CYCLE.contains(&self.state);
+        if self.morph.is_none() && pill_on_top {
+            draw_collapsed_pill_2x(canvas, bw, bh, &self.font);
+        }
         let surface = layer.wl_surface();
         // The buffer is RENDER_SCALE x the logical surface size, so
         // advertise buffer_scale 2 (applies on this commit, before the
@@ -6860,18 +6975,18 @@ mod iter30_tests {
 
     #[test]
     fn panel_below_pill_geometry() {
-        // Pill: stage (550, 3), 76x24 -> screen (714, 3), 76x24.
+        // Pill: stage (550, 3), 76x28 -> screen (714, 3), 76x28.
         let (ox, oy, pw, ph) = panel_rect_stage(IslandState::Collapsed);
         assert!((ox - 550.0).abs() < 1e-4, "pill ox {ox}");
         assert!((oy - STAGE_PAD_TOP).abs() < 1e-4, "pill oy {oy}");
-        assert!((pw - 76.0).abs() < 1e-4 && (ph - 24.0).abs() < 1e-4);
-        // Menus: panel top PANEL_TOP_MENU (29) -> screen 0 + 29 = 29,
-        // i.e. 2 px below the pill bottom (3 + 24 = 27).
+        assert!((pw - 76.0).abs() < 1e-4 && (ph - 28.0).abs() < 1e-4);
+        // Menus: panel top PANEL_TOP_MENU (33) -> screen 0 + 33 = 33,
+        // i.e. 2 px below the pill bottom (3 + 28 = 31).
         for state in MENU_CYCLE {
             let (_, moy, _, _) = panel_rect_stage(state);
             assert!((moy - PANEL_TOP_MENU).abs() < 1e-4, "{state:?} oy {moy}");
         }
-        assert!((PANEL_TOP_MENU - (STAGE_PAD_TOP + 24.0 + 2.0)).abs() < 1e-4);
+        assert!((PANEL_TOP_MENU - (STAGE_PAD_TOP + 28.0 + 2.0)).abs() < 1e-4);
     }
 
     // iter90 a8: workspace circles — geometry, hit-test (incl. the
@@ -6883,7 +6998,7 @@ mod iter30_tests {
         assert!((px - 550.0).abs() < 1e-4, "pill x {px}");
         assert!((py - STAGE_PAD_TOP).abs() < 1e-4);
         assert!((pw - 76.0).abs() < 1e-4);
-        assert!((ph - 24.0).abs() < 1e-4);
+        assert!((ph - 28.0).abs() < 1e-4);
         let centres = workspace_disc_centres();
         // Exact centres, left to right (tag 1..4).
         assert_eq!(
@@ -7098,7 +7213,7 @@ mod iter30_tests {
         // iter108-C: the tray row (y 7..23) sits inside the a3d
         // reserved strip (gap_top 3..27) with 4 px spare top/bottom,
         // strictly above the panel top (29) — for any item count.
-        assert_eq!(pill_strip_px(), 27);
+        assert_eq!(pill_strip_px(), 31);
         for n in [1usize, 2, 3, 27] {
             let (rx, ry, rw, rh) = tray_cluster_rect(n).unwrap();
             assert!(ry >= STAGE_PAD_TOP, "tray top {ry} n={n}");
@@ -7224,22 +7339,22 @@ mod iter30_tests {
         // strip ends exactly at the pill bottom (27); the strip never
         // covers panel space (panel top is gap_top + 26 = 29).
         assert_eq!(TOP_MARGIN, 3);
-        assert_eq!(TOP_MARGIN + 24, 27);
-        assert_eq!(pill_strip_px(), TOP_MARGIN + 24);
+        assert_eq!(TOP_MARGIN + 28, 31);
+        assert_eq!(pill_strip_px(), TOP_MARGIN + 28);
     }
 
     #[test]
     fn discs_at_panel_midheight() {
-        // (state, expected disc cy): oy 29 + h/2 (iter89: panel top
-        // 31 -> 29, Calendar PANEL_H 280 -> 262, CC_H 401 -> 447 (iter109: power row).
+        // (state, expected disc cy): oy 33 + h/2 (A2: panel top 33,
+        // Calendar PANEL_H 280 -> 266, CC_H 401 -> 451 (iter109: power row).
         let cases = [
-            (IslandState::Music, 104.0),
-            (IslandState::Power, 104.0),
-            (IslandState::Calendar, 160.0), // 29 + 262/2
-            (IslandState::ControlCenter, 252.5), // 29 + 447/2
-            (IslandState::Launcher, 212.0),
-            (IslandState::Wallpaper, 164.0),
-            (IslandState::Themes, 212.0),
+            (IslandState::Music, 108.0),
+            (IslandState::Power, 108.0),
+            (IslandState::Calendar, 164.0), // 33 + 262/2
+            (IslandState::ControlCenter, 256.5), // 33 + 447/2
+            (IslandState::Launcher, 216.0),
+            (IslandState::Wallpaper, 168.0),
+            (IslandState::Themes, 216.0),
         ];
         for (state, want_cy) in cases {
             let ((lx, ly), (rx, ry)) = nav_disc_centres(state);
@@ -7255,12 +7370,12 @@ mod iter30_tests {
     #[test]
     fn morph_capsule_oy_interpolates_pill_to_panel() {
         assert_eq!(morph_capsule_oy(IslandState::Collapsed, IslandState::Music, 0.0), 3.0);
-        assert_eq!(morph_capsule_oy(IslandState::Collapsed, IslandState::Music, 1.0), 29.0);
-        assert_eq!(morph_capsule_oy(IslandState::Collapsed, IslandState::Music, 0.5), 16.0);
+        assert_eq!(morph_capsule_oy(IslandState::Collapsed, IslandState::Music, 1.0), 33.0);
+        assert_eq!(morph_capsule_oy(IslandState::Collapsed, IslandState::Music, 0.5), 18.0);
         // Overshoot clamps: the top edge lands exactly on the target.
-        assert_eq!(morph_capsule_oy(IslandState::Collapsed, IslandState::Music, 1.3), 29.0);
+        assert_eq!(morph_capsule_oy(IslandState::Collapsed, IslandState::Music, 1.3), 33.0);
         // Menu -> menu: top stays at the panel origin.
-        assert_eq!(morph_capsule_oy(IslandState::Music, IslandState::Calendar, 0.5), 29.0);
+        assert_eq!(morph_capsule_oy(IslandState::Music, IslandState::Calendar, 0.5), 33.0);
         // Collapse: back to the pill top.
         assert_eq!(morph_capsule_oy(IslandState::Music, IslandState::Collapsed, 1.0), 3.0);
     }
