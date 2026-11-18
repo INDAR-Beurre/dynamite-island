@@ -19,6 +19,7 @@ Exit code 0 only if every group passed.
 """
 
 import argparse
+import glob
 import os
 import re
 import socket
@@ -1184,4 +1185,28 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    # Critic #11: an interrupt left the panel parked in whatever state the
+    # current group had driven it to, and left screenshot scratch behind.
+    # Restore the resting state and clean up on EVERY exit path, including
+    # Ctrl-C and an unhandled exception. Never send `quit`.
+    rc = 1
+    try:
+        rc = main()
+    except KeyboardInterrupt:
+        print("\nINTERRUPTED")
+        rc = 130
+    finally:
+        try:
+            s = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+            s.sendto(b"collapsed", os.path.join(
+                os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"),
+                "dynamite-rust.sock"))
+            s.close()
+        except OSError:
+            pass
+        for f in glob.glob(os.path.join(tempfile.gettempdir(), "stress-*.png")):
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+    sys.exit(rc)
