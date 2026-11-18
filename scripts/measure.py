@@ -92,6 +92,12 @@ def pill_bbox(a: np.ndarray) -> dict | None:
     x0 = min(r[1] for r in rows); x1 = max(r[2] for r in rows)
     y0, y1 = min(ys), max(ys)
     w, h = x1 - x0 + 1, y1 - y0 + 1
+    # A box that starts at y=0 and fills the scan window is a fullscreen dark
+    # surface (lockscreen, a dark app), not the capsule. Scoring it as a pill
+    # produced a bogus "220x220, aspect 1.0" reading that critics would quote.
+    if y0 == 0 and x0 <= lo and x1 >= hi - 1:
+        return {"not_collapsed": True, "x": x0, "y": y0, "w": w, "h": h,
+                "reason": "dark surface fills the scan window from y=0"}
     return {"x": x0, "y": y0, "w": w, "h": h,
             "cx": (x0 + x1) / 2, "cy": (y0 + y1) / 2,
             "aspect": round(w / h, 3) if h else None,
@@ -107,6 +113,18 @@ def lapvar(a: np.ndarray, box) -> dict | None:
         return None
     lap = np.abs(4 * g[1:-1, 1:-1] - g[:-2, 1:-1] - g[2:, 1:-1] - g[1:-1, :-2] - g[1:-1, 2:])
     return {"lapvar": round(float(lap.var()), 1), "lapmean": round(float(lap.mean()), 2)}
+
+
+def screen_relative(a: np.ndarray, bb: dict) -> dict:
+    """Position/size as fractions of the SCREEN, not of the pill.
+
+    Every earlier metric was pill-relative, so a pill hugging the top edge
+    scored perfectly. Reference: gap 1.319% of height, width 4.336% of width.
+    """
+    H, W = a.shape[:2]
+    return {"gap_top_pct": round(bb["y"] / H * 100, 3),
+            "width_pct": round(bb["w"] / W * 100, 3),
+            "height_pct_screen": round(bb["h"] / H * 100, 3)}
 
 
 def ink_metrics(a: np.ndarray, bb: dict) -> dict | None:
@@ -170,11 +188,18 @@ def main() -> int:
     out = {"png": str(png), "screen": {"w": W, "h": H}}
     bb = pill_bbox(a)
     out["pill"] = bb
-    if bb:
+    if bb and bb.get("not_collapsed"):
+        # Refuse to score a frame that is not the collapsed pill: geometry and
+        # sharpness gates are meaningless on a lockscreen or an open panel.
+        out["state"] = "not-collapsed"
+        out["note"] = ("no geometry/sharpness gates emitted; drive `collapsed` "
+                       "and re-measure in a quiet window")
+    elif bb:
         gx0 = bb["x"] + int(bb["w"] * 0.22); gx1 = bb["x"] + int(bb["w"] * 0.78)
         gy0 = bb["y"] + int(bb["h"] * 0.25); gy1 = bb["y"] + int(bb["h"] * 0.78)
         out["glyphs"] = lapvar(a, (gx0, gy0, gx1, gy1))
         out["ink"] = ink_metrics(a, bb)
+        out["screen"] = screen_relative(a, bb)
         out["edge"] = edge_ramp(a, (bb["x"], bb["y"], 0, bb["y"] + bb["h"]))
     out.update(proc_stats(pid()))
     print(json.dumps(out, indent=2))
