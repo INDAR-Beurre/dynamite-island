@@ -76,10 +76,11 @@
 //!   critic's ±0.5 tolerance (sub-logical nudges quantise to physical rows
 //!   at scale 1.5, so do not chase it).
 //!
-//! => `CLOCK_PX` / `TEXT_PX` must be **17.0**, not 13.0.
-//! (Weight-independence note: the calc is for the default Light-300
-//! instance fontdue loads; switching to a Bold static file keeps cap
-//! height 700, so 17.0 still holds.)
+//! => `CLOCK_PX` / `TEXT_PX` = **13.4** with Inter (iter126): Inter's
+//! cap height is 1490/2048 em = 0.7275, so 13.4 px gives 9.75 px of digit
+//! ink in the 28 px pill = ratio 0.348, inside the reference's 0.333 ± 0.03.
+//! The old 17.0 was derived for Quicksand's 0.70 cap in a 24 px pill
+//! (ratio 0.50 — 46% oversized against the reference).
 //!
 //! # (c) Wiring into main.rs
 //!
@@ -99,7 +100,7 @@
 //! // no 1 s tick — the clock needs no per-second redraw.
 //! ```
 //!
-//! CLOCK_PX: 13.0 -> lock_timer::TEXT_PX (17.0).
+//! CLOCK_PX: 13.0 -> lock_timer::TEXT_PX (13.4).
 
 // ---------------------------------------------------------------------------
 // Sizes
@@ -109,11 +110,13 @@
 pub const LOCK_W: u32 = 54;
 pub const LOCK_H: u32 = 24;
 
-/// Corrected text size for the collapsed pill (clock only — there
-/// is no timer; see the module docs (b)).
-/// Derivation: see the module docs — 13.0 gives digit height ~9 px
-/// (ratio 0.36–0.39), 17.0 gives ~12 px (ratio 0.50–0.53).
-pub const TEXT_PX: f32 = 17.0;
+/// Clock size for the collapsed pill (iter126): Inter cap height
+/// 1490/2048 em × 13.4 px = 9.75 px ink in a 28 px pill (ratio 0.348,
+/// reference 0.333 ± 0.03). Was 17.0 for Quicksand's 0.70 cap in 24 px.
+pub const TEXT_PX: f32 = 13.4;
+/// Negative tracking between glyphs, logical px (reference is tight;
+/// the old advance-width layout read loose at display sizes).
+pub const TRACKING: f32 = -0.4;
 /// Alias kept so call sites can name the intent.
 pub const CLOCK_PX: f32 = TEXT_PX;
 
@@ -231,6 +234,11 @@ pub fn draw_text_centred(
         width += m.advance_width;
         glyphs.push((m, cov));
     }
+    // Tighten tracking between glyphs (not after the last one).
+    let tracking = TRACKING * (px / TEXT_PX);
+    if glyphs.len() > 1 {
+        width += tracking * (glyphs.len() - 1) as f32;
+    }
     let lm = match font.horizontal_line_metrics(px) {
         Some(lm) => lm,
         None => return,
@@ -238,7 +246,7 @@ pub fn draw_text_centred(
     let height = lm.ascent - lm.descent;
     let baseline = (hf - height) / 2.0 + lm.ascent;
     let mut pen = (wf - width) / 2.0;
-    for (m, cov) in &glyphs {
+    for (gi, (m, cov)) in glyphs.iter().enumerate() {
         let gx0 = (pen + m.xmin as f32).round() as i32;
         let gy0 = (baseline - m.ymin as f32 - m.height as f32).round() as i32;
         for gy in 0..m.height as i32 {
@@ -260,6 +268,9 @@ pub fn draw_text_centred(
             }
         }
         pen += m.advance_width;
+        if gi + 1 < glyphs.len() {
+            pen += tracking;
+        }
     }
 }
 

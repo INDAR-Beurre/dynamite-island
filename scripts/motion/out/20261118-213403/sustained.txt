@@ -1,0 +1,23 @@
+== motion capture analysis: /home/alex/rust-island-build/scripts/motion/out/20261118-213403/sustained
+
+FRAMES      requested 60  captured 61  drop -1.7%
+INTERVAL    median 49.9 ms   mean 49.9 ms   p95 54.2 ms   (grim itself: 31.7 ms median)  => 20.0 fps achieved
+LOAD        1-min loadavg at start 3.64 on 8 cores
+CROP        device px 0,0 -> 450,225  (450x225)
+
+DELTA       median(nonzero) 10.105  max 33.492  spike thr 18.189
+HISTOGRAM of consecutive-frame mean-abs delta
+          0-0.05    54 ######################################################
+       0.05-0.25     0 
+        0.25-0.5     0 
+           0.5-1     0 
+             1-2     0 
+             2-4     0 
+             4-8     1 #
+            8-16     4 ####
+          16-inf     1 #
+
+DUPLICATES  54 frame(s) identical to predecessor (stalled redraw if mid-animation)
+            idx: 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 52, 54, 55, 56, 57, 59
+SPIKES      1 jump(s) > 18.189 (skipped intermediate frame)
+            idx   58  delta 33.492

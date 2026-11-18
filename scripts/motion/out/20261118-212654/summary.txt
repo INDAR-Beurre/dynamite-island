@@ -1,0 +1,20 @@
+
+================================ SUMMARY ================================
+outdir                     /home/alex/rust-island-build/scripts/motion/out/20261118-212654
+region (logical px)        600,0,900,150
+requested fps              20
+------------------------------------------------------------------------
+                           SETTLED (5 s)          TRANSITION (4 s)
+frames captured            101  drop -1.0%        81  drop -1.2%
+drop rate                  -1.0%                  -1.2%
+achieved fps (from intervals) 20.0 fps achieved      20.0 fps achieved
+interval median / p95 ms   )  => 20.0 fps achieved )  => 20.0 fps achieved
+duplicate frames (delta~0) 99 frame(s) identical to predecessor (stalled redraw if mid-animation) 77 frame(s) identical to predecessor (stalled redraw if mid-animation)
+spike frames (skipped)     0 jump(s) > 0.571 (skipped intermediate frame) 1 jump(s) > 11.186 (skipped intermediate frame)
+------------------------------------------------------------------------
+READ THIS AS: the SETTLED column is the control. Any duplicate or spike
+there is measurement noise, not a panel fault (a static pill cannot
+redraw). Subtract that noise from the TRANSITION column before blaming
+the animation. Duplicates in TRANSITION that fall INSIDE the 160 ms morph
+are real stalled redraws; duplicates before/after it are just stillness.
+Full reports: /home/alex/rust-island-build/scripts/motion/out/20261118-212654/settled.txt  /home/alex/rust-island-build/scripts/motion/out/20261118-212654/morph.txt
