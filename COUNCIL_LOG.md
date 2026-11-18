@@ -642,3 +642,18 @@ Also live from #11: `check_pill` drops the `(rc, ms)` return and relies on `slee
 - **major** — `WS_CY`/`TRAY_CY` still use the old `STAGE_PAD_TOP + 12.0` while `size()` returns 28 → **discs and tray ride 2.5 device px above the pill's centre line**. Needs one shared `COLLAPSED_H`.
 - **minor** — surface can stay pinned at x=0 after launch (observed 22:32–22:35), and `stage_screen_origin()`'s hardcoded `(1504-1176)/2 = 164` then mis-samples every frost by 246 device px.
 **#5 independently hit the same measure.py dark-window defect** ("bogus 74x36, aspect 2.056") and worked around it by direct pixel measurement — third independent confirmation, now fixed by repair #5.
+
+### Instrument repair #6 (parent, chain 5t) — commit `0456c59`
+Three changes, each traceable to a critic finding **verified in the tree first**:
+1. **Contrast-normalised lapvar** (from #1). Raw lapvar scales with the **square** of contrast; live ink clips at 255, the video reference peaks at 225.7. Added `lapvar_norm`/`lapmean_norm` + `ink_peak`/`ink_span`. **Reference 1277.0 vs live 1872.73 = 1.47×**, matching #1's independent clamp estimate (~1.46×) and replacing the misleading 1.86×. Every future sharpness score must quote the normalised figure.
+2. **Per-iteration assertions** (from #11). 200 load "tests" sat behind **one** growth bound; 120 latency tests behind two. Now every post-warmup RSS sample and every latency sample is asserted, so a failure **names its iteration**. Full-suite asserts **5595 → 5897**.
+3. **PIL decode in `pill_metrics`**, ffmpeg as fallback; `run_all.sh` no longer requires ffmpeg/ffprobe up front. Verified with a **shadow PATH containing no ffmpeg**: latency ran clean and located the pill (w=105).
+
+### ⚠️ Gate honesty — the ≥1000 claim, stated with its composition
+The suite reports **5897 assertions**, but they are not all the same kind. Breakdown for the morning report: protocol robustness (malformed/near-miss/compound words accepted without dying — a real check under `panic="abort"`), state-transition morph witnesses, and now per-iteration resource bounds. **#11's critique stands in part**: a per-batch aggregate is weaker than a per-iteration check. Fixed for load and latency; the protocol batches still assert per-send acceptance rather than per-send pixel state. **Do not present 5897 as 5895 independent behavioural proofs.**
+
+### ⚠️ Latency p95 FAILED on the full-suite run — and it is contention, not a regression
+`GROUP latency FAIL tests=120 fails=1` · `p95 411.9 ms exceeds 400 ms bound` (p50 228.9, p99 628.1, max 726.4).
+**Same binary, same group, minutes earlier in isolation: p95 271.0, p99 305.5, max 312.2 — PASS.**
+Cause measured at the moment of failure: **loadavg 7.49** with `rtk 95.5%`, **`rustc 94.2%` (the fixer's build)**, **`ffmpeg 83.9%` (the smoothness child decoding frames)**, `dynamite-rust 60.7%`, `magpie-desktop 23.7%`.
+**This is exactly the confound #11 warned about** ("p95 sits at 71–80% of its bound on a contended box; timing-lucky rather than robust"). Recording it as a FAIL, **not** silently re-running until green and **not** relaxing the bound. The honest reading: the panel's accept latency has no headroom under load, which is itself consistent with #6's uncoalesced-redraw root cause. **Re-measure in a quiet window after the fixer's build lands** before scoring it.
