@@ -757,3 +757,20 @@ The mic stream is no longer back-pressured. Mechanism verified in the tree: `dra
 | RSS MB | 44.2 | 33.7 | 31.5 | **33.1** | — |
 | idle CPU % | 2.0–9.0 | 10.0 | 3.0 | **1.0** | — |
 Geometry is now within **1.8%** on aspect and **1.7%** on cap ratio. **Weight overshot**: 0.154 → 0.231 passed the 0.200 target, so the remaining sharpness gap (lapvar_norm 37.8% high) is now **too heavy**, not too thin — the opposite defect from the one the round started with. That is the next fixer's headline, and it is a small numeric correction, not a redesign.
+
+### ★ r1c headline blocker — morph paints at ~16 fps (chain 7t, with a self-correction)
+**Motion re-run with real compositor PTS** (`scripts/motion/run_all.sh /tmp/motion-r1b 1`), instrument stage **FAILED** two gates: `morph_poses = 2` (needs ≥8), `pose_hold_median_ms = 91.6` (needs ≤24 ms).
+The height trace is the evidence: `35×7, 37×8, 84×…` — two long holds, then one jump. **Three independent capture methods agree**: grim transition 3 poses (score 38.0), recorded CFR 60 Hz **3 poses / 234 ms** (26.5), recorded VFR 3 poses / 229 ms (31.2). Target 10 poses = one per 16.7 ms over a 160 ms morph. Other gates PASS: effective fps 60.0, dropped ratio 0.0, edge ramp 1.0 px.
+
+**SELF-CORRECTION #8 — my first root cause was wrong.** I wrote "coalescing turned the morph into a teleport" and "the perf fix traded CPU for motion completeness". **Both are false and are retracted.** Arithmetic refutes them: a 160 ms morph at 60 Hz still paints ~9–10 frames under perfect coalescing, because each ack immediately triggers the pending redraw. Coalescing cannot turn 10 poses into 3. Had a fixer read that note it would have "fixed" the frame callback and made things worse.
+
+**Verified root cause — each paint costs longer than three display frames.** `src/main.rs:5335`: `if frame_running { upscale_canvas_2x_into(&self.scale_scratch, w, h, canvas) }` — a morph frame upscales the **full 1176×636 stage**. My own benchmark measured that at **62.10 ms**. **160 ms ÷ 62 ms = 2.6 paints**, matching the observed 2–3 poses and the two-holds-then-jump trace exactly.
+And it is not just the upscale — per morph frame the code also does `stage_1x.fill(0)` (`src/main.rs:5255`) plus **two more stage-sized buffers** `morph_scratch_from` / `morph_scratch_to`, each `(w*h*4)` = **2.99 MB**, each `.fill(0)` (`src/main.rs:5271-5281`). **~9 MB of zeroing + a 62 ms upscale per frame**, to draw a capsule occupying a few thousand pixels.
+
+**The back-pressure fix is CORRECT and did not cause this.** Before r1b the same slowness existed but was masked by queueing 400 unpresentable redraws at 103% CPU. r1b removed the waste and thereby *exposed* the real cost. Keep the frame callback exactly as it is.
+
+**Fix shape for r1c, priority order:**
+1. On morph frames, upscale only the **union of changed rects** (the from/to capsule rects plus damage), not the whole stage. **Constraint: do not assume the stage is static mid-morph** — `src/main.rs:5343` says "Morph frames own their canvas and keep the old path", so the fixer must verify what actually changes per frame and cover it, or stale pixels will appear.
+2. Stop zeroing three stage-sized buffers per frame; size the scratch to the rects actually drawn.
+3. Adopt the proven bit-exact hoisted upscale (**1.61×**, `scripts/perf/upscale_bench.rs`) for whatever region remains.
+**Testable prediction:** 62 ms → sub-5 ms per paint ⇒ **10 poses at 60 Hz**. The motion harness confirms or refutes it; do not accept a claim without the pose count.
