@@ -198,7 +198,7 @@ impl IslandState {
     }
     fn size(self) -> (u32, u32) {
         match self {
-            Self::Collapsed => (cfg().collapsed_width, PILL_H),
+            Self::Collapsed => (cfg().collapsed_width, 24),
             Self::Dictation => (220, 64),
             Self::Lock => (54, 24),
             Self::Power => (400, cfg().expanded_height),
@@ -215,8 +215,7 @@ impl IslandState {
     }
     fn radius(self) -> f32 {
         match self {
-            Self::Collapsed => PILL_H as f32 / 2.0,
-            Self::Lock => 12.0,
+            Self::Collapsed | Self::Lock => 12.0,
             Self::Dictation => 20.0,
             // Fullscreen rect: square corners, no capsule.
             Self::Lockscreen => 0.0,
@@ -231,7 +230,7 @@ impl IslandState {
 // ~/.config/dynamite-rust/config.conf (key=value, one per line, `#`
 // comments). The Dynamite Settings app writes this file; unknown keys
 // are ignored here and preserved there. Keys:
-//   collapsed_width  u32  40..=600    default 74    (Collapsed size)
+//   collapsed_width  u32  40..=600    default 76    (Collapsed size)
 //   expanded_height  u32  60..=800    default 150   (Power/Music height)
 //   gap_top          i32  0..=200     default 3     (layer top margin)
 //   inner_padding    f32  0..=64      default 14.0  (panel inner pad;
@@ -266,7 +265,7 @@ struct IslandConfig {
 
 impl IslandConfig {
     const DEFAULT: Self = Self {
-        collapsed_width: 74,
+        collapsed_width: 76,
         expanded_height: 150,
         gap_top: TOP_MARGIN,
         inner_padding: 14.0,
@@ -461,7 +460,7 @@ const STAGE_PAD_TOP: f32 = 3.0;
 /// BELOW the pill instead of swallowing it — pill top STAGE_PAD_TOP
 /// (screen gap_top 3), 24 tall, then a 4 px gap, so the panel top
 /// is 3 + 24 + 2 = 29 (screen 29). Pill states keep STAGE_PAD_TOP.
-const PANEL_TOP_MENU: f32 = STAGE_PAD_TOP + PILL_H as f32 + 2.0;
+const PANEL_TOP_MENU: f32 = STAGE_PAD_TOP + 24.0 + 2.0;
 /// Fixed stage surface size (see the sizing note above).
 const STAGE_W: u32 = (1100.0 + 2.0 * STAGE_PAD_X) as u32;
 /// 636 = menu top 31 + ControlCenter overshoot height 577.5 (+5 slack)
@@ -469,32 +468,6 @@ const STAGE_W: u32 = (1100.0 + 2.0 * STAGE_PAD_X) as u32;
 /// shadow bottom is 29 + 447 + 15 = 461, the morph-overshoot shadow
 /// bottom 31 + 577.5 + 15 = 623.5.
 const STAGE_H: u32 = 636;
-
-/// Collapsed-pill height (logical px). iter126: 28 → 42 device px at
-/// RENDER_SCALE 2, matching the reference capsule (42 device tall,
-/// aspect 2.67). Was 24, which with Quicksand at 17 px put the glyph ink
-/// at 0.486 of the pill height (reference 0.333) — the "chunky" look.
-const PILL_H: u32 = 28;
-
-/// The UI face, parsed ONCE for the process (iter126). Inter.ttf is a
-/// variable font and fontdue 0.9 exposes no axis access, so this renders
-/// its default (Regular) instance — not weight 500.
-static UI_FONT: std::sync::OnceLock<fontdue::Font> = std::sync::OnceLock::new();
-
-fn ui_font() -> &'static fontdue::Font {
-    UI_FONT.get_or_init(|| {
-        let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
-        ["Inter.ttf", "Quicksand-Bold.ttf", "Quicksand.ttf"]
-            .iter()
-            .find_map(|name| {
-                let path = home.join(".local/share/fonts").join(name);
-                std::fs::read(&path).ok().and_then(|b| {
-                    fontdue::Font::from_bytes(b, fontdue::FontSettings::default()).ok()
-                })
-            })
-            .expect("no UI font file parses (want Inter.ttf)")
-    })
-}
 
 /// Render scale (iter108, circles-roundness): the stage is drawn at
 /// logical 1x into a scratch canvas and then upscaled 2x into the shm
@@ -556,56 +529,6 @@ pub(crate) fn upscale_canvas_2x_into(src: &[u8], w: u32, h: u32, dst: &mut [u8])
                 let s10 = src[(y1 * w + x0) * 4 + c] as u32;
                 let s11 = src[(y1 * w + x1) * 4 + c] as u32;
                 // Horizontal first (rounded), then vertical (rounded).
-                let top = (wx0 * s00 + wx1 * s01 + 2) / 4;
-                let bot = (wx0 * s10 + wx1 * s11 + 2) / 4;
-                dst[di + c] = ((wy0 * top + wy1 * bot + 2) / 4) as u8;
-            }
-        }
-    }
-}
-
-/// Rect-limited variant of [`upscale_canvas_2x_into`] (F3, iter126):
-/// identical exact-2x bilinear taps, but only the device pixels of the
-/// logical rect (x0,y0)-(x1,y1) are written. Taps may read outside the
-/// rect (they are clamped to the stage); the caller guarantees the rest
-/// of `dst` already holds a frame of the same state.
-pub(crate) fn upscale_canvas_2x_rect_into(
-    src: &[u8],
-    w: u32,
-    h: u32,
-    dst: &mut [u8],
-    x0: u32,
-    y0: u32,
-    x1: u32,
-    y1: u32,
-) {
-    let (w, h) = (w as usize, h as usize);
-    if w == 0 || h == 0 {
-        return;
-    }
-    let bw = 2 * w;
-    let (x0, x1) = ((x0 as usize).min(w), (x1 as usize).min(w));
-    let (y0, y1) = ((y0 as usize).min(h), (y1 as usize).min(h));
-    for dy in y0 * 2..y1 * 2 {
-        let j = dy / 2;
-        let (sy0, sy1, wy0, wy1) = if dy % 2 == 0 {
-            (j.saturating_sub(1), j, 1u32, 3u32)
-        } else {
-            (j, (j + 1).min(h - 1), 3u32, 1u32)
-        };
-        for dx in x0 * 2..x1 * 2 {
-            let i = dx / 2;
-            let (sx0, sx1, wx0, wx1) = if dx % 2 == 0 {
-                (i.saturating_sub(1), i, 1u32, 3u32)
-            } else {
-                (i, (i + 1).min(w - 1), 3u32, 1u32)
-            };
-            let di = (dy * bw + dx) * 4;
-            for c in 0..4 {
-                let s00 = src[(sy0 * w + sx0) * 4 + c] as u32;
-                let s01 = src[(sy0 * w + sx1) * 4 + c] as u32;
-                let s10 = src[(sy1 * w + sx0) * 4 + c] as u32;
-                let s11 = src[(sy1 * w + sx1) * 4 + c] as u32;
                 let top = (wx0 * s00 + wx1 * s01 + 2) / 4;
                 let bot = (wx0 * s10 + wx1 * s11 + 2) / 4;
                 dst[di + c] = ((wy0 * top + wy1 * bot + 2) / 4) as u8;
@@ -837,7 +760,7 @@ fn stage_margin_top() -> i32 {
 /// below the strip and overlays windows like a menu should).
 /// Fullscreen apps are out of scope.
 fn pill_strip_px() -> i32 {
-    cfg().gap_top + PILL_H as i32
+    cfg().gap_top + 24
 }
 
 /// Screen-logical coords of the stage top-left: the layer is anchored
@@ -918,7 +841,7 @@ const WS_GAP_PILL: f32 = 4.0;
 /// Edge-to-edge gap between neighbouring circles.
 const WS_GAP_CIRCLE: f32 = 4.0;
 /// Circle centre line = pill centre line (STAGE_PAD_TOP + 24/2 = 15).
-const WS_CY: f32 = STAGE_PAD_TOP + PILL_H as f32 / 2.0;
+const WS_CY: f32 = STAGE_PAD_TOP + 12.0;
 /// Number glyph size inside a circle (iter92: digit ~8 px tall at
 /// 11.0 em — ~0.5 x the Ø16 disc, same ratio as the old Ø28/14 em).
 const WS_NUMBER_PX: f32 = 11.0;
@@ -1028,7 +951,7 @@ const TRAY_GAP_PILL: f32 = 4.0;
 /// Edge-to-edge gap between neighbouring tray icons.
 const TRAY_GAP_ICON: f32 = 4.0;
 /// Tray icon centre line = pill centre line (same as WS_CY).
-const TRAY_CY: f32 = STAGE_PAD_TOP + PILL_H as f32 / 2.0;
+const TRAY_CY: f32 = STAGE_PAD_TOP + 12.0;
 /// Step between neighbouring tray icon centres (16 + 4).
 const TRAY_STEP: f32 = TRAY_ICON_D + TRAY_GAP_ICON;
 
@@ -1908,50 +1831,11 @@ struct TextRow {
     height: f32,
 }
 
-// F5 (iter126): bounded glyph-coverage cache. `layout_text` used to call
-// `font.rasterize` for every visible glyph on every frame (and the morph
-// path calls it per animation frame), which is pure repeated work for a
-// fixed face. Keyed by (face address, char, px bits) so the UI and icon
-// faces cannot alias each other; FIFO eviction at 256 entries — the live
-// working set is well under 50 (clock + workspace digits + tray).
-const GLYPH_CACHE_CAP: usize = 256;
-struct GlyphCache {
-    map: std::collections::HashMap<(usize, u32, u32), (fontdue::Metrics, Vec<u8>)>,
-    order: std::collections::VecDeque<(usize, u32, u32)>,
-}
-static GLYPH_CACHE: std::sync::OnceLock<std::sync::Mutex<GlyphCache>> = std::sync::OnceLock::new();
-
-fn rasterize_cached(font: &fontdue::Font, ch: char, px: f32) -> (fontdue::Metrics, Vec<u8>) {
-    let key = (font as *const fontdue::Font as usize, ch as u32, px.to_bits());
-    let cache = GLYPH_CACHE.get_or_init(|| {
-        std::sync::Mutex::new(GlyphCache {
-            map: std::collections::HashMap::new(),
-            order: std::collections::VecDeque::new(),
-        })
-    });
-    if let Ok(mut c) = cache.lock() {
-        if let Some(hit) = c.map.get(&key) {
-            return hit.clone();
-        }
-    }
-    let (m, cov) = font.rasterize(ch, px);
-    if let Ok(mut c) = cache.lock() {
-        if c.map.len() >= GLYPH_CACHE_CAP {
-            if let Some(old) = c.order.pop_front() {
-                c.map.remove(&old);
-            }
-        }
-        c.order.push_back(key);
-        c.map.insert(key, (m, cov.clone()));
-    }
-    (m, cov)
-}
-
 fn layout_text(font: &fontdue::Font, text: &str, px: f32) -> TextRow {
     let mut glyphs = Vec::new();
     let mut width = 0.0f32;
     for ch in text.chars() {
-        let (m, cov) = rasterize_cached(font, ch, px);
+        let (m, cov) = font.rasterize(ch, px);
         width += m.advance_width;
         glyphs.push((m, cov));
     }
@@ -2591,9 +2475,41 @@ fn draw_workspace_disc(
     font: &fontdue::Font,
     label: &str,
 ) {
-    // iter126: no drop shadow on the workspace marks. The blurred halo
-    // read as decoration / glow next to the capsule; the reference's
-    // indicators are flat marks. The nav discs keep their shadow.
+    // Drop shadow (iter26), drawn first so the disc covers the overlap.
+    // Supersampled (iter109): the shadow alpha is the mean of
+    // disc_shadow_alpha_r over the SS x SS sub-grid, so the soft
+    // shadow edge has no 1 px stairstep either.
+    {
+        let (sx, sy) = (cx + DISC_SHADOW_OFF.0, cy + DISC_SHADOW_OFF.1);
+        let m = WS_DISC_R + DISC_SHADOW_BLUR + 1.0;
+        let x0 = ((sx - m).floor() as i32).max(0);
+        let x1 = ((sx + m).ceil() as i32).min(w as i32);
+        let y0 = ((sy - m).floor() as i32).max(0);
+        let y1 = ((sy + m).ceil() as i32).min(h as i32);
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let mut a_sum = 0.0f32;
+                for sub_y in 0..WS_DISC_SS {
+                    for sub_x in 0..WS_DISC_SS {
+                        let ox = (sub_x as f32 + 0.5) / WS_DISC_SS as f32 - 0.5;
+                        let oy = (sub_y as f32 + 0.5) / WS_DISC_SS as f32 - 0.5;
+                        a_sum += disc_shadow_alpha_r(
+                            x as f32 + 0.5 + ox,
+                            y as f32 + 0.5 + oy,
+                            cx,
+                            cy,
+                            WS_DISC_R,
+                        );
+                    }
+                }
+                let a = a_sum / (WS_DISC_SS * WS_DISC_SS) as f32;
+                if a > 0.0 {
+                    let i = (((y as u32 * w) + x as u32) * 4) as usize;
+                    composite_black_shadow(canvas, i, a);
+                }
+            }
+        }
+    }
     let (fr, fg, fb) = if active {
         WS_ACTIVE_FILL
     } else {
@@ -2709,138 +2625,6 @@ fn draw_workspace_disc(
 /// Draw all four workspace circles into the stage canvas (iter90 a8).
 /// `active_tag` is the cached mango tag (1..=9); only 1..=4 ever
 /// matches a circle — a tag 5..9 leaves every circle inactive.
-/// F3 (iter126): paint the dictation panel straight into the 2x buffer at
-/// device resolution, skipping the whole-stage draw AND the bilinear
-/// upscale for every microphone packet. `render_pill` is scale-derived
-/// (`s = width / SURF_W`), so handing it the 2x panel rect produces the same
-/// picture. Returns the device damage rect, None when it has no area.
-fn draw_dictation_device(
-    dst: &mut [u8],
-    bw: u32,
-    bh: u32,
-    scratch: &mut Vec<u8>,
-) -> Option<(i32, i32, i32, i32)> {
-    let (x0, y0, pw, ph) = panel_rect_stage(IslandState::Dictation);
-    let s = RENDER_SCALE as f32;
-    let rx = (x0 * s).round() as i32;
-    let ry = (y0 * s).round() as i32;
-    let rw = (pw * s).round() as u32;
-    let rh = (ph * s).round() as u32;
-    if rw == 0 || rh == 0 {
-        return None;
-    }
-    let need = (rw * rh * 4) as usize;
-    if scratch.len() != need {
-        scratch.resize(need, 0);
-    }
-    scratch.fill(0);
-    let bars = *DICTATION_BARS.lock().unwrap();
-    dictation_canvas::render_pill(scratch, rw, rh, &bars, 0.0, 1.0, 1.0);
-    let dx0 = rx.max(0);
-    let dx1 = (rx + rw as i32).min(bw as i32);
-    let len = ((dx1 - dx0).max(0) as u32 * 4) as usize;
-    if len == 0 {
-        return None;
-    }
-    for row in 0..rh as i32 {
-        let dy = ry + row;
-        if dy < 0 || dy >= bh as i32 {
-            continue;
-        }
-        let so = (row as u32 * rw) as usize * 4 + ((dx0 - rx) as u32 * 4) as usize;
-        let dof = ((dy as u32 * bw) as i32 + dx0) as usize * 4;
-        dst[dof..dof + len].copy_from_slice(&scratch[so..so + len]);
-    }
-    Some((dx0, ry, dx1 - dx0, rh as i32))
-}
-
-/// F2 (iter126): repaint the collapsed capsule + clock at DEVICE
-/// resolution into the 2x buffer, replacing the bilinearly upscaled
-/// copy. Capsule coverage and glyph coverage are both generated at 2x
-/// and never resampled by the app; the compositor's single 2 -> 1.5
-/// downsample is the only resample left. The capsule is REPLACED
-/// (premultiplied black, A = coverage) rather than composited over the
-/// smeared upscale, so the old soft edge is discarded.
-fn draw_clock_device(canvas: &mut [u8], bw: u32, bh: u32, font: &fontdue::Font, text: &str) {
-    let (x0, y0, pw, ph) = panel_rect_stage(IslandState::Collapsed);
-    let s = RENDER_SCALE as f32;
-    let rx = (x0 * s).round() as i32;
-    let ry = (y0 * s).round() as i32;
-    let rw = (pw * s).round() as i32;
-    let rh = (ph * s).round() as i32;
-    if rw <= 0 || rh <= 0 || text.is_empty() {
-        return;
-    }
-    let (fw, fh) = (rw as f32, rh as f32);
-    for y in (ry - 1).max(0)..(ry + rh + 1).min(bh as i32) {
-        for x in (rx - 1).max(0)..(rx + rw + 1).min(bw as i32) {
-            let a = rounded_rect_alpha(
-                x as f32 + 0.5 - rx as f32,
-                y as f32 + 0.5 - ry as f32,
-                fw,
-                fh,
-                fh / 2.0,
-            );
-            let i = ((y as u32 * bw) + x as u32) as usize * 4;
-            canvas[i] = 0;
-            canvas[i + 1] = 0;
-            canvas[i + 2] = 0;
-            canvas[i + 3] = (a * 255.0) as u8;
-        }
-    }
-    // Clock layout at device px with the logical negative tracking scaled
-    // by RENDER_SCALE (F1). Centre is the capsule centre, so the padding
-    // is symmetric (F8).
-    let px = lock_timer::TEXT_PX * s;
-    let tracking = lock_timer::TRACKING * s;
-    let mut glyphs = Vec::new();
-    let mut width = 0.0f32;
-    for ch in text.chars() {
-        let (m, cov) = rasterize_cached(font, ch, px);
-        width += m.advance_width;
-        glyphs.push((m, cov));
-    }
-    if glyphs.len() > 1 {
-        width += tracking * (glyphs.len() - 1) as f32;
-    }
-    let Some(lm) = font.horizontal_line_metrics(px) else {
-        return;
-    };
-    let baseline = ry as f32 + (fh - (lm.ascent - lm.descent)) / 2.0 + lm.ascent;
-    let mut pen = rx as f32 + (fw - width) / 2.0;
-    for (gi, (m, cov)) in glyphs.iter().enumerate() {
-        let gx0 = (pen + m.xmin as f32).round() as i32;
-        let gy0 = (baseline - m.ymin as f32 - m.height as f32).round() as i32;
-        for gy in 0..m.height as i32 {
-            for gx in 0..m.width as i32 {
-                let (px_x, px_y) = (gx0 + gx, gy0 + gy);
-                if px_x < 0 || px_y < 0 || px_x >= bw as i32 || px_y >= bh as i32 {
-                    continue;
-                }
-                let c = cov[(gy as usize) * m.width + gx as usize];
-                if c == 0 {
-                    continue;
-                }
-                let i = ((px_y as u32 * bw) + px_x as u32) as usize * 4;
-                canvas[i] = canvas[i].max(c);
-                canvas[i + 1] = canvas[i + 1].max(c);
-                canvas[i + 2] = canvas[i + 2].max(c);
-                canvas[i + 3] = 255;
-            }
-        }
-        pen += m.advance_width;
-        if gi + 1 < glyphs.len() {
-            pen += tracking;
-        }
-    }
-}
-
-/// States whose frame contains the collapsed clock pill (its own panel,
-/// or the pill drawn over a dropped-down menu).
-fn shows_clock_pill(state: IslandState) -> bool {
-    state == IslandState::Collapsed || MENU_CYCLE.contains(&state)
-}
-
 fn draw_workspace_circles_stage(
     canvas: &mut [u8],
     w: u32,
@@ -3378,7 +3162,7 @@ struct Island {
     layer: Option<LayerSurface>,
     pool: Option<SlotPool>,
     buffer: Option<smithay_client_toolkit::shm::slot::Buffer>,
-    font: &'static fontdue::Font,
+    font: fontdue::Font,
     // Icon font, loaded LAZILY on the first Power/ControlCenter draw.
     // Material Symbols Rounded parses to ~19 MB in fontdue — loading it
     // eagerly would 6x the idle PSS (4 MB -> 24 MB) for states that never
@@ -3430,17 +3214,6 @@ struct Island {
     /// across frames; stage-sized (1176x636x4 ~ 3 MB), lockscreen-sized
     /// at most (1504x1002x4 ~ 6 MB) — far under the 100 MB PSS budget.
     scale_scratch: Vec<u8>,
-    /// iter126: state whose frame the shm buffer holds, and how many
-    /// consecutive frames have been drawn for it. The dictation fast path
-    /// (rect upscale) only starts once BOTH pool slots have received a
-    /// full frame of this state.
-    last_drawn_state: Option<IslandState>,
-    rect_frames: u32,
-    /// Device-resolution scratch for the dictation panel (F3): reused so
-    /// the per-packet path allocates nothing.
-    dict_scratch: Vec<u8>,
-    /// Device-sized staging buffer for the 2x upscale (iter126 perf probe).
-    device_scratch: Vec<u8>,
     configured_size: (u32, u32),
     drawn_size: (u32, u32),
     /// Backdrop factor (0..1, iter30 a3b) the last draw used — the
@@ -4837,7 +4610,6 @@ impl Island {
         // (+ bridges) in stage coords, from the current frame geometry.
         self.update_input_region();
         let Some(layer) = &self.layer else { return };
-        let prof_t0 = std::time::Instant::now();
         let (w, h) = self.configured_size;
         // Lockscreen preview data for this frame (iter14 + v0.7): live
         // dots / wrong flag from the Island fields; while a lock morph
@@ -4926,27 +4698,6 @@ impl Island {
             .morph
             .as_ref()
             .map(|m| m.frame_at(std::time::Instant::now()));
-        // F3 (iter126): while dictating only the bars change, so paint the
-        // dictation panel itself at device resolution and skip the 1176x636
-        // stage draw AND the bilinear upscale. Three full frames are forced
-        // after a state change so BOTH pool slots hold a full frame of this
-        // state before the fast path repaints just the panel rect.
-        let rect_frame = self.state == IslandState::Dictation
-            && self.morph.is_none()
-            && self.last_drawn_state == Some(IslandState::Dictation)
-            && self.rect_frames >= 2;
-        let t_dict = std::time::Instant::now();
-        let dict_damage = if rect_frame {
-            draw_dictation_device(canvas, bw, bh, &mut self.dict_scratch)
-        } else {
-            None
-        };
-        let dict_only = t_dict.elapsed();
-        if !rect_frame {
-            let morph_frame = self
-            .morph
-            .as_ref()
-            .map(|m| m.frame_at(std::time::Instant::now()));
         match morph_frame {
             Some(frame) if !frame.done => {
                 let from_state = self.morph_from_state;
@@ -4979,7 +4730,7 @@ impl Island {
                     &frame,
                     &mut self.morph_scratch_from,
                     &mut self.morph_scratch_to,
-                    self.font,
+                    &self.font,
                     icon_from,
                     icon_to,
                     &lock_data,
@@ -5008,7 +4759,7 @@ impl Island {
                     w,
                     h,
                     self.state,
-                    self.font,
+                    &self.font,
                     // Icon font only for the states that draw glyphs; the
                     // collapsed/lock/placeholder states must not pay its ~19 MB.
                     icon_font_for(&self.icon_font, self.state),
@@ -5017,32 +4768,9 @@ impl Island {
                 );
             }
         }
-        }
-        let prof_draw = prof_t0.elapsed();
-        let prof_up0 = std::time::Instant::now();
-        let mut upscale_only = std::time::Duration::ZERO;
-        let damage = if let Some(d) = dict_damage {
-            d
-        } else {
-            // iter108: upscale the 1x stage into the 2x shm buffer
-            // (RENDER_SCALE) — the discs leave here at 32 buffer px.
-            let t_ups = std::time::Instant::now();
-            let need_dst = (bw * bh * 4) as usize;
-            if self.device_scratch.len() != need_dst {
-                self.device_scratch.resize(need_dst, 0);
-            }
-            upscale_canvas_2x_into(&self.scale_scratch, w, h, &mut self.device_scratch);
-            canvas.copy_from_slice(&self.device_scratch);
-            upscale_only = t_ups.elapsed();
-            // F2 (iter126): settled pill states get their capsule + clock
-            // regenerated at device resolution over the upscaled copy.
-            if self.morph.is_none() && shows_clock_pill(self.state) {
-                draw_clock_device(canvas, bw, bh, self.font, &hhmm());
-            }
-            (0, 0, bw as i32, bh as i32)
-        };
-        let prof_up = prof_up0.elapsed();
-        let prof_c0 = std::time::Instant::now();
+        // iter108: upscale the 1x stage into the 2x shm buffer
+        // (RENDER_SCALE) — the discs leave here at 32 buffer px.
+        upscale_canvas_2x_into(&self.scale_scratch, w, h, canvas);
         let surface = layer.wl_surface();
         // The buffer is RENDER_SCALE x the logical surface size, so
         // advertise buffer_scale 2 (applies on this commit, before the
@@ -5052,35 +4780,9 @@ impl Island {
         // (which would display the island twice as large).
         surface.set_buffer_scale(RENDER_SCALE as i32);
         surface.attach(Some(buffer.wl_buffer()), 0, 0);
-        surface.damage_buffer(damage.0, damage.1, damage.2, damage.3);
+        surface.damage_buffer(0, 0, bw as i32, bh as i32);
         surface.commit();
         self.last_backdrop_factor = wallpaper_blur::backdrop_factor();
-        self.rect_frames = if self.last_drawn_state == Some(self.state) {
-            self.rect_frames + 1
-        } else {
-            0
-        };
-        self.last_drawn_state = Some(self.state);
-        if std::env::var_os("DYNAMITE_PROFILE").is_some() {
-            // Profile-only (iter126): off unless the env var is set.
-            static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-            let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            if n % 60 == 0 {
-                eprintln!(
-                    "prof draw={:?} (dict_only={:?}) up={:?} (upscale_only={:?}) commit={:?} rest={:?} stage={}x{} state={:?} rect={}",
-                    prof_draw,
-                    dict_only,
-                    prof_up,
-                    upscale_only,
-                    prof_c0.elapsed(),
-                    prof_t0.elapsed(),
-                    w,
-                    h,
-                    self.state,
-                    rect_frame
-                );
-            }
-        }
         self.buffer = Some(buffer);
         self.drawn_size = (w, h);
     }
@@ -5407,7 +5109,7 @@ impl PointerHandler for Island {
                         && self.morph.is_none()
                     {
                         music_panel::control_hit(
-                            self.font,
+                            &self.font,
                             event.position,
                             panel_origin(self.state),
                         )
@@ -5923,8 +5625,22 @@ fn main() {
     // state while the entry refresh runs.
     clipboard_panel::refresh_async();
 
-    // iter126: one process-wide face (Inter) — see ui_font().
-    let font = ui_font();
+    // Font: Quicksand Bold (static, usWeightClass 700 — verified on the
+    // Surface 12 Nov 2026 ~23:55 via fontTools), with fallback to
+    // Quicksand.ttf (Light, default instance wght 300) if the Bold file
+    // is missing or unparseable. Bold keeps cap height 700/1000 em, so
+    // every px size in the panels is unchanged (lock_timer TEXT_PX 17.0
+    // still gives digit height 12.0 logical, ratio 0.50).
+    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    let font = ["Quicksand-Bold.ttf", "Quicksand.ttf"]
+        .iter()
+        .find_map(|name| {
+            let path = home.join(".local/share/fonts").join(name);
+            std::fs::read(&path)
+                .ok()
+                .and_then(|b| fontdue::Font::from_bytes(b, fontdue::FontSettings::default()).ok())
+        })
+        .expect("no Quicksand font file parses");
 
     // The icon font is NOT loaded here: see Island::icon_font — it parses
     // to ~19 MB, so it loads lazily on the first Power/ControlCenter draw.
@@ -6144,49 +5860,6 @@ fn main() {
     }
 
     // Control socket (unix datagram).
-    // iter126 bench probe (env-gated): the in-frame upscale timing is 10x
-    // the standalone cost of the same function; this isolates codegen from
-    // scheduling noise. Off unless DYNAMITE_BENCH is set.
-    if std::env::var_os("DYNAMITE_BENCH").is_some() {
-        let (w, h) = (STAGE_W, STAGE_H);
-        let src = vec![7u8; (w * h * 4) as usize];
-        let mut dst = vec![0u8; (w * RENDER_SCALE * h * RENDER_SCALE * 4) as usize];
-        let t = std::time::Instant::now();
-        for _ in 0..10 {
-            upscale_canvas_2x_into(&src, w, h, &mut dst);
-        }
-        eprintln!("bench upscale 10x: {:?} ({:?}/frame)", t.elapsed(), t.elapsed() / 10);
-        let (sw, sh) = (300u32, 300u32);
-        let ssrc = vec![7u8; (sw * sh * 4) as usize];
-        let mut sdst = vec![0u8; (sw * 2 * sh * 2 * 4) as usize];
-        let t5 = std::time::Instant::now();
-        for _ in 0..10 {
-            upscale_canvas_2x_into(&ssrc, sw, sh, &mut sdst);
-        }
-        eprintln!("bench upscale small (300x300) 10x: {:?}", t5.elapsed());
-        // Same-run controls: a 12 MB memcpy and a scalar pass, so a slow
-        // result can be told apart from slow codegen.
-        let mut other = vec![0u8; dst.len()];
-        let t2 = std::time::Instant::now();
-        for _ in 0..10 {
-            other.copy_from_slice(&dst);
-        }
-        eprintln!("bench memcpy 12MB x10: {:?}", t2.elapsed());
-        let t3 = std::time::Instant::now();
-        let mut acc = 0u64;
-        for _ in 0..10 {
-            for b in &src {
-                acc += *b as u64;
-            }
-        }
-        eprintln!("bench sum 3MB x10: {:?} (acc {})", t3.elapsed(), acc);
-        let t4 = std::time::Instant::now();
-        let mut acc2 = 0u64;
-        for _ in 0..3_000_000u32 {
-            acc2 = acc2.wrapping_add(if acc2 % 2 == 0 { 1 } else { 3 });
-        }
-        eprintln!("bench scalar 3M: {:?} (acc {})", t4.elapsed(), acc2);
-    }
     let sock_path = socket_path();
     let _ = std::fs::remove_file(&sock_path);
     let datagram = UnixDatagram::bind(&sock_path).expect("bind control socket");
@@ -6201,7 +5874,8 @@ fn main() {
                     match sock.recv(&mut buf) {
                         Ok(n) => {
                             let word = String::from_utf8_lossy(&buf[..n]).trim().to_string();
-                                            if let Some(rest) = word.strip_prefix("dictation_bars:") {
+                            eprintln!("dynamite-rust: DBG socket word={:?}", word);
+                            if let Some(rest) = word.strip_prefix("dictation_bars:") {
                                 let mut bars = [0.0f32; 27];
                                 for (slot, tok) in rest.split_whitespace().enumerate().take(27) {
                                     if let Ok(v) = tok.parse::<f32>() {
@@ -6375,10 +6049,6 @@ fn main() {
         morph_scratch_from: Vec::new(),
         morph_scratch_to: Vec::new(),
         scale_scratch: Vec::new(),
-        last_drawn_state: None,
-        rect_frames: 0,
-        dict_scratch: Vec::new(),
-        device_scratch: Vec::new(),
         configured_size: (0, 0),
         drawn_size: (0, 0),
         last_backdrop_factor: 1.0,

@@ -109,6 +109,46 @@ def lapvar(a: np.ndarray, box) -> dict | None:
     return {"lapvar": round(float(lap.var()), 1), "lapmean": round(float(lap.mean()), 2)}
 
 
+def ink_metrics(a: np.ndarray, bb: dict) -> dict | None:
+    """Clock ink measured INSIDE the capsule, never on a bare rectangle.
+
+    Two earlier measurements were wrong because a rectangular crop of a
+    rounded capsule leaks bright wallpaper through the corners. Mask the
+    capsule interior first: distance to the horizontal centre segment must
+    be under r-3. Everything here is scale-free so it compares across the
+    reference's 2560x1440 and our 2256x1504.
+    """
+    x, y, w, h = bb["x"], bb["y"], bb["w"], bb["h"]
+    g = a[y:y + h, x:x + w].astype(np.float32).mean(axis=2)
+    if g.shape[0] < 8 or g.shape[1] < 8:
+        return None
+    H, W = g.shape
+    r = h / 2.0
+    yy, xx = np.mgrid[0:H, 0:W]
+    d = np.hypot(xx - np.clip(xx, r, W - r), yy - H / 2.0)
+    ink = (g > 110) & (d < r - 3.0)
+    if not ink.any():
+        return None
+    rr = np.flatnonzero(ink.any(axis=1)); cc = np.flatnonzero(ink.any(axis=0))
+    cap = int(rr[-1] - rr[0] + 1); tw = int(cc[-1] - cc[0] + 1)
+    runs = []
+    for row in ink:
+        k = 0
+        for v in row:
+            if v:
+                k += 1
+            elif k:
+                runs.append(k); k = 0
+        if k:
+            runs.append(k)
+    med = float(np.median(runs)) if runs else 0.0
+    return {"ink_cap_h": cap, "ink_text_w": tw,
+            "cap_over_pill_h": round(cap / h, 3),
+            "text_over_pill_w": round(tw / W, 3),
+            "margin_left": int(cc[0]), "margin_right": int(W - 1 - cc[-1]),
+            "stroke_over_cap": round(med / cap, 3) if cap else None}
+
+
 def edge_ramp(a: np.ndarray, box) -> dict | None:
     """Left-edge AA width: how many px the luminance takes to go dark."""
     x0, y0, x1, y1 = [int(v) for v in box]
@@ -134,6 +174,7 @@ def main() -> int:
         gx0 = bb["x"] + int(bb["w"] * 0.22); gx1 = bb["x"] + int(bb["w"] * 0.78)
         gy0 = bb["y"] + int(bb["h"] * 0.25); gy1 = bb["y"] + int(bb["h"] * 0.78)
         out["glyphs"] = lapvar(a, (gx0, gy0, gx1, gy1))
+        out["ink"] = ink_metrics(a, bb)
         out["edge"] = edge_ramp(a, (bb["x"], bb["y"], 0, bb["y"] + bb["h"]))
     out.update(proc_stats(pid()))
     print(json.dumps(out, indent=2))
