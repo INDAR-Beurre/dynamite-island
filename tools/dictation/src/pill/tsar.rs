@@ -1,0 +1,1424 @@
+//! tsar: Wayland layer-shell renderer owning the pill window (overlay layer, top-center).
+//!
+//! Owned-by: subagent T. Do not edit the pub API; fill in the `unimplemented!()` bodies.
+//! This is the only file that talks to Wayland, using smithay-client-toolkit 0.21.
+//!
+//! Contract (FROZEN):
+//! - `spawn_render_thread(params, tx, rx) -> anyhow::Result<()>` — spawns the render
+//!   thread, binds Wayland, creates an overlay layer surface (top-center, anchored
+//!   TOP only, margin ~48 px, size SURF_W x SURF_H from canvas.rs, keyboard
+//!   interactivity None), and drives the
+//!   animation at compositor frame cadence. `rx` receives `Ctl` (the same enum defined
+//!   in pill.rs — reference as `crate::pill::Ctl`). `tx` clone is handed in so the
+//!   thread can detect client hangup (all senders dropped). Return Ok once the thread
+//!   is started and Wayland bound OK; Err if Wayland is unavailable (pill.rs then
+//!   makes the whole tool run headless gracefully).
+//! - The thread: drains `rx` (non-blocking at frame cadence), updates vecmentor `Sim`
+//!   via `Sim::push(level, &bands, speaking)` each frame + canvas::render_pill rasterizes.
+//! - `Ctl::Show` → map the surface (fade in, draw frame loop until Hide); `Ctl::Hide`
+//!   → fade out to a fully transparent frame; the surface stays mapped forever
+//!   (never unmap: a null-buffer commit resets wlroots' configured state and
+//!   the next draw dies with protocol error 2 — see loop comment in step 3).
+//!   `Ctl::Update{level,bands,speaking}` → advance sim.
+//! - Use `SlotPool` (smithay_client_toolkit::shm::slot::SlotPool) for buffers; ARGB8888;
+//!   damage full surface each frame; use frame callbacks for cadence (request next
+//!   frame only while visible; use `std::thread::sleep` ~33ms fallback if no frame
+//!   callback arrives, e.g. on compositors that don't send them).
+//! - Graceful exit: when `rx` disconnects (all PillHandle clones dropped) or thread
+//!   panics, the Wayland objects are dropped → surface destroyed. No leave-behind.
+//!
+//! Sketch of the working pieces (from local SCT 0.21.1 sources — trust these):
+//! ```ignore
+//! use smithay_client_toolkit::{
+//!     compositor::{CompositorState},
+//!     delegate_registry, registry::RegistryState, registry_handlers,
+//!     shell::wlr_layer::{Anchor, KeyboardInteractivity, Layer, LayerShell, LayerShellHandler,
+//!                        LayerSurface, LayerSurfaceConfigure},
+//!     shm::{slot::SlotPool, Shm, ShmHandler},
+//!     delegate_dispatch2,
+//! };
+//! use wayland_client::{globals::registry_queue_init, protocol::{wl_shm, wl_surface},
+//!                     Connection, Dispatch, QueueHandle};
+//!
+//! // main thread body:
+//! let conn = Connection::connect_to_env()?;                    // Err if no Wayland
+//! let (globals, mut event_queue) = registry_queue_init(&conn)?;
+//! let qh = event_queue.handle();
+//! let compositor = CompositorState::bind(&globals, &qh)?;       // provides create_surface
+//! let layer_shell = LayerShell::bind(&globals, &qh)?;           // zwlr_layer_shell_v1
+//! let shm = Shm::bind(&globals, &qh)?;                          // wl_shm
+//! let surface = compositor.create_surface(&qh);
+//! let layer = layer_shell.create_layer_surface(&qh, surface, Layer::Top,
+//!                                             Some("static-dictation"), None);
+//! layer.set_anchor(Anchor::TOP);
+//! layer.set_size(320, 64);
+//! layer.set_exclusive_zone(-1);           // ignore the top bar's 32px zone → surface sits at y=0
+//! layer.set_margin(0, 0, 0, 0);         // grown cap tops out at world y=3 (3px clear of the screen edge)
+//! layer.set_keyboard_interactivity(KeyboardInteractivity::None);
+//! layer.commit();                        // then wait for first configure event
+//! ```
+//! Handler struct must impl: `RegistryState` via `delegate_registry!(State)` +
+//! `registry_handlers![OutputState, SeatState]` NO — not needed for pill (no input) —
+//! only `ProvidesRegistryState` if you use globals-bound helpers; minimal set:
+//! `CompositorHandler` (frame callback), `LayerShellHandler` (configure/closed),
+//! `ShmHandler` (shm_state), then `delegate_dispatch2!(State)`.
+//! Draw each frame basically like the simple_layer example (SlotPool::create_buffer →
+//! canvas → damage_buffer → frame(qh, FrameCallbackData(...)) → attach_to → commit).
+
+use std::io::Write as _;
+use std::num::NonZeroU32;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant, SystemTime};
+
+use smithay_client_toolkit::compositor::{CompositorHandler, CompositorState};
+use smithay_client_toolkit::delegate_registry;
+use smithay_client_toolkit::output::{OutputHandler, OutputState};
+use smithay_client_toolkit::reexports::client as wayland_client;
+use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
+use smithay_client_toolkit::shell::wlr_layer::{
+    Anchor, KeyboardInteractivity, Layer, LayerShell, LayerShellHandler, LayerSurface,
+    LayerSurfaceConfigure,
+};
+use smithay_client_toolkit::shell::WaylandSurface;
+use smithay_client_toolkit::shm::slot::SlotPool;
+use smithay_client_toolkit::shm::{Shm, ShmHandler};
+use smithay_client_toolkit::{delegate_dispatch2, registry_handlers};
+use wayland_client::backend::WaylandError;
+use wayland_client::globals::registry_queue_init;
+use wayland_client::protocol::{wl_output, wl_region, wl_shm, wl_surface};
+use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle};
+
+use crate::pill::vecmentor::{Sim, WaveParams};
+use crate::pill::Ctl;
+
+/// Live Wayland surface logical dimensions on eDP-1 (2256x1504 @ scale 1.5).
+/// Wide enough (-140..+140 logical around screen center) to cleanly mask
+/// dynamite-rust's workspace discs (-118..-42), clock (-38..+38), and right
+/// tray icons (+42..+118) into the desktop wallpaper while dictation is open,
+/// and short enough vertically (56 logical, masked to <=36.8 logical) to stay
+/// strictly above tiled desktop windows (which start at 37.33 logical / 56 px).
+const LIVE_SURF_W: u32 = 280;
+const LIVE_SURF_H: u32 = 56;
+/// Scaled pill canvas inside LIVE_SURF_W x LIVE_SURF_H so the grown capsule
+/// renders at ~178x46 physical px (matching the 186x48 reference) while
+/// leaving 8 physical px below the capsule for natural drop shadow decay
+/// above the top window border at physical y=56.
+const LIVE_PILL_W: u32 = 176;
+const LIVE_PILL_H: u32 = 56;
+const STRIP_CROP_LOGICAL_H: u32 = 36;
+const STRIP_MASK_LOGICAL_H: f32 = 34.0;
+const STRIP_MASK_BOT_FEATHER: f32 = 4.0;
+const STRIP_MASK_SIDE_FEATHER: f32 = 6.0;
+const WIN_CLEARANCE_TOP: f32 = 37.1;
+const WIN_CLEARANCE_FEATHER: f32 = 1.6;
+
+#[inline]
+fn smooth01(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+fn collapse_dynamite_panel() {
+    let Some(rt) = std::env::var_os("XDG_RUNTIME_DIR") else {
+        return;
+    };
+    let sock = PathBuf::from(rt).join("dynamite-rust.sock");
+    if let Ok(dgram) = std::os::unix::net::UnixDatagram::unbound() {
+        let _ = dgram.send_to(b"collapsed", sock);
+    }
+}
+
+struct WallpaperStrip {
+    path: Option<PathBuf>,
+    mtime: Option<SystemTime>,
+    len: u64,
+    buf_w: u32,
+    buf_h: u32,
+    rgb: Vec<u8>,
+}
+
+impl WallpaperStrip {
+    fn new() -> Self {
+        let path = std::env::var_os("HOME")
+            .map(|h| PathBuf::from(h).join(".config/mango/wallpaper/wallpaper.png"));
+        Self {
+            path,
+            mtime: None,
+            len: 0,
+            buf_w: 0,
+            buf_h: 0,
+            rgb: Vec::new(),
+        }
+    }
+
+    fn ensure(&mut self, buf_w: u32, buf_h: u32) -> Option<&[u8]> {
+        let path = self.path.as_ref()?;
+        let meta = std::fs::metadata(path).ok()?;
+        let mtime = meta.modified().ok();
+        let len = meta.len();
+        if self.buf_w == buf_w
+            && self.buf_h == buf_h
+            && self.mtime == mtime
+            && self.len == len
+            && self.rgb.len() == (buf_w * buf_h * 3) as usize
+        {
+            return Some(&self.rgb);
+        }
+        // Match swaybg -m fill on eDP-1 (2256x1504 @ 1.5x): extract exact centered
+        // 280x36 logical strip (420x54 physical at x=918, y=0) scaled to buffer px.
+        let vf = format!(
+            "scale=2256:1504:force_original_aspect_ratio=increase,\
+             crop=2256:1504,crop=420:54:918:0,scale={buf_w}:{buf_h}:flags=bicubic"
+        );
+        let out = std::process::Command::new("ffmpeg")
+            .args([
+                "-v",
+                "error",
+                "-i",
+                path.to_str()?,
+                "-vf",
+                &vf,
+                "-frames:v",
+                "1",
+                "-f",
+                "rawvideo",
+                "-pix_fmt",
+                "rgb24",
+                "-",
+            ])
+            .output()
+            .ok()?;
+        let expected = (buf_w * buf_h * 3) as usize;
+        if out.status.success() && out.stdout.len() == expected {
+            self.mtime = mtime;
+            self.len = len;
+            self.buf_w = buf_w;
+            self.buf_h = buf_h;
+            self.rgb = out.stdout;
+            Some(&self.rgb)
+        } else {
+            None
+        }
+    }
+}
+
+/// Composite the top-bar wallpaper strip mask (dissolving workspace discs, clock,
+/// and tray icons) and the centered pill canvas with premultiplied src-over and a
+/// strict window-clearance bottom fade below WIN_CLEARANCE_TOP.
+#[allow(clippy::too_many_arguments)]
+fn composite_pill_over_strip(
+    dst_bgra: &mut [u8],
+    dst_w: u32,
+    dst_h: u32,
+    scale: u32,
+    alpha: f32,
+    strip_rgb: Option<&[u8]>,
+    strip_h: u32,
+    pill_bgra: &[u8],
+    pill_w: u32,
+    pill_h: u32,
+) {
+    let needed = (dst_w * dst_h * 4) as usize;
+    if dst_w == 0 || dst_h == 0 || dst_bgra.len() < needed {
+        return;
+    }
+    dst_bgra[..needed].fill(0);
+    if alpha <= 0.0 || !alpha.is_finite() {
+        return;
+    }
+    let scale_f = scale.max(1) as f32;
+    let logical_w = dst_w as f32 / scale_f;
+
+    if let Some(rgb) = strip_rgb {
+        let rows = strip_h.min(dst_h);
+        if rgb.len() >= (dst_w * rows * 3) as usize {
+            for y in 0..rows {
+                let ly = (y as f32 + 0.5) / scale_f;
+                let vy = smooth01((STRIP_MASK_LOGICAL_H - ly) / STRIP_MASK_BOT_FEATHER);
+                if vy <= 0.0 {
+                    continue;
+                }
+                for x in 0..dst_w {
+                    let lx = (x as f32 + 0.5) / scale_f;
+                    let edge_d = lx.min(logical_w - lx);
+                    let hx = smooth01(edge_d / STRIP_MASK_SIDE_FEATHER);
+                    let m = (alpha * vy * hx).clamp(0.0, 1.0);
+                    if m <= 0.0 {
+                        continue;
+                    }
+                    let sidx = ((y * dst_w + x) * 3) as usize;
+                    let a_u8 = (255.0 * m).round().clamp(0.0, 255.0) as u8;
+                    if a_u8 == 0 {
+                        continue;
+                    }
+                    let didx = ((y * dst_w + x) * 4) as usize;
+                    dst_bgra[didx] =
+                        ((rgb[sidx + 2] as f32 * m).round() as u32).min(a_u8 as u32) as u8;
+                    dst_bgra[didx + 1] =
+                        ((rgb[sidx + 1] as f32 * m).round() as u32).min(a_u8 as u32) as u8;
+                    dst_bgra[didx + 2] =
+                        ((rgb[sidx] as f32 * m).round() as u32).min(a_u8 as u32) as u8;
+                    dst_bgra[didx + 3] = a_u8;
+                }
+            }
+        }
+    }
+
+    if pill_bgra.len() < (pill_w * pill_h * 4) as usize {
+        return;
+    }
+    let x_off = dst_w.saturating_sub(pill_w) / 2;
+    let cols = pill_w.min(dst_w.saturating_sub(x_off));
+    let rows = pill_h.min(dst_h);
+    for y in 0..rows {
+        let ly = (y as f32 + 0.5) / scale_f;
+        let win_mask = smooth01((WIN_CLEARANCE_TOP - ly) / WIN_CLEARANCE_FEATHER);
+        if win_mask <= 0.0 {
+            continue;
+        }
+        for sx in 0..cols {
+            let sidx = ((y * pill_w + sx) * 4) as usize;
+            let sa_raw = pill_bgra[sidx + 3] as f32;
+            if sa_raw <= 0.0 {
+                continue;
+            }
+            let sb = pill_bgra[sidx] as f32 * win_mask;
+            let sg = pill_bgra[sidx + 1] as f32 * win_mask;
+            let sr = pill_bgra[sidx + 2] as f32 * win_mask;
+            let sa = sa_raw * win_mask;
+            let inv = 1.0 - (sa / 255.0);
+            let didx = ((y * dst_w + x_off + sx) * 4) as usize;
+            let oa = (sa + dst_bgra[didx + 3] as f32 * inv)
+                .round()
+                .clamp(0.0, 255.0) as u8;
+            dst_bgra[didx] = (sb + dst_bgra[didx] as f32 * inv)
+                .round()
+                .clamp(0.0, oa as f32) as u8;
+            dst_bgra[didx + 1] = (sg + dst_bgra[didx + 1] as f32 * inv)
+                .round()
+                .clamp(0.0, oa as f32) as u8;
+            dst_bgra[didx + 2] = (sr + dst_bgra[didx + 2] as f32 * inv)
+                .round()
+                .clamp(0.0, oa as f32) as u8;
+            dst_bgra[didx + 3] = oa;
+        }
+    }
+}
+
+/// Wait cap for each dispatch round. The channel cannot wake the Wayland socket,
+/// so an unbounded dispatch would stall Hide/exit until the next frame event.
+/// 16 ms keeps Ctl latency invisible and idle CPU near zero (one wakeup / 16 ms);
+/// it is also the fade-ramp tick (see `step_alpha`).
+const TICK: Duration = Duration::from_millis(16);
+
+/// Total fade duration: ~160 ms from alpha 0↔1 at the 16 ms TICK (10 ticks).
+const FADE_SECS: f32 = 0.16;
+
+/// One tick of the alpha ramp toward `target` (0.0 or 1.0). Pure math, no
+/// Wayland. Fade-in is ease-out (fast start, gentle settle); fade-out is
+/// ease-in (gentle start, quick finish); never crosses the target. A Show
+/// arriving mid-fade-out just reverses the ramp from the current alpha.
+fn step_alpha(cur: f32, target: f32, dt_secs: f32) -> f32 {
+    if dt_secs <= 0.0 || cur == target {
+        return cur;
+    }
+    let cur = cur.clamp(0.0, 1.0);
+    // Both curves advance a linear progress p by dt/FADE_SECS per tick and are
+    // inverted from `cur` so the ramp always finishes in exactly FADE_SECS.
+    if target >= cur {
+        // Fade-in, ease-out: cur = 1 - (1 - p)^2.
+        let p = (1.0 - (1.0 - cur).sqrt() + dt_secs / FADE_SECS).min(1.0);
+        1.0 - (1.0 - p) * (1.0 - p)
+    } else {
+        // Fade-out, ease-in: cur = 1 - p^2.
+        let p = ((1.0 - cur).sqrt() + dt_secs / FADE_SECS).min(1.0);
+        (1.0 - p * p).max(0.0)
+    }
+}
+
+/// Spring constants for the entrance bounce, derived at compile time.
+///
+/// The grow spring is a damped 2nd-order oscillator driving scale factor
+/// g(t): g" = -k*(g-target) - c*g', i.e. ω_n = √k (natural frequency),
+/// ζ = c/(2√k) (damping ratio). We pick the FEEL, then derive k and c so the
+/// two stay consistent:
+///
+/// - Entrance: ω_n = 21 rad/s (period ≈ 300 ms), ζ = 0.45 — one firm,
+///   readable overshoot (~+12%) with a faint second ripple that dies inside
+///   the 1% settle tolerance, instead of the old jelly ride: ζ = 0.28 rang
+///   down through several wiggles and flattened on the 1.25 clamp ceiling
+///   for 3 visible ticks, which read as wobble against the static desktop
+///   bar (round-1 critic). The clamp below is the effective overshoot
+///   ceiling; canvas.rs keeps its own clamp for defensive parity.
+///   Launched by the velocity kick (SPRING_KICK = 4.6) so the capsule still
+///   pops out of the clock pill.
+/// - Hide contraction: ω_n = 25 rad/s, ζ = 0.78 — a faster, firmer,
+///   near-critically-damped shrink (barely visible overshoot) that snaps
+///   back into the clock pill. The alpha fade runs in parallel.
+///
+/// Semi-implicit Euler at dt = 16 ms is unconditionally stable here
+/// (dt·ω_n ≪ 2), so the integrator never adds oscillation of its own.
+const SPRING_OMEGA_SHOW: f32 = 21.0;
+const SPRING_ZETA_SHOW: f32 = 0.45;
+const SPRING_OMEGA_HIDE: f32 = 25.0;
+const SPRING_ZETA_HIDE: f32 = 0.78;
+const SPRING_KICK: f32 = 4.6;
+/// Effective overshoot ceiling for the show spring: the raw ζ=0.45 peak is
+/// ≈1.12, so this clamp is a guard (the spring only touches it when a mid-Show
+/// Hide retarget hands back extra velocity), not a plateau the entrance rides.
+const GROW_CEIL_SHOW: f32 = 1.12;
+// canvas.rs keeps its own private 1.25 clamp as a defensive bound; this
+// ceiling is strictly inside it, so tsar-side renders can never exceed the
+// canvas geometry's documented 1.25 overshoot envelope.
+
+/// One semi-implicit Euler step of the grow spring toward `target`.
+/// Semi-implicit (a.k.a. symplectic) Euler — update velocity first with the new
+/// position's force, then position with the NEW velocity — is stable for this
+/// dt and gives a livelier, more natural bounce than explicit Euler.
+/// Clamps grow to [0, 1.25] (the same ceiling canvas.rs clamps at) so a big
+/// overshoot can never ask canvas for an out-of-range scale.
+fn step_grow(cur: f32, vel: f32, target: f32, dt_secs: f32, omega: f32, zeta: f32) -> (f32, f32) {
+    if dt_secs <= 0.0 {
+        return (cur, vel);
+    }
+    let k = omega * omega; // ω_n²
+    let c = 2.0 * zeta * omega; // 2·ζ·ω_n
+    let vel = vel + (-k * (cur - target) - c * vel) * dt_secs;
+    // Clamp both ends: [0, GROW_CEIL_SHOW] keeps the overshoot inside the
+    // ceiling canvas's clamped geometry range covers (canvas clamps at 1.25,
+    // so 1.12 always renders bulged but in-range), and a Hide retarget from a
+    // mid-flight bounce can never dip below collapsed.
+    let cur = (cur + vel * dt_secs).clamp(0.0, GROW_CEIL_SHOW);
+    (cur, vel)
+}
+
+/// One full spring tick on the app state: re-aims at the current target
+/// (1.0 visible / 0.0 hidden) with the phase's ω_n/ζ, and snaps fully-hidden
+/// grow to exactly 0 once it is visually gone (< 0.02) — so a later Show
+/// restarts the bounce from a clean collapsed state, and the alpha fade plus
+/// hide-contraction can finish in parallel without blocking each other.
+fn step_grow_tick(grow: &mut f32, vel: &mut f32, visible: bool, dt_secs: f32) {
+    let target = if visible { 1.0 } else { 0.0 };
+    if (*grow - target).abs() > 0.002 {
+        let (omega, zeta) = if visible {
+            (SPRING_OMEGA_SHOW, SPRING_ZETA_SHOW)
+        } else {
+            (SPRING_OMEGA_HIDE, SPRING_ZETA_HIDE)
+        };
+        let (g, v) = step_grow(*grow, *vel, target, dt_secs, omega, zeta);
+        *grow = g;
+        *vel = v;
+        // Visually gone: clamp to exact 0 (grow < 0.02 rule) so the surface's
+        // last frame is the fully-collapsed one while alpha fades in parallel.
+        if !visible && *grow < 0.02 {
+            *grow = 0.0;
+            *vel = 0.0;
+        }
+    } else if *grow != target {
+        // Spring has settled inside tolerance: land exactly on target so the
+        // loop's idle condition (grow == target) holds without float dust.
+        *grow = target;
+        *vel = 0.0;
+    }
+}
+
+/// Spawn the render thread; see module doc for requirements.
+pub fn spawn_render_thread(
+    params: WaveParams,
+    tx: crossbeam_channel::Sender<Ctl>,
+    rx: crossbeam_channel::Receiver<Ctl>,
+    alive: Arc<AtomicBool>,
+) -> anyhow::Result<()> {
+    // Requirement: flush before binding so main's banner is ordered before any
+    // error output this thread might print on early return.
+    let _ = std::io::stdout().flush();
+    let _ = std::io::stderr().flush();
+
+    std::thread::Builder::new()
+        .name("pill-render".into())
+        .spawn(move || {
+            // Cleared on EVERY exit path — error returns, Disconnected, panic —
+            // by the guard's Drop (panics unwind through the closure, dropping it).
+            let _guard = AliveGuard { flag: alive };
+            if let Err(e) = render_thread(params, tx, rx) {
+                eprintln!("static-dictation: pill render thread died: {e:#}");
+            }
+        })?;
+    Ok(())
+}
+
+/// Sets the shared alive flag false when dropped; the facade (pill.rs) uses the
+/// flag to stop sending Ctls into a channel whose reader is gone.
+struct AliveGuard {
+    flag: Arc<AtomicBool>,
+}
+
+impl Drop for AliveGuard {
+    fn drop(&mut self) {
+        self.flag.store(false, Ordering::Release);
+    }
+}
+
+/// Loop architecture (chosen): each round is (1) drain `rx` non-blocking,
+/// (2) draw if dirty, (3) bounded wait for Wayland events (prepare_read +
+/// sleep up to TICK, then read + dispatch_pending). Cadence is tick-driven
+/// (16 ms); while visible the Ctl stream (audio sim, 16 ms) drives redraws.
+/// Never busy-spins: every round sleeps or dispatches.
+fn render_thread(
+    params: WaveParams,
+    tx: crossbeam_channel::Sender<Ctl>,
+    rx: crossbeam_channel::Receiver<Ctl>,
+) -> anyhow::Result<()> {
+    // The handed-in `tx` is deliberately dropped here: holding it would keep the
+    // channel connected forever and rx would never observe Disconnected. Exit is
+    // driven by rx.try_recv() == Disconnected, i.e. all PillHandle clones dropped.
+    drop(tx);
+
+    // shortcut: EAGAIN on connect happens when the compositor's accept queue briefly
+    // stalls; a single attempt would permanently lose the pill. Retry ~5×/500ms.
+    let mut last_err = None;
+    let conn = 'c: {
+        for _ in 0..5 {
+            match Connection::connect_to_env() {
+                Ok(c) => break 'c c,
+                Err(e) => {
+                    eprintln!("static-dictation: pill wayland connect failed ({e}); retrying");
+                    last_err = Some(e);
+                    std::thread::sleep(Duration::from_millis(500));
+                }
+            }
+        }
+        return Err(last_err.expect("at least one connect attempt").into());
+    };
+    let (globals, mut event_queue) = match registry_queue_init(&conn) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("static-dictation: pill step registry_init failed: {e}");
+            return Err(e.into());
+        }
+    };
+    let qh = event_queue.handle();
+
+    // Each bind can fail (protocol missing) — pill.rs falls back headless on Err.
+    let compositor = match CompositorState::bind(&globals, &qh) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("static-dictation: pill step bind_compositor failed: {e}");
+            return Err(e.into());
+        }
+    };
+    let layer_shell = match LayerShell::bind(&globals, &qh) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("static-dictation: pill step bind_layer_shell failed: {e}");
+            return Err(e.into());
+        }
+    };
+    let shm = match Shm::bind(&globals, &qh) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("static-dictation: pill step bind_shm failed: {e}");
+            return Err(e.into());
+        }
+    };
+
+    let surface = compositor.create_surface(&qh);
+    // shortcut: output=None is ambiguous on Mango (dead space above eDP-1) — bind
+    // the first real output so the pill anchors to the panel, not nowhere.
+    let output = OutputState::new(&globals, &qh).outputs().next();
+    let layer = layer_shell.create_layer_surface(
+        &qh,
+        surface,
+        Layer::Overlay, // Top hides under fullscreen apps + T3 Code; overlay floats above windows, like the clock
+        Some("dynamite-dictation"), // matches Mango rule.conf layer_name:dynamite (no_blur, no_shadow, no_animation)
+        output.as_ref(),
+    );
+    layer.set_anchor(Anchor::TOP);
+    layer.set_size(LIVE_SURF_W, LIVE_SURF_H);
+    // Exclusive zone −1: Mango ignores the top bar's exclusive zone and lets
+    // this overlay sit at y=0. Surface-local core line: canvas puts the
+    // collapsed twin at cy=15 and the grown core at cy=15+6·grow=21. Round 3
+    // margin 0 (was −6): the surface top sits AT y=0, so the grown capsule
+    // (half-height 18 at grow=1) tops out at world y = 21−18 = 3 — three
+    // logical px below the screen top, killing the flat-cut top the geometry
+    // critic measured (margin −6 put that top edge at y=−3, sliced by the
+    // screen edge; the y=0 row spanned 87% of max width). Alignment still
+    // reads right: the collapsed twin (cy 15) sits exactly on the clock pill
+    // center (world y 15.0), and the island grows downward out of it — top
+    // edge 3..39 world vs the clock twin 3..27. Bottom edge: grown bottom
+    // 21+18 = 39 logical + shadow (offset 4, span 12, quadratic falloff —
+    // only the first ~3px read) stays above the Mango bar height 44.7
+    // (round-2 measured: bottom 33 world with margin −6; margin 0 shifts
+    // everything +6). Overshoot guard: even at the defensive 1.25 clamp
+    // (height_ease 1.075, hh 18.45) the top edge is 2.55 ≥ 0 — nothing clips.
+    // The compositor geometry stays static (per-tick margins would fight Mango).
+    layer.set_exclusive_zone(-1);
+    layer.set_margin(0, 0, 0, 0);
+    layer.set_keyboard_interactivity(KeyboardInteractivity::None);
+
+    // WHY regions: the pill is a floating overlay — it must never eat clicks and
+    // must never claim opaque pixels it doesn't have.
+    // - Input: the default input region is the whole surface ("infinite"); a
+    //   top-center pill would otherwise steal pointer events from whatever is
+    //   below it. set_input_region with a real, EMPTY region (not the None form
+    //   — None means "infinite"!) makes the overlay click-through. Both region
+    //   requests are double-buffered, so they must be issued BEFORE the first
+    //   commit to cover the surface's whole life.
+    let region = compositor.wl_compositor().create_region(&qh, ());
+    layer.wl_surface().set_input_region(Some(&region));
+    region.destroy();
+    // - Opaque: the protocol DEFAULT is already the empty region, which is what
+    //   a pill with transparent corners + halo needs (alpha blit, not opaque
+    //   copy). Make it explicit anyway so a later edit can't silently regress it
+    //   into Mango's opaque-copy fast path with garbage corner pixels.
+    layer.wl_surface().set_opaque_region(None);
+
+    layer.commit();
+
+    // Pool borrows shm only during construction; then shm moves into the app.
+    // Byte headroom = logical w*h*4 bytes × 8: covers double-buffered scale-2
+    // frames for ARGB8888 without reallocation.
+    let pool = match SlotPool::new((LIVE_SURF_W * LIVE_SURF_H * 4 * 8) as usize, &shm) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("static-dictation: pill step slot_pool failed: {e}");
+            return Err(e.into());
+        }
+    };
+
+    let mut app = PillApp {
+        registry_state: RegistryState::new(&globals),
+        output_state: OutputState::new(&globals, &qh),
+        shm,
+        layer,
+        sim: Sim::new(params),
+        started: Instant::now(),
+        visible: false,
+        need_redraw: true, // first Hide commit once configured
+        width: LIVE_SURF_W,
+        height: LIVE_SURF_H,
+        configured: false,
+        exited: false,
+        scale: 1,
+        // Fade state: start fully transparent; Show ramps toward 1.0.
+        alpha: 0.0,
+        // Entrance bounce: grow starts collapsed; the first Show kicks it.
+        grow: 0.0,
+        grow_vel: 0.0,
+        pool,
+        wallpaper: WallpaperStrip::new(),
+        pill_scratch: Vec::new(),
+    };
+
+    // Wait for the first configure (it tells us the mapped size) before drawing.
+    // The queue is already live; app.configured is set by the LayerShellHandler.
+    while !app.configured {
+        event_queue.blocking_dispatch(&mut app)?;
+    }
+    // Pre-warm the wallpaper strip once configured (expecting scale 2 on eDP-1).
+    app.wallpaper
+        .ensure(app.width * 2, STRIP_CROP_LOGICAL_H * 2);
+
+    while !app.exited {
+        // 1) Drain all pending Ctl messages (never blocks).
+        loop {
+            match rx.try_recv() {
+                Ok(ctl) => app.handle_ctl(ctl),
+                Err(crossbeam_channel::TryRecvError::Empty) => break,
+                Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                    app.exited = true;
+                    break;
+                }
+            }
+        }
+        if app.exited {
+            break;
+        }
+
+        // 2) Dispatch pending Wayland events BEFORE any commit: a commit racing
+        // an un-acked configure is a protocol error ("wrong configure serial" on
+        // Mango; the surface gets killed). SCT acks configure during dispatch, so
+        // dispatch-first guarantees acks always precede our commits.
+        wait_and_dispatch(&conn, &mut event_queue, &mut app, TICK)?;
+        if app.exited {
+            break;
+        }
+
+        // 2b) Advance the fade ramp one tick; sets need_redraw while alpha is
+        // still moving toward its target (so fading-out keeps drawing until
+        // alpha bottoms at 0 — transparent frame, surface still mapped).
+        app.tick_fade();
+
+        // 3) Redraw when dirty or mid-fade. Fade-out keeps drawing each tick
+        // until alpha bottoms out at 0 — a fully transparent frame (master_alpha
+        // 0 zeroes every pixel's alpha) — and the surface STAYS MAPPED.
+        // shortcut: never unmaps — a null-buffer commit resets wlroots' configured
+        // state, and the next draw commits pre-configure → protocol error 2 kills
+        // the thread; if the idle pill ever needs to free memory, revisit
+        if app.need_redraw || app.alpha != app.fade_target() {
+            app.need_redraw = false;
+            app.draw();
+        }
+
+        // 3b) Any commit above (draw/unmap) must reach the socket NOW: the
+        // wayland client buffers writes and only flushes during dispatch. Without
+        // this the compositor sees nothing until the next dispatch round.
+        if conn.flush().is_err() {
+            // EPIPE later surfaces as a read error in wait_and_dispatch; exit soon.
+        }
+    }
+
+    // Dropping `app` (and `conn`) destroys the layer surface: the pill disappears.
+    Ok(())
+}
+
+/// One bounded wait round. std has no non-blocking poll, so: reserve a read guard
+/// (never losing socket events), sleep up to TICK, then read + dispatch.
+fn wait_and_dispatch(
+    _conn: &Connection,
+    event_queue: &mut EventQueue<PillApp>,
+    app: &mut PillApp,
+    timeout: Duration,
+) -> anyhow::Result<()> {
+    // prepare_read reserves the socket read; if None, events are already queued.
+    let Some(guard) = event_queue.prepare_read() else {
+        event_queue.dispatch_pending(app)?;
+        return Ok(());
+    };
+    // No safe non-blocking poll of the fd exists in std alone, so: sleep the full
+    // timeout, then read + dispatch. Worst-case frame latency is TICK (16 ms) —
+    // effectively frame-driven while mapped — and idle CPU is one 16 ms sleep per
+    // round, near 0%. TICK is also the fade-ramp step, so the tick keeps the
+    // alpha state machine moving even without frame callbacks.
+    std::thread::sleep(timeout);
+    match guard.read() {
+        Ok(_) => {}
+        // WouldBlock = no Wayland events during the sleep (normal while unmapped —
+        // compositors send no frame callbacks to hidden surfaces). Not an error.
+        Err(WaylandError::Io(e)) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+        Err(e) => return Err(e.into()),
+    }
+    event_queue.dispatch_pending(app)?;
+    Ok(())
+}
+
+struct PillApp {
+    registry_state: RegistryState,
+    output_state: OutputState,
+    shm: Shm,
+    layer: LayerSurface,
+    sim: Sim,
+    started: Instant,
+    visible: bool,
+    need_redraw: bool,
+    width: u32,
+    height: u32,
+    configured: bool,
+    exited: bool,
+    // Compositor-preferred buffer scale (updated by scale_factor_changed).
+    scale: i32,
+    // Current master alpha (0.0..=1.0), eased toward fade_target each tick.
+    alpha: f32,
+    // Entrance/hide bounce: scale factor and its velocity, spring-driven
+    // toward `grow_target` each tick (0.0 collapsed .. 1.0 full; may overshoot
+    // to at most 1.25 — canvas clamps there too). Hide uses a faster,
+    // near-critically-damped spring than Show.
+    grow: f32,
+    grow_vel: f32,
+    pool: SlotPool,
+    wallpaper: WallpaperStrip,
+    pill_scratch: Vec<u8>,
+}
+
+impl PillApp {
+    /// Where the alpha ramp is heading: 1.0 while visible, else 0.0.
+    fn fade_target(&self) -> f32 {
+        if self.visible {
+            1.0
+        } else {
+            0.0
+        }
+    }
+
+    /// Advance the fade ramp one TICK; called every loop round before drawing.
+    fn tick_fade(&mut self) {
+        let target = self.fade_target();
+        if self.alpha != target {
+            self.alpha = step_alpha(self.alpha, target, TICK.as_secs_f32());
+            self.need_redraw = true;
+        }
+        // Bounce spring: one semi-implicit Euler step per tick. Show and Hide
+        // pick their own ω_n/ζ; a mid-flight retarget just re-aims the same
+        // spring from its current state (no jump). While |grow - target| is
+        // still visible we keep redrawing; once it has settled (and the alpha
+        // ramp is done) the loop idles as before.
+        let target = if self.visible { 1.0 } else { 0.0 };
+        if (self.grow - target).abs() > 0.002 {
+            step_grow_tick(
+                &mut self.grow,
+                &mut self.grow_vel,
+                self.visible,
+                TICK.as_secs_f32(),
+            );
+            self.need_redraw = true;
+        }
+    }
+
+    fn handle_ctl(&mut self, ctl: Ctl) {
+        match ctl {
+            Ctl::Show => {
+                self.visible = true;
+                self.need_redraw = true;
+                // Restack on top of the Dynamite clock pill: layer surfaces in
+                // the same layer are ordered by their last set_layer request.
+                self.layer.set_layer(Layer::Overlay);
+                collapse_dynamite_panel();
+                let s = self.scale.max(1) as u32;
+                self.wallpaper
+                    .ensure(self.width * s, STRIP_CROP_LOGICAL_H * s);
+                // Bounce entrance: start collapsed with a small outward velocity
+                // kick so the spring leaps out of the top bar. If a Show lands
+                // mid-shrink, don't restart from 0 — re-aim the running spring
+                // from wherever it is (never jump, no state reset). grow < 0.02
+                // means already snapped to 0 (see step_grow_tick).
+                if self.grow < 0.02 {
+                    self.grow = 0.0;
+                    self.grow_vel = SPRING_KICK;
+                }
+            }
+            Ctl::Hide => {
+                self.visible = false;
+                self.need_redraw = true;
+                // Shrink immediately with the near-critically-damped hide
+                // spring (chosen in tick_fade); alpha fades in parallel. The
+                // clamp in step_grow means grow < 0.02 reads as "gone".
+            }
+            Ctl::Update {
+                level,
+                bands,
+                speaking,
+            } => {
+                self.sim.push(level, &bands, speaking);
+                if self.visible || self.alpha > 0.0 {
+                    self.need_redraw = true;
+                }
+            }
+        }
+    }
+
+    fn draw(&mut self) {
+        let width = self.width;
+        let height = self.height;
+        // Render at the compositor's preferred scale (Mango: 2): buffer pixels =
+        // logical size × scale. The configure size stays logical; the canvas is
+        // resolution-independent so it just gets more pixels.
+        let scale = self.scale.max(1);
+        let scale_u = scale as u32;
+        let buf_w = width * scale_u;
+        let buf_h = height * scale_u;
+        let stride = buf_w as i32 * 4;
+
+        let (buffer, canvas) = match self.pool.create_buffer(
+            buf_w as i32,
+            buf_h as i32,
+            stride,
+            wl_shm::Format::Argb8888,
+        ) {
+            Ok(bc) => bc,
+            Err(e) => {
+                // Buffers not yet released by the compositor: set the retry flag
+                // so the loop redraws next TICK (16 ms). No frame callback is
+                // pending at this call site, so "the next frame retries" would
+                // never fire and the pill would freeze until the next Ctl.
+                eprintln!("static-dictation: pill create_buffer failed: {e}");
+                self.need_redraw = true;
+                return;
+            }
+        };
+
+        let pill_bw = LIVE_PILL_W.min(width) * scale_u;
+        let pill_bh = LIVE_PILL_H.min(height) * scale_u;
+        let pill_bytes = (pill_bw * pill_bh * 4) as usize;
+        if self.pill_scratch.len() != pill_bytes {
+            self.pill_scratch.resize(pill_bytes, 0);
+        }
+        if self.alpha > 0.0 {
+            crate::pill::canvas::render_pill(
+                &mut self.pill_scratch,
+                pill_bw,
+                pill_bh,
+                self.sim.bars(),
+                self.started.elapsed().as_secs_f32(),
+                self.alpha,
+                self.grow,
+            );
+        }
+        let strip_bh = STRIP_CROP_LOGICAL_H * scale_u;
+        let strip = if self.alpha > 0.0 {
+            self.wallpaper.ensure(buf_w, strip_bh)
+        } else {
+            None
+        };
+        composite_pill_over_strip(
+            canvas,
+            buf_w,
+            buf_h,
+            scale_u,
+            self.alpha,
+            strip,
+            strip_bh,
+            &self.pill_scratch,
+            pill_bw,
+            pill_bh,
+        );
+
+        self.layer
+            .wl_surface()
+            .damage_buffer(0, 0, buf_w as i32, buf_h as i32);
+        // No frame callback here — see frame() handler: callbacks self-sustain a
+        // dispatch flood on Mango (~190 ms/round) and starve the fade tick.
+        buffer.attach_to(self.layer.wl_surface()).ok();
+        self.layer.commit();
+    }
+}
+
+impl CompositorHandler for PillApp {
+    fn scale_factor_changed(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        surface: &wl_surface::WlSurface,
+        new_factor: i32,
+    ) {
+        // Mango advertises scale 2. Render at that scale (canvas multiplies),
+        // and record it so draw() sizes buffers correctly; otherwise the
+        // compositor may refuse to map a scale-1 buffer on a scale-2 output.
+        if new_factor > 0 {
+            self.scale = new_factor;
+            surface.set_buffer_scale(new_factor);
+            self.need_redraw = true;
+        }
+    }
+
+    fn transform_changed(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _surface: &wl_surface::WlSurface,
+        _new_transform: wl_output::Transform,
+    ) {
+    }
+
+    fn frame(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _surface: &wl_surface::WlSurface,
+        _time: u32,
+    ) {
+        // The render loop is TICK-driven (16 ms) — every redraw there covers the
+        // fade cadence, and Update Ctls arrive at 16 ms granularity anyway.
+        // Requesting a callback inside draw() would self-sustain a frame flood:
+        // callback -> frame() -> draw() -> callback, which starves the loop's
+        // other duties (callbacks arrive ~5-6 ms after commit, stretching a
+        // ~320 ms fade into ~2 s). So: never request callbacks; draw() is only
+        // called by the loop.
+        //
+        // CONTRACT (enforced by the `frame_callback_*` tests below): the draw
+        // path must NEVER issue a frame request (`.frame(..)` /
+        // `FrameCallbackData` / `wl_callback`). Under slow compositors the
+        // callback arrives ~5-6 ms after commit, so a
+        // callback→request-frame→callback loop ran at 180+ Hz and starved the
+        // 16 ms tick_fade, stretching a ~320 ms fade into ~2 s (~6×). A frame()
+        // callback arrival may ONLY set need_redraw (as here); the 16 ms TICK
+        // re-arms every redraw.
+        if self.visible || self.alpha > 0.0 {
+            self.need_redraw = true;
+        }
+    }
+
+    fn surface_enter(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _surface: &wl_surface::WlSurface,
+        output: &wl_output::WlOutput,
+    ) {
+        let _ = output; // anchor pill to first output; no debug info needed
+    }
+
+    fn surface_leave(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _surface: &wl_surface::WlSurface,
+        _output: &wl_output::WlOutput,
+    ) {
+    }
+}
+
+impl LayerShellHandler for PillApp {
+    fn closed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _layer: &LayerSurface) {
+        self.exited = true;
+    }
+
+    fn configure(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _layer: &LayerSurface,
+        configure: LayerSurfaceConfigure,
+        _serial: u32,
+    ) {
+        self.width = NonZeroU32::new(configure.new_size.0).map_or(LIVE_SURF_W, NonZeroU32::get);
+        self.height = NonZeroU32::new(configure.new_size.1).map_or(LIVE_SURF_H, NonZeroU32::get);
+        self.configured = true;
+        // NEVER commit from inside the configure handler: Mango may send several
+        // configures back-to-back (bunched), and SCT acks each one as it is
+        // dispatched; a commit interleaved between acks desyncs the serial
+        // ("wrong configure serial" → surface killed). Instead mark dirty and
+        // let the render loop draw+commit AFTER the whole batch is dispatched.
+        // The first commit is still a real buffer: need_redraw was initialized
+        // true — the loop draws before Mango ever sees any null-buffer commit,
+        // so the "Mango never maps a first-null-commit surface" trap is dodged
+        // and the surface still gets its initial buffer on the first tick.
+        self.need_redraw = true;
+    }
+}
+
+impl ShmHandler for PillApp {
+    fn shm_state(&mut self) -> &mut Shm {
+        &mut self.shm
+    }
+}
+
+impl OutputHandler for PillApp {
+    fn output_state(&mut self) -> &mut OutputState {
+        &mut self.output_state
+    }
+
+    fn new_output(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _output: wl_output::WlOutput,
+    ) {
+    }
+
+    fn update_output(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _output: wl_output::WlOutput,
+    ) {
+    }
+
+    fn output_destroyed(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _output: wl_output::WlOutput,
+    ) {
+    }
+}
+
+delegate_registry!(PillApp);
+
+impl ProvidesRegistryState for PillApp {
+    fn registry(&mut self) -> &mut RegistryState {
+        &mut self.registry_state
+    }
+    registry_handlers![OutputState];
+}
+
+delegate_dispatch2!(PillApp);
+
+// wl_region has no events; wayland_client still requires a Dispatch impl so the
+// queue can own it. Without this the empty input-region object fails to
+// dispatch and the requests never take effect (SCT examples do the same).
+impl Dispatch<wl_region::WlRegion, ()> for PillApp {
+    fn event(
+        _state: &mut Self,
+        _region: &wl_region::WlRegion,
+        _event: wl_region::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TICK_SECS: f32 = TICK.as_secs_f32();
+
+    /// Sum 16 ms steps until the ramp settles; return (steps_taken, final_alpha).
+    fn run_ramp(from: f32, target: f32, max_steps: usize) -> (usize, f32) {
+        let mut cur = from;
+        let mut steps = 0;
+        while cur != target && steps < max_steps {
+            cur = step_alpha(cur, target, TICK_SECS);
+            steps += 1;
+        }
+        (steps, cur)
+    }
+
+    #[test]
+    fn fade_in_reaches_one_in_about_160ms() {
+        let (steps, end) = run_ramp(0.0, 1.0, 100);
+        assert_eq!(end, 1.0, "must land exactly on target");
+        // 160 ms / 16 ms = 10 ticks; allow one tick of slack for float rounding.
+        assert!((10..=11).contains(&steps), "took {steps} ticks");
+    }
+
+    #[test]
+    fn fade_out_reaches_zero_in_about_160ms() {
+        let (steps, end) = run_ramp(1.0, 0.0, 100);
+        assert_eq!(end, 0.0, "must land exactly on target");
+        assert!((10..=11).contains(&steps), "took {steps} ticks");
+    }
+
+    #[test]
+    fn never_overshoots_or_undershoots() {
+        // Fade-in: monotonic non-decreasing, never above 1.0.
+        let mut cur = 0.0f32;
+        for _ in 0..50 {
+            let next = step_alpha(cur, 1.0, TICK_SECS);
+            assert!(next >= cur && next <= 1.0, "in {cur} out {next}");
+            cur = next;
+        }
+        // Fade-out: monotonic non-increasing, never below 0.0.
+        let mut cur = 1.0f32;
+        for _ in 0..50 {
+            let next = step_alpha(cur, 0.0, TICK_SECS);
+            assert!(next <= cur && next >= 0.0, "in {cur} out {next}");
+            cur = next;
+        }
+    }
+
+    #[test]
+    fn reverses_direction_mid_ramp() {
+        // Half-way into fade-in, flip to fade-out: must glide down from the
+        // current value (not jump) and still reach 0.0 in ~the remaining ramp.
+        let mut cur = 0.0f32;
+        for _ in 0..5 {
+            cur = step_alpha(cur, 1.0, TICK_SECS);
+        }
+        assert!(cur > 0.0 && cur < 1.0);
+        let top = cur;
+        let (steps, end) = run_ramp(top, 0.0, 100);
+        assert_eq!(end, 0.0);
+        assert!(steps <= 11, "reverse ramp took {steps} ticks");
+        // And back mid-fade-out to fade-in again.
+        cur = end;
+        for _ in 0..3 {
+            cur = step_alpha(cur, 0.0, TICK_SECS);
+        }
+        let (steps, end) = run_ramp(cur, 1.0, 100);
+        assert_eq!(end, 1.0);
+        assert!(steps <= 11, "second reverse took {steps} ticks");
+    }
+
+    #[test]
+    fn degenerate_inputs_are_stable() {
+        assert_eq!(step_alpha(0.5, 0.5, TICK_SECS), 0.5);
+        assert_eq!(step_alpha(0.4, 1.0, 0.0), 0.4); // dt=0: no movement
+        assert_eq!(step_alpha(0.4, 1.0, -0.016), 0.4); // negative dt: no movement
+        assert!(step_alpha(2.0, 0.0, TICK_SECS) <= 1.0);
+        assert!(step_alpha(-0.5, 1.0, TICK_SECS) >= 0.0);
+    }
+
+    // ---- grow (bounce) spring tests ----
+
+    const EPS: f32 = 1e-4;
+
+    #[test]
+    fn entrance_overshoots_firmly_and_settles() {
+        // Re-measured contract for ζ=0.45 / ceiling 1.12 / kick 4.6: the old
+        // jelly ride (ζ=0.28, two >1% wiggles, 3-tick 1.25 plateau) is gone —
+        // the stiffer spring gives ONE firm visible overshoot (≈1.12), a faint
+        // sub-1% second ripple (invisible by construction), and a settle at
+        // tick 21 = 352 ms. Measured profile (ticks 0..): 0.164, 0.373, 0.59,
+        // 0.787, 0.949, 1.067, 1.12, 1.12, 1.12, 1.116, 1.1, … 1.0036 @ 25 … 1.0.
+        let mut grow = 0.0f32;
+        let mut vel = SPRING_KICK;
+        let mut excursions = 0u32;
+        let mut above = false;
+        let mut peaked_above_1_05 = false;
+        let mut peak = 0.0f32;
+        let mut last_outside_tick = 0usize;
+        for i in 0..50 {
+            step_grow_tick(&mut grow, &mut vel, true, TICK_SECS);
+            assert!(grow.is_finite(), "tick {i}: grow not finite");
+            assert!(grow >= 0.0, "tick {i}: grow dipped below 0");
+            // A wiggle only counts if it clears the 1% settle tolerance —
+            // sub-1% grazes are invisible and must not read as wobbles.
+            if grow > 1.01 && !above {
+                excursions += 1;
+            }
+            above = grow > 1.01;
+            peak = peak.max(grow);
+            peaked_above_1_05 |= grow > 1.05;
+            if (grow - 1.0).abs() >= 0.01 {
+                last_outside_tick = i;
+            }
+        }
+        // ONE visible overshoot excursion past the 1% tolerance: the old
+        // contract (two >1% wiggles) is unattainable at ζ=0.45 — the raw
+        // second peak is 1.0036, inside the settle tolerance.
+        assert_eq!(excursions, 1, "want one firm overshoot, no jelly ring");
+        // First overshoot clearly visible (past 1.05) and rides to ≈1.12.
+        assert!(peaked_above_1_05, "overshoot must clear 1.05");
+        assert!(
+            (1.09..=1.121).contains(&peak),
+            "overshoot peak {peak} off the measured 1.12"
+        );
+        // Settle budget: the last excursion outside 1% must end by tick 36
+        // ((36+1)·16 ms = 592 ms ≤ the 600 ms budget); measured: tick 21 =
+        // 352 ms — the stiffer spring settles ~110 ms faster than the old
+        // jelly's tick 28.
+        assert!(
+            last_outside_tick <= 36,
+            "still wobbling at tick {last_outside_tick}"
+        );
+        assert!((grow - 1.0).abs() < 0.01, "end value {grow} drifted");
+    }
+
+    #[test]
+    fn hide_contraction_snaps_within_144_224ms() {
+        let mut grow = 1.0f32;
+        let mut vel = 0.0f32;
+        let mut ticks = 0;
+        while grow > 0.0 && ticks < 25 {
+            step_grow_tick(&mut grow, &mut vel, false, TICK_SECS);
+            ticks += 1;
+            assert!(grow.is_finite() && grow >= 0.0, "tick {ticks}: grow={grow}");
+        }
+        assert!(ticks < 25, "grow never snapped (stuck at {grow})");
+        assert_eq!(grow, 0.0, "must snap to exactly 0 (grow<0.02 rule)");
+        // Timing budget: 144-224 ms (measured: 11 ticks = 176 ms).
+        let ms = (ticks as u128) * TICK.as_millis();
+        assert!(
+            (144..=224).contains(&ms),
+            "hide contraction took {ms} ms ({ticks} ticks)"
+        );
+    }
+
+    #[test]
+    fn show_mid_hide_retargets_without_nans_or_range_violations() {
+        for hide_ticks in [0usize, 1, 4, 8, 12, 16, 20] {
+            let mut grow = 1.0f32;
+            let mut vel = 0.0f32;
+            for _ in 0..hide_ticks {
+                step_grow_tick(&mut grow, &mut vel, false, TICK_SECS);
+            }
+            // Mid-flight Show: spring re-targets from current state (no jump,
+            // no reset). Also cover Hide mid-Show after 10 entrance ticks.
+            for round in 0..60 {
+                step_grow_tick(&mut grow, &mut vel, true, TICK_SECS);
+                assert!(
+                    grow.is_finite() && (0.0..=GROW_CEIL_SHOW).contains(&grow),
+                    "hide={hide_ticks} tick {round}: grow={grow} vel={vel}"
+                );
+            }
+            assert!((grow - 1.0).abs() < 0.01, "hide={hide_ticks}: end {grow}");
+            // And the mirror case: Hide arriving mid-Show, sweeping over the
+            // launch, the 1.25 overshoot plateau, and the way down.
+            for show_ticks in [0usize, 2, 6, 10, 14] {
+                let mut grow = 1.0f32;
+                let mut vel = SPRING_KICK;
+                for _ in 0..show_ticks {
+                    step_grow_tick(&mut grow, &mut vel, true, TICK_SECS);
+                }
+                for round in 0..30 {
+                    step_grow_tick(&mut grow, &mut vel, false, TICK_SECS);
+                    assert!(
+                        grow.is_finite() && (0.0..=GROW_CEIL_SHOW).contains(&grow),
+                        "hide@show{show_ticks} tick {round}: grow={grow} vel={vel}"
+                    );
+                }
+                assert_eq!(grow, 0.0);
+            }
+        }
+    }
+
+    #[test]
+    fn draw_passes_grow_to_render_pill_by_construction() {
+        // The draw() call site must thread the spring state through to
+        // render_pill (compile-level assertion, by construction):
+        // `render_pill(.., self.alpha, self.grow)` — see `PillApp::draw`.
+        let (g, _v) = step_grow(
+            0.5,
+            0.0,
+            1.0,
+            TICK_SECS,
+            SPRING_OMEGA_SHOW,
+            SPRING_ZETA_SHOW,
+        );
+        assert!((g - 0.5).abs() < 0.5 + EPS);
+    }
+
+    // ---- regression guard: the draw path must never request frame callbacks ----
+    //
+    // CONTRACT (see the frame() handler prose above): draw() and the loop must
+    // never issue a frame request. History: a past regression called
+    // wl_surface.frame() from the draw path; under slow compositors (Mango on
+    // this machine) the callback arrived ~5-6 ms after commit, so a
+    // callback→request-frame→callback loop ran at 180+ Hz and starved the
+    // 16 ms tick_fade — a ~320 ms fade stretched to ~2 s (~6×). Fixed in
+    // d07b8c0: frame()/callback handling only sets need_redraw; the 16 ms
+    // TICK re-arms every redraw.
+    //
+    // A real seam test would need a live PillApp, which owns SlotPool and
+    // LayerSurface (unconstructible off-Wayland) — driving it would require a
+    // refactor, which is out of scope. So these are deliberately crude
+    // grep-style source-contract tests: they catch exactly the regression that
+    // shipped and need no refactor.
+
+    /// Source of tsar.rs, for the contract tests below.
+    const TSAR_SRC: &str = include_str!("tsar.rs");
+
+    /// Strip `//` line comments so the tests' own literals (this prose, the
+    /// token lists) cannot self-match the contract assertions.
+    fn strip_line_comments(src: &str) -> String {
+        src.lines()
+            .map(|l| l.split("//").next().unwrap_or(""))
+            .collect::<Vec<&str>>()
+            .join("\n")
+    }
+
+    /// Slice from `start_marker` up to the next function or impl boundary, so
+    /// the scan covers the whole body. Panics if a marker is missing: the
+    /// contract must fail loudly if the code it guards is renamed away.
+    fn body_until_next_fn<'a>(src: &'a str, start_marker: &str) -> &'a str {
+        let start = src
+            .find(start_marker)
+            .unwrap_or_else(|| panic!("contract anchor {start_marker:?} missing"));
+        let rest = &src[start + start_marker.len()..];
+        let end = [rest.find("\nfn "), rest.find("\n    fn ")]
+            .into_iter()
+            .flatten()
+            .min()
+            .unwrap_or(rest.len());
+        &rest[..end]
+    }
+
+    #[test]
+    fn draw_path_never_requests_frame_callbacks() {
+        let code = strip_line_comments(TSAR_SRC);
+        // Whole live (pre-test-module) code: none of the regression tokens may
+        // exist anywhere outside the test module.
+        let live = &code[..code.find("#[cfg(test)]").expect("test module anchor")];
+        for token in [".frame(", "FrameCallbackData", "wl_callback"] {
+            assert!(
+                !live.contains(token),
+                "frame-callback regression: token {token:?} reappeared in live code"
+            );
+        }
+        // And the draw() body specifically — the site where it shipped.
+        let draw = body_until_next_fn(&code, "fn draw(&mut self)");
+        for token in [".frame(", "FrameCallbackData", "wl_callback"] {
+            assert!(!draw.contains(token), "draw() must never contain {token:?}");
+        }
+    }
+
+    #[test]
+    fn frame_callback_sets_only_need_redraw() {
+        let code = strip_line_comments(TSAR_SRC);
+        let handler = body_until_next_fn(&code, "fn frame(");
+        // The callback's only side effect is arming the tick-driven redraw.
+        assert!(
+            handler.contains("need_redraw = true"),
+            "frame() must set need_redraw (the 16 ms tick re-arms rendering)"
+        );
+        for token in ["self.draw(", "commit(", ".frame("] {
+            assert!(
+                !handler.contains(token),
+                "frame() must not {token:?} — draw/commit belongs to the tick loop"
+            );
+        }
+    }
+
+    #[test]
+    fn frame_callback_starve_contract_is_documented() {
+        // The explanatory prose must survive refactors: without it the next
+        // "why not frame callbacks for cadence?" question gets re-answered
+        // wrong. Both phrasings carry the rule and the WHY.
+        assert!(
+            TSAR_SRC.contains("starves") && TSAR_SRC.contains("never request callbacks"),
+            "the frame-callback starvation explanation in the frame() handler was removed"
+        );
+        assert!(
+            TSAR_SRC.contains("stretching a ~320 ms fade into ~2 s"),
+            "the measured regression numbers (~320 ms → ~2 s) were removed"
+        );
+    }
+
+    #[test]
+    fn compositor_masks_bar_clears_windows_and_stays_premultiplied() {
+        let scale = 2u32;
+        let dst_w = LIVE_SURF_W * scale;
+        let dst_h = LIVE_SURF_H * scale;
+        let pill_w = LIVE_PILL_W * scale;
+        let pill_h = LIVE_PILL_H * scale;
+        let strip_h = STRIP_CROP_LOGICAL_H * scale;
+        let strip_rgb = vec![120u8; (dst_w * strip_h * 3) as usize];
+        let mut pill = vec![0u8; (pill_w * pill_h * 4) as usize];
+        let bars = [0.8f32; crate::pill::vecmentor::NUM_BARS];
+        crate::pill::canvas::render_pill(&mut pill, pill_w, pill_h, &bars, 0.5, 1.0, 1.0);
+
+        let mut out = vec![0u8; (dst_w * dst_h * 4) as usize];
+        composite_pill_over_strip(
+            &mut out,
+            dst_w,
+            dst_h,
+            scale,
+            1.0,
+            Some(&strip_rgb),
+            strip_h,
+            &pill,
+            pill_w,
+            pill_h,
+        );
+
+        // Premultiplied invariant everywhere (B, G, R <= A).
+        for px in out.as_chunks::<4>().0 {
+            assert!(
+                px[0] <= px[3] && px[1] <= px[3] && px[2] <= px[3],
+                "non-premultiplied pixel {px:?}"
+            );
+        }
+        // Clock + workspace disc row (logical y=15, dx=±90 within middle) must be opaque.
+        let py_mid = 15 * scale;
+        let left_disc_x = (LIVE_SURF_W / 2 - 90) * scale;
+        assert_eq!(out[((py_mid * dst_w + left_disc_x) * 4 + 3) as usize], 255);
+        // Window zone (logical y >= 37 -> physical y >= 55.5 on 1.5x) MUST have zero alpha!
+        for y in (37 * scale)..dst_h {
+            for x in 0..dst_w {
+                assert_eq!(
+                    out[((y * dst_w + x) * 4 + 3) as usize],
+                    0,
+                    "overlap below top bar at ({x},{y})"
+                );
+            }
+        }
+        // Alpha=0 blanks the entire surface cleanly.
+        composite_pill_over_strip(
+            &mut out,
+            dst_w,
+            dst_h,
+            scale,
+            0.0,
+            Some(&strip_rgb),
+            strip_h,
+            &pill,
+            pill_w,
+            pill_h,
+        );
+        assert!(out.iter().all(|&b| b == 0), "alpha=0 must clear surface");
+    }
+}
