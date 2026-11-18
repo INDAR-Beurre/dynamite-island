@@ -78,9 +78,9 @@ def pill_bbox(a: np.ndarray) -> dict | None:
         ends = np.concatenate((cut, [xs.size - 1]))
         centre = W // 2 - lo
         run = None
-        for a, b in zip(starts, ends):
-            if xs[a] <= centre <= xs[b]:
-                run = (a, b)
+        for s, e in zip(starts, ends):   # not a/b: `a` is the image array
+            if xs[s] <= centre <= xs[e]:
+                run = (s, e)
                 break
         if run is None:
             run = max(zip(starts, ends), key=lambda ab: xs[ab[1]] - xs[ab[0]])
@@ -98,6 +98,22 @@ def pill_bbox(a: np.ndarray) -> dict | None:
     if y0 == 0 and x0 <= lo and x1 >= hi - 1:
         return {"not_collapsed": True, "x": x0, "y": y0, "w": w, "h": h,
                 "reason": "dark surface fills the scan window from y=0"}
+    # A dark app window merges into the bbox too, and it neither starts at y=0
+    # nor fills the window, so the guard above misses it. Height cannot separate
+    # them (bar_height clamps to 80 logical = 120 device px). The capsule's
+    # distinguishing property is its MATERIAL: interior luminance 0-2, where
+    # dark UI themes sit at 18-30.
+    # Use a low percentile of the WHOLE box, not the left/right padding: the
+    # capsule is a stadium, so its outer 12% is entirely rounded cap and samples
+    # the wallpaper through the corners (that read 5.0 on a bright wallpaper and
+    # refused a genuine pill). Glyph ink is the bright minority, so p25 is fill.
+    # Threshold 12, not 4: the reference fill measures 0-2 but the live panel
+    # fills at exactly 5, and both are the capsule. Dark UI themes sit at 18-30,
+    # so 12 separates material from window without refusing a real pill.
+    interior = float(np.percentile(a[y0:y1 + 1, x0:x1 + 1], 25))
+    if interior > 12.0:
+        return {"not_collapsed": True, "x": x0, "y": y0, "w": w, "h": h,
+                "reason": f"interior luminance p25 {interior:.1f} > 12 (not the black capsule)"}
     return {"x": x0, "y": y0, "w": w, "h": h,
             "cx": (x0 + x1) / 2, "cy": (y0 + y1) / 2,
             "aspect": round(w / h, 3) if h else None,
