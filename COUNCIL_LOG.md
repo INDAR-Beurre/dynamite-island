@@ -774,3 +774,20 @@ And it is not just the upscale — per morph frame the code also does `stage_1x.
 2. Stop zeroing three stage-sized buffers per frame; size the scratch to the rects actually drawn.
 3. Adopt the proven bit-exact hoisted upscale (**1.61×**, `scripts/perf/upscale_bench.rs`) for whatever region remains.
 **Testable prediction:** 62 ms → sub-5 ms per paint ⇒ **10 poses at 60 Hz**. The motion harness confirms or refutes it; do not accept a claim without the pose count.
+
+### Motion re-run, 3 trials, real compositor PTS — the defect is now triple-confirmed
+`scripts/motion/run_all.sh /tmp/motion-r1b-3t 3`, exit 1, **4 gates FAIL**:
+| gate | measured | bound |
+|---|---|---|
+| `latency_ms` | **317.0** | ≤260 ms |
+| `settle_ms` | **317.0** | ≤260 ms (anim 160 + interval + slack) |
+| `morph_poses` | **3** | ≥8 |
+| `pose_hold_median_ms` | **83.8** | ≤24 ms |
+**A 160 ms animation takes 317 ms to settle — 2× its intended duration.** That is the owner's "laggy", quantified.
+
+**The capture is NOT the bottleneck** (this rules out the instrument as the cause): recorded CFR runs at **59.9 fps, interval median 17.0 ms, p95 17.0 ms**, clock `compositor_pts`. Three trials, poses **[3, 3, 3]**, duplicate ratio **0.846 / 0.882 / 0.846** — 85–88% of consecutive frame pairs are *identical while the morph is in flight*. Completeness 0.214 / 0.167 / 0.214. Scores **26.5 / 23.3 / 26.5**, median **26.5**.
+**The damage-gated VFR cross-check is the smoking gun**: only **36 of 120** frames produced, **18.5 fps**, interval median 66 ms. The panel itself commits at ~18 fps mid-morph. Predicted from the 62 ms full-stage upscale: 1000/62 ≈ **16 fps**. Measured 18.5. The mechanism and the measurement agree.
+
+**✅ Crop repair verified**: the settled control now shows **zero-delta 119/121, spikes 0** — previously median nonzero delta 13.8 with 4 spikes on a pill that cannot move. Deriving the region from the live pill removed the wallpaper noise floor.
+
+**The 5 UNRESOLVED gates are correct behaviour, not instrument gaps** — `settle_duration_ms`, `width_reversals`, `overshoot_frac`, `in_flight_samples`, `duplicate_ratio` are all gated on `resolved_flight` (`scripts/motion/motion.py:797-830`), and `in_flight_samples = 0`: **no intermediate geometry was captured at all**. The harness refuses to grade a curve it never saw. Do not "fix" this. **These five resolving after the perf fix is itself evidence of improvement.**
