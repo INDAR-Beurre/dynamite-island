@@ -421,7 +421,15 @@ class App:
         def lum(i):
             return (raw[i] * 299 + raw[i + 1] * 587 + raw[i + 2] * 114) // 1000
 
-        DARK = 40
+        # 40 was too permissive: a DARK WALLPAPER measures p25=21 either side
+        # of the pill, so at 40 the outside scored 0.90 "dark" and every
+        # liveness assertion failed (138 fails across all five groups) while
+        # the panel was actually fine. Measured separation on such a frame:
+        #   DARK=40 -> inside 0.83 / outside 0.90  (indistinguishable)
+        #   DARK=12 -> inside 0.79 / outside 0.00  (clean)
+        # The capsule interior is genuinely black (p25=2); 12 sits between
+        # that and a dark UI theme's 18-30.
+        DARK = 12
         # Capsule detector, shared shape with scripts/measure.py: scan a NARROW
         # window around screen centre and stop at the first sparse row. The old
         # version picked the densest row in a 400 px window (which lands on an
@@ -476,6 +484,11 @@ class App:
             if b - a > best_w:
                 best_w, x0, x1 = b - a, a, b
         if x0 is None or best_w < 20:
+            return None
+        # Same refusal as scripts/measure.py: a dark surface that starts at
+        # y=0 and spans the scan window is not the capsule. Without this the
+        # row scan never hits a sparse row and the box grows to the window.
+        if y0 == 0 and (y1 - y0) >= band - 2:
             return None
         cx = (x0 + x1) // 2
 
