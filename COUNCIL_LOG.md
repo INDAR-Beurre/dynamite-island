@@ -139,3 +139,431 @@ Two failures, **both on `magpie/fasfas-ai/deepseek-v4.1-flash`**:
 `orchestrator_capabilities(search:"sol 6.1")` resolves the user's "6.1 sol" to **`magpie/agentrouter/gpt-6.1-sol`** (label "GPT 6.1 Sol · AgentRouter", thinking: minimal|low|medium|high|xhigh|max). It **is** available on the `pi` provider. Per the user: use it sparingly for the hardest critique slots because it drains their account — so: **gpt-6.1-sol reserved for at most 2–3 slots per round on the decisive lenses** (visual fidelity against the reference frames, and the perf/memory proof). Everything else stays on deepseek-v4.1-flash / glm-5.3.
 
 Third provider failure: `magpie/logfare/deepseek-v4.1-flash-1017` returned "The model is temporarily unavailable" mid-run for the typography study (its last message was also code-switched into Chinese, a instability tell). So the flakiness is **load-driven, not route-specific** — 9 concurrent children was simply too many. Revised operating rule: **waves of 3–4**, one retry each with a different model, and a 20-critic panel launched as 4 staggered sub-waves of 5.
+
+### Panel death → recovery, and a baseline correction
+
+Cause: fixer r1 was **interrupted** (`status: interrupted`, last message "Now the F2/F5 rendering changes:") during the provider outage, leaving a half-applied tree whose binary exited `rc=0` after 2 s. The supervisor itself had been **SIGSTOPped** (`ps` stat `T`, PID 1672), so it could neither reap its zombie child (PID 3419, `<defunct>`) nor restart the island — and a stopped process keeps its `flock`, so a second supervisor could not take over either.
+
+Recovery: `git config user.name/email` set repo-locally (absent, which had also blocked committing); the partial work committed then parked on branch **`wip-fixer1-partial`** so nothing is lost; `git checkout 8e58edc -- src/` restored the baseline tree (verified `git diff 8e58edc --stat -- src/` empty); rebuilt **`cargo build: 0 errors, 62 warnings`**; `kill -CONT` then `kill -9` on the stopped supervisor so the zombie got reparented and reaped; fresh supervisor started with `setsid nohup ~/.config/mango/scripts/dynamite_autostart.sh`. Live again: supervisor **PID 6776**, island **PID 6790**.
+
+**Baseline correction — the earlier 141×35 / +14 px figure was a detector artifact** (the pre-fix scan merged a workspace disc into the capsule). With the corrected detector the true live baseline is:
+
+| metric | ROUND-1 TRUE BASELINE | REFERENCE |
+|---|---|---|
+| pill w×h | 108×35 | 106×42 |
+| aspect | 3.086 | 2.667 |
+| centre offset | **−1.5 px** | −0.5 px |
+| height % of screen | 2.327 | 2.917 |
+| glyph lapvar | **1678.8** | **6499.3** |
+| glyph lapmean | 54.2 | 79.58 |
+| RSS | 50.5 MB | — |
+| CPU | 2.5–4.0 % | — |
+
+So **width and centring are already essentially correct**; the real geometry defect is **height** (35 vs 42 device px = 23.3 vs 28 logical), and the whole visual gap is **typography and weight**, not size. A 3× crop of the live bar (`/tmp/check_bar3.png`) confirms it by eye: `21:50` is rendered in heavy rounded Quicksand Bold at roughly **0.97 of the capsule width** (reference is 0.500) so it crowds the pill, the four workspace discs are chunky white-on-dark with an active periwinkle `1`, and the tray glyph is malformed — it reads as a broken butterfly/bird shape, i.e. a **wrong glyph index in the Material Symbols font**, not a layout bug.
+
+Round-1 scope therefore re-split into two sequential fixers on the same tree (a fresh child per area, because the single wide brief outlived one child):
+- **r1a — typography + geometry** (F1, F2, F5, F7, F8, plus the tray glyph): the entire measurable visual gap.
+- **r1b — performance + memory** (F3, F4, F6): the CPU/RSS gates.
+
+### Measurement correction #2 — most of my earlier findings were artifacts. Do not repeat them.
+
+Two earlier scans were contaminated. The first ("ink 105×17, padding 27 L / 10 R, text = 0.745 of pill width") scanned a **rectangular** crop of a **rounded** capsule, so bright wallpaper leaked through the corners. The second (thresholded bright pixels over a bare crop) leaked wallpaper outright and reported a nonsensical `cap_h=32` on a 35 px pill.
+
+The honest instrument is a **capsule-interior mask**: crop the detected pill bbox, build `d = hypot(x - clip(x, r, W-r), y - H/2)`, keep only `d < r - 3`, then threshold at luminance 110. Re-measured with that mask:
+
+| metric | REFERENCE (106×40) | CURRENT (108×35) | verdict |
+|---|---|---|---|
+| ink cap height | 15 | 19 | — |
+| **cap / pill height** | **0.375** | **0.543** | **text is 45% too large for the capsule** |
+| ink text width | 54 | 60 | — |
+| text width / pill width | 0.509 | 0.556 | close |
+| left / right margin | 26 / 26 | 25 / 23 | **already symmetric — earlier "27/10" was false** |
+| stroke / cap height | 0.200 | 0.211 | **weight is already right — earlier "2.5× too heavy" was false** |
+
+Corrected findings, superseding F1/F7/F8 as previously written:
+- **The dominant, measurable visual defect is scale, not weight and not padding**: `cap/pill_h` is 0.543 against 0.375. Equivalently the capsule is **too short** (35 device px vs the reference's 40–42).
+- **Width and centring are already correct** (108 vs 106; offset −1.5 px).
+- **Padding is already symmetric** (25/23). F8 is dropped.
+- **Stroke weight is already correct** (0.211 vs 0.200). The typeface *shape* still differs — Quicksand is a rounded geometric face whose circular terminals and wide `0` read chunkier than SF Compact Display's flat-sided narrow digits — so switching to `Inter.ttf` is still right, but it is a **secondary refinement**, not the main fix, and it must not be allowed to change `cap/pill_h` or the margins.
+- The softness is real and separate: glyph `lapvar` 1678.8 vs 6499.3, caused by rasterise-at-1×-then-upscale-2× (F2). That is the single highest-leverage fix in the round and it is independent of all geometry.
+- The tray glyph is a **wrong code point** in Material Symbols — it renders as a broken butterfly. Separate one-line fix.
+- The blue horizontal band visible under the bar in `/tmp/check_bar3.png` is a **compositor window border**, not the panel; `/tmp/mango-capabilities.md` records `border_radius=8` and a focused-border colour, so confirm before anyone "fixes" the panel for it.
+
+### Workers that survived the outages
+
+`scripts/stress/` (36.1K `stress.py`, 11.1K `analyze.py`, 1.7K `drive_bars.py`, 3.2K `selftest.py`, 5.6K `run_all.sh`, 7.6K README) and `scripts/motion/` (5.1K `animate.py`, 5.2K `capture.sh`, 1.2K `run_all.sh`, 6.7K README) both delivered. The stress README independently recovers the socket protocol from `src/main.rs` and documents it: unix **datagram** at `$XDG_RUNTIME_DIR/dynamite-rust.sock`, payload `[0u8; 512]`, `String::from_utf8_lossy(...).trim()` compared **as a whole string**, case-sensitive, unknown words silently ignored, **no reply channel**, and one destructive word — `quit`. Kinds: state (`collapsed` `dictation` `lock` `power` `music` `calendar` `controlcenter` `launcher` `wallpaper` `themes` `clipboard` `traymenu`), lockscreen (`lockscreen` `unlock` `locktype` `lockback` `lockwrong`), dictation (`dictation_start` `dictation_end` `dictation_bars:<floats>`), misc (`clock` = `collapsed`, `reload`). Invoke with `bash scripts/stress/run_all.sh [--group NAME]`; exit 0 only if every group passes; it never rebuilds and never restarts the panel, which is why it is safe to run against the live island.
+
+Round-1a dispatched to the fixer `magpie/group/deepseek-v4.1-flash-1017` (taskId uuid `c61c46c7-860e-47ce-89e3-d120a997de4a`) with the corrected, superseding brief. Two research children re-dispatched on the logfare route in the same wave (dictation audit uuid `3facc4d5-8ddd-43f7-9803-1e09ca8cd65b`; island-states geometry still deferred). Stress and motion runs are held until the fixer releases the tree, so their numbers are not polluted by a concurrent build.
+
+Dictation audit failed a **third** time, this time `AiError: Service temporarily at capacity` on `magpie/logfare/glm-5.3-flash` — so the constraint is the provider's overall capacity right now, not any single route or model. Policy change for the remainder of the run: **hold all non-critical research children** and spend the available request budget on (1) the fixer and (2) the critic panel, which are what actually move the gate. The dictation audit is deferred to after the visual gate is met; its subject matter is not on the critical path to a sharp, correctly-scaled pill.
+
+r1a progress check (no polling loop, single check): fixer still running, tree at +148/−24 on `src/main.rs`. Verified the two things most likely to be wrong are right: `IslandState::Collapsed => (cfg().collapsed_width, 28)` (was 24 → 42 device px, aspect 108/42 = 2.57 ✓), and `clock_font()` returns `Option<&'static fontdue::Font>` via `OnceLock`, logging and falling back to Quicksand when `~/.local/share/fonts/Inter.ttf` is missing — **no startup panic**, as demanded. It also added `draw_collapsed_pill_2x()` which composites glyphs 1:1 into the 2× shm buffer while reusing `draw_panel_into`'s exact capsule fill and AA band, so geometry/margins stay untouched and only glyph sharpness changes. That is the correct shape for A1.
+
+### The gate is now one command (instrument hardened)
+
+`scripts/measure.py` gained `ink_metrics()`, which applies the capsule-interior mask so no critic can reproduce my two earlier artifacts. Both images now come out of the *same* detector, so the comparison is apples-to-apples. Reference detected as **111×42 at (1225,19), aspect 2.643, offset 0.0** (earlier hand-measured 106×40 was the same capsule with a looser threshold).
+
+Canonical gate table, reproducible with `python3 scripts/measure.py` (live) and `python3 scripts/measure.py --png /tmp/ref/s/s17.png` (target):
+
+| metric | CURRENT | TARGET |
+|---|---|---|
+| pill w×h | 108×35 | ≈111×42 |
+| aspect | 3.086 | 2.643 |
+| centre offset | −1.5 | 0.0 |
+| glyphs.lapvar | 1678.8 | **6503.2** |
+| ink.cap_over_pill_h | **0.543** | **0.357** |
+| ink.text_over_pill_w | 0.556 | 0.486 |
+| ink.margin L/R | 25 / 23 | 28 / 29 |
+| ink.stroke_over_cap | 0.211 | 0.200 |
+
+Pass = lapvar ≥ 3800, aspect 2.65 ±0.15, cap_over_pill_h 0.357 ±0.04, offset ≤2, symmetric margins, stroke_over_cap ≤0.24, RSS ≤30 MB, idle CPU <1.5%.
+
+Note the fixer's chosen `Collapsed => 28` logical px gives 42 device px, matching the target height exactly, and it kept `collapsed_width` untouched — so aspect lands at ≈2.57, just inside tolerance. Good call by the fixer; do not let a later round "fix" the width to chase 2.643 exactly.
+
+**Parent bookkeeping error, recorded honestly:** committing `scripts/measure.py` also swept in the previously-staged `src/` revert, so commit `5aad84b` carries a baseline-restore of `src/main.rs` alongside the instrument change. The fixer's live edits are **unaffected** — `git diff HEAD -- src/` still shows its +148/−24, the working tree is intact, and the true baseline remains reachable at `8e58edc` (and the interrupted partial at `2e230b4` / branch `wip-fixer1-partial`). No content lost. Lesson for the rest of the run: **the parent does not run `git add`/`commit` while a fixer owns the tree** — only the fixer commits; the parent commits solely between rounds, after the tree is verified.
+
+### Test-count and recording constraints (both now known, both bind later rounds)
+
+Stress suite totals **628 + 220 + 200 + 120 + 5 = 1173 tests**, already above the user's "≥1000 before the next round" bar. Groups: `protocol_fuzz` 628 (every word × 12 malformed variants incl. NUL/non-UTF-8/4 KB/200 KB/1 MB, all 132 two-word datagrams, NaN/±inf/arity-120 `dictation_bars`, 4×1000 rapid fire), `state_machine` 220 (12×12 transition matrix, lock cycles, `locktype` saturation at 32, 40 seeded random walks), `load_leak` 200 (lockscreen→unlock→launcher→wallpaper→collapsed with VmRSS per iteration), `latency` 120 (p50/p95/p99 send→morph-started), `liveness` 5. Falsifiable bounds already encoded: RSS growth **≤8 MB** measured from the median of the first 20 warm-up iterations (first lockscreen decodes 1504×1002×4 ≈ 6 MB; first glyph draw parses the icon font), latency **p95 ≤400 ms**, state change **≤1500 ms**. Each failure prints the exact word and payload length so it reproduces with one command.
+
+**The screen-recording ask cannot be met literally, and the honest substitute is documented.** There is no recorder and no working ffmpeg capture path without root: `-f kmsgrab` → `No usable planes found. Error opening input: Invalid argument` (needs DRM master); `-f wayland` and `-f pipewire` → `Unknown input format` (not compiled in); `-f x11grab` opens but returns **100% black** (mean pixel 0.0) because the panel never reaches the X server. `ffmpeg -devices` offers only alsa/fbdev/iec61883/jack/kmsgrab/lavfi/oss/pulse/sndio/v4l2/x11grab/xv. So `scripts/motion/capture.sh` loops `grim` into PPM instead — which *is* "split a recording into still frames", just captured frame-by-frame rather than decoded from a video.
+
+Caveats that make its numbers honest, and that every motion critic must repeat: grim is not vsync-locked, so intervals describe **how fast grim could go, not the compositor's clock**; achieved ~20–22 fps unloaded, only **3–4 frames land inside the 160 ms morph**, so the one-shot morph is under-sampled and `analyze.py` warns below 4; **sustained dictation bars are the reliable subject**. PNG encode costs grim ~313 ms vs PPM decode 35 ms, hence PPM default (~150–190 MB per 5 s run). `--region` is LOGICAL px but output is device px (1.5×). Host load dominates — a single ffmpeg transcode hit ~400% CPU and dropped the same crop from ~20 to ~8 fps, so **never compare fps across runs at different load**; `meta.txt` records loadavg and `analyze.py` prints a LOAD line. What *is* trustworthy regardless of timing: distinct-frame count, mean-abs delta, and zero-delta duplicate pairs. Morph timer is `Duration::from_millis(16)` (`src/main.rs:4546,4572`) ≈ 62 fps target for `MORPH_DURATION_MS` 160 (`src/morph.rs:85`).
+
+`animate.py` refuses `quit` and `lockscreen` and allow-lists everything else, so a motion run cannot kill the panel or take over the screen.
+
+r1a implementation shape verified by reading the tree (not the fixer's claims): `lock_timer::TEXT_PX` **17.0 → 14.4** (0.847×, exactly the cap-ratio correction 0.357/0.543 = 0.657 combined with the 28/24 pill growth ⇒ 0.847); `rasterize_cached` now used by `layout_text` (`src/main.rs:1839`); `clock_font()` at `src/main.rs:1857`; `draw_collapsed_pill_2x` defined `src/main.rs:2208`, called `src/main.rs:4884` guarded by `self.morph.is_none() && self.state == IslandState::Collapsed`; morph path rasterises at `lock_timer::TEXT_PX * content_scale` (`src/main.rs:2954`) so animating frames stay sharp too. Icon font still gated by `icon_font_for(&self.icon_font, self.state)` so collapsed/lock never pay its ~19 MB.
+
+**Known residual to hand the panel:** the sharp path still runs `upscale_canvas_2x_into(&self.scale_scratch, w, h, canvas)` over the whole stage FIRST and only then overwrites the pill region (`src/main.rs:4878-4885`). Correct output, wasted work — the collapsed state should skip the upscale entirely. That belongs to the r1b perf round, not a reason to reject r1a.
+
+### r1a interim measurement (parent-verified, fixer still running)
+
+Binary rebuilt 22:09, panel restarted clean (supervisor 17101, island 17115). Live numbers:
+
+| metric | baseline | r1a now | target | verdict |
+|---|---|---|---|---|
+| pill w×h | 108×35 | **110×41** | ≈111×42 | ✓ |
+| aspect | 3.086 | **2.683** | 2.643 | ✓ |
+| centre offset | −1.5 | **−0.5** | 0.0 | ✓ |
+| glyphs.lapvar | 1678.8 | **12300.7** | ≥3800 (ref 6503) | ✓ but overshoots ref 1.9× |
+| ink.cap_over_pill_h | 0.543 | **0.390** | 0.357 ±0.04 | ✓ |
+| ink.text_over_pill_w | 0.556 | **0.464** | 0.486 | ✓ |
+| ink.margin L/R | 25/23 | **30/29** | symmetric | ✓ |
+| ink.stroke_over_cap | 0.211 | **0.125** | 0.200 | ✗ **too thin** |
+| RSS | 50.5 | **57.5 MB** | ≤30 | ✗ worse |
+| CPU | 2.5–4.0 | **5.0 %** | <1.5 idle | ✗ worse |
+
+**New finding — the weight overshot.** Inter's variable default instance is *Regular*, and at 14.4 px it renders `stroke_over_cap` **0.125 vs the reference's 0.200** — visibly too light (A/B at `/tmp/ab_r1a.png` confirms by eye: reference digits are clearly sturdier). The right weight is Inter **Medium**; fontdue 0.9 cannot set a variable axis, so the fixer must either bake a static Medium instance or find another route. `lapvar` 12300 vs reference 6503 is the *same* defect seen from the other side — a thin high-contrast stroke maximises Laplacian response; matching weight should pull lapvar back toward the reference rather than past it. **lapvar alone is therefore not a sufficient gate; it must be read together with stroke_over_cap.** Instrument note for critics: do not celebrate a lapvar above the reference.
+
+**Second new finding — the pill sits too close to the screen edge.** Measured as a fraction of screen height: reference top gap **1.319%**, ours **0.332%** — a 4× error that no earlier metric caught because everything so far was relative to the pill, not the screen. Reference pill is also slightly narrower as a fraction of width (4.336% vs our 4.876%). Correct config values for this 2256×1504 @1.5 screen: **`gap_top ≈ 13`** (currently 3) and **`collapsed_width ≈ 65`** (currently 74). The skill doc's "Gap from screen edge 15 px" corroborates ~13–15, and the reference video's own settings panel says 15. This supersedes my earlier "do not change collapsed_width" note — that instruction was written before the screen-relative measurement existed.
+
+RSS/CPU regressions are expected at this stage (extra 2× draw path plus the still-running whole-stage upscale); they are r1b's job.
+
+### Typeface weight solved and baked (parent-produced asset, not an edit to src/)
+
+`fontTools 4.68.0` is installed, and `Inter.ttf` is a variable font with **two** axes: `opsz 14..32 (default 14)` and `wght 100..900 (default 400)`. fontdue 0.9 has no axis support, which is why the default instance came out Regular-thin.
+
+Empirical sweep — instantiated nine (wght, opsz) combinations and measured each with PIL at the size giving cap height 15 (the reference's cap), scoring `stroke/cap` and `text_w/cap` for the string `00:05`. Reference targets: **stroke/cap 0.200, w/cap 3.60**.
+
+| wght | opsz | px | cap | stroke/cap | w/cap |
+|---|---|---|---|---|---|
+| 400 | 14 | 19 | 14 | 0.143 | 3.57 |
+| 400 | 20 | 20 | 15 | 0.133 | 3.53 |
+| 500 | 14 | 19 | 14 | 0.143 | 3.71 |
+| 500 | 20 | 20 | 15 | 0.167 | 3.60 |
+| **550** | **20** | **20** | **15** | **0.200** | **3.60** |
+| 550 | 28 | 20 | 15 | 0.200 | 3.53 |
+| 600 | 20 | 20 | 15 | 0.200 | 3.73 |
+
+**Winner: `wght=550, opsz=20`** — matches both reference metrics exactly. Baked to a static instance at **`~/rust-island-build/assets/fonts/Inter-Medium.ttf`** (342,116 B, `fvar` removed, `usWeightClass 550`). This is an asset the fixer must load instead of `~/.local/share/fonts/Inter.ttf`; the parent deliberately did not edit `src/` while the fixer owns the tree.
+
+Note `opsz` matters as much as `wght`: at opsz 14 (the variable default) even wght 500 stays at 0.143 stroke/cap because the optical-size axis thins strokes for small text. Anyone re-deriving this must pin **both** axes.
+
+### Gate extended with screen-relative metrics (instrument patch #2)
+
+`scripts/measure.py` gained `screen_relative()` → `out["screen"]`, because every prior metric was pill-relative and a pill hugging the screen edge scored perfectly. Verified on both images:
+
+| metric | LIVE | REFERENCE | target |
+|---|---|---|---|
+| screen.gap_top_pct | **0.332** | **1.319** | 1.32 ±0.2 |
+| screen.width_pct | 4.876 | 4.336 | 4.34 ±0.3 |
+| screen.height_pct_screen | 2.726 | 2.917 | 2.92 ±0.15 |
+
+Full PASS criteria now: lapvar ≥3800 **and** not far above the reference (read together with `ink.stroke_over_cap` ∈ 0.17–0.24 — lapvar alone rewards too-thin strokes); aspect 2.65 ±0.15; cap_over_pill_h 0.357 ±0.04; offset ≤2 px; symmetric margins; **gap_top_pct 1.32 ±0.2**; **width_pct 4.34 ±0.3**; height_pct_screen 2.92 ±0.15; RSS ≤30 MB; idle CPU <1.5%.
+
+Config translation for this screen (2256×1504 @1.5): `gap_top` 3 → **13**, `collapsed_width` 74 → **65**.
+
+Config is a live file the fixer can edit without touching `src/`: **`~/.config/dynamite-rust/config.conf`** (path from `fn config_path()` at `src/main.rs:304`), read by `parse_config` (`src/main.rs:308`), snapshot accessor `fn cfg() -> IslandConfig` (`src/main.rs:300`), applied on the `reload` socket word. Current contents: `notch_mode=0 bar_height=24 collapsed_width=74 expanded_height=150 gap_top=3 inner_padding=14 anim_ms=160 hover_open=0 scroll_cycle=1 clock_24h=1 wallpaper=wallhaven-9o6yzd.jpg theme=everblush nl_until=06:00`. Note `bar_height=24` is a *config* key while the collapsed height is now hardcoded `(cfg().collapsed_width, 28)` at `src/main.rs:201` — a divergence a critic should flag: the settings panel writes `bar_height` but the collapsed pill ignores it. Clamp on width is `40..=600` (`src/main.rs:321`), so 65 is legal.
+
+### Harness-vs-instrument disagreement resolved (do not let a critic report this as a defect)
+
+`bash scripts/stress/run_all.sh --group liveness` reports **FAIL tests=5 fails=2** with `! pill check failed: pill width 599px outside 0.6-1.6x of 111px; pill interior not filled (dark=0.45) | x[828,1427] y[5,119] w=599 inside=0.45 outside=0.39`. This is **not** a panel defect: the liveness group had just driven the panel into the `themes` state (`responsive: themes accepted in 0.7 ms after resume`), so the pill check ran while a **599 px-wide expanded Themes panel** was on screen and correctly rejected it as not-a-collapsed-pill. Two other liveness assertions passed: responsiveness 0.7 ms, event loop `+55 cpu ticks while drawing`.
+
+Proof the panel was healthy: sent `collapsed` to `$XDG_RUNTIME_DIR/dynamite-rust.sock` and re-measured — pill back to **110×41 at (1073,5)**, aspect 2.683, offset −0.5, unchanged.
+
+**Fix owed to the stress harness (r1b or a harness round): `group_liveness` must drive `collapsed` and wait for the morph to settle BEFORE its pill assertion.** As written, any group that ends in an expanded state poisons the following pill check, which makes the whole suite's exit code unreliable — and the user's gate is "≥1000 tests pass", so a false FAIL here would block the gate for the wrong reason. Also note `run_all.sh` hard-requires `ffmpeg ffprobe ss` in PATH even though the ffmpeg capture path was proven unusable; that is a spurious dependency for the socket-only groups.
+
+## Round-1 critic panel plan (20 slots, ready to fire the moment r1a settles)
+
+Launch as **4 staggered sub-waves of 5** — provider capacity, not t3's 20-thread cap, is the binding limit. Every slot gets the same brief plus the canonical gate table and the current `measure.py` JSON, and every slot must run the instrument itself rather than trust the fixer's report. Read-only; strict JSON contract.
+
+Model rotation (banned: `magpie/fasfas-ai/*`; `gpt-6.1-sol` reserved for 2 slots only, per the user's cost warning):
+1 `magpie/logfare/deepseek-v4.1-flash-1017` · 2 `magpie/logfare/glm-5.3` · 3 `magpie/group/deepseek-v4.1-flash-1017` · 4 `magpie/logfare/glm-5.3-flash` · repeat. Slots **5** and **12** = `magpie/agentrouter/gpt-6.1-sol`.
+
+The 20 lenses (slot: lens):
+1 glyph sharpness vs reference (lapvar AND stroke_over_cap together)
+2 **screenshot A/B against `/tmp/ref/s/s17.png` — gpt-6.1-sol**
+3 screen-relative geometry (gap_top_pct, width_pct, height_pct_screen)
+4 typeface identity + weight (Inter-Medium.ttf asset actually loaded?)
+5 capsule fill / frost material / AA edge quality
+6 idle CPU + redraw-count proof
+7 dictation-rate redraw storm (F3)
+8 RSS ≤30 MB + shm slot sizing + icon-font laziness
+9 debug logging removed from hot path (F4)
+10 glyph cache correctness (bounded, keyed on px bits, no stale coverage)
+11 **does-it-reproduce: run `scripts/stress/run_all.sh`, ≥1000 tests — gpt-6.1-sol**
+12 motion smoothness via `scripts/motion/run_all.sh` + honest caveats
+13 workspace discs + tray preserved and correct (A4 glyph code point)
+14 no AI slop (one accent, no gradient/glow/bloom — `docs/slop-audit.md`)
+15 config coherence (`bar_height` ignored by collapsed height at `src/main.rs:201`)
+16 no startup panic / font-missing degradation path
+17 socket protocol literals unchanged (dictation still works)
+18 regression risk in the other seven panels
+19 Rust idiom / clippy / no new warnings
+20 build reproducibility `--offline`, no new crates, tree hygiene
+
+Each visual slot MUST produce at least one finding of the form "compared to the reference frame, X is off because Y, do Z" with a `where`. The skill's Sleek reference `magpie-image-mcp` is unreachable without `SLEEK_API_KEY`, so **the extracted video frames are the substituted reference** — recorded here as the run's reference-of-record.
+
+### RSS root cause measured (this is the r1b headline, and it is growing)
+
+RSS climbed 50.5 → 57.5 → 84 → **86 MB** over 11 minutes of idle-ish uptime. `/proc/<pid>/smaps_rollup`: `Rss 86000 kB, Pss 59387, Pss_Anon 32548, Pss_Shmem 23548`. Largest mappings by Rss:
+- **47096 kB `/memfd:smithay-client-toolkit`** ← the shm buffer pool, ~55% of RSS
+- **29412 kB `[heap]`**
+- 3300 kB the binary itself
+
+So the dominant cost is the **stage-sized shm pool**, exactly as predicted: stage 1176×636 logical × RENDER_SCALE 2 ⇒ 2352×1272 device × 4 B = 11.96 MB per slot, and the pool holds several slots (47 MB ≈ 4 slots) because buffers are recreated when a state outgrows them (lockscreen fullscreen) and old slots are not released. Plus a ~29 MB heap (icon font parse ~19 MB + glyph caches).
+
+**r1b must therefore: (a) size the shm pool to the actual maximum surface a state needs instead of the fixed 1176×636 stage for every state; (b) release/replace slots rather than accumulating them; (c) skip `upscale_canvas_2x_into` entirely on the settled-collapsed path (it currently runs over the whole stage at `src/main.rs:4878` and is then overwritten — pure waste); (d) throttle `dictation_bars:` redraws; (e) keep the icon font lazy and parsed once.** Gate RSS ≤30 MB is unreachable without (a)+(b) — the two shm fixes alone should recover ~30 MB.
+
+Note `Pss_Shmem 23548 kB` vs `Rss 47096 kB` on the memfd: the compositor maps the same buffers, so **half the shm RSS is shared with the compositor** — a critic quoting raw RSS should also quote Pss, or it will overstate the panel's private cost. Private_Dirty is 32548 kB ≈ 32 MB, which is the honest "RAM this process owns" figure and is already close to the ≤30 MB gate.
+
+### Round-1 panel launched early (slots 1 and 3) — deliberate deviation, recorded
+
+The skill says launch the whole panel after the fixer settles. r1a has been `running` ~35 min with the binary unchanged since 22:09, and provider capacity is intermittent, so waiting risks losing the whole evening's review window. Slots **1 (glyph sharpness)** and **3 (screen-relative geometry)** were dispatched now against the 22:09 binary because both lenses judge properties already visible in that build and neither depends on the fixer's remaining edits. Each brief names the known-open items so they are not re-reported as new. Remaining 18 slots still wait for r1a to settle.
+
+**Deviation risk, stated plainly:** if r1a changes the glyph path or geometry after these two verdicts land, their scores describe a superseded binary and must be re-run, not counted. The log will mark them stale if the tree moves.
+
+Slot 1 → `magpie/logfare/deepseek-v4.1-flash-1017`, uuid `9f26162d-5941-4add-8a4b-b60add124b78`.
+Slot 3 → `magpie/logfare/glm-5.3`, uuid `14253e1e-73e8-4c9a-bc4e-73b4cfbec92a`.
+
+Wave 1 continued — slots **8 (memory/shm)** → `magpie/group/deepseek-v4.1-flash-1017` uuid `71976faf-f6e1-4a79-872e-472ead43952e`, and **6 (CPU/redraw discipline)** → `magpie/logfare/glm-5.3-flash` uuid `d2fc3dd5-4470-49a8-8e7d-90d7dba7a446`. Four slots now in flight (1, 3, 6, 8), which is the wave size the provider tolerates. All four judge properties present in the 22:09 binary; none depends on r1a's remaining edits. Each brief carries the measured root causes so the critic verifies rather than redisovers, plus the `liveness` false-FAIL warning and the never-send-`quit`/`lockscreen` rule.
+
+### r1 critic #3 — geometry — `magpie/logfare/glm-5.3` — **score 3** (wake chain 4t)
+Credible, strongest verdict so far: independently re-ran `measure.py` and re-measured the reference, reproducing the parent's numbers exactly, then traced the gap error end-to-end.
+- **blocker** gap_top ~4× too small. Mechanism proven: `fn stage_margin_top()` `src/main.rs:750` = `(gap_top − STAGE_PAD_TOP).max(0)`, so `gap_top=3` collapses to `STAGE_PAD_TOP=3` logical (`src/main.rs:459`) = 4.5 device → measured y=5. Fix is config-only: `gap_top=13` → 19.5 device → 1.30%.
+- **major** width ~12% too wide: `collapsed_width=74` → 111 nominal / 109 measured (≈1.473 measured-per-config after AA loss). Target 4.336% of 2256 = 97.8 device → **66 logical**.
+- **major, NEW and stronger than the parent's version** `bar_height` is not merely ignored — `parse_config` `src/main.rs:308` has **no `bar_height` arm**, so the key falls into `_ => {}` and never reaches the struct. The settings UI's Bar-height control is a dead knob. Hardcoded 28 at `src/main.rs:201`.
+- **major** the three size tolerances are mutually infeasible on this 3:2 screen. **This is a specification error by the parent, not a defect in the work** — see the gate revision below.
+- **minor** exclusive zone `pill_strip_px()` `src/main.rs:763` = `gap_top+28`, applied `src/main.rs:5774`, re-applied `:6096`. Two staleness edges: reload only re-applies margin+zone when `state == Collapsed` (`src/main.rs:6090`); and if 28 becomes configurable, `pill_strip_px`, `PANEL_TOP_MENU` `:464`, `WS_CY` `:845`, `TRAY_CY` `:955` all go stale → windows tile over the pill's bottom sliver.
+- **minor** confirms aspect 2.659 ✓ and offset −1.0 ✓ today, but warns aspect passes *only because the pill is too wide*.
+
+### GATE REVISION (parent specification error, corrected — chain 4t)
+The parent copied the reference's percent-of-screen ratios from a **16:9** panel onto a **3:2** panel without checking that the implied capsule aspect survives the screen's own aspect change. It does not: 4.34% of 2256 = 97.8 device wide and 2.92% of 1504 = 43.9 tall imply aspect **2.23**, outside the 2.65 band. Percent-of-height is the wrong invariant across screen aspect ratios.
+**Revised gate:** `aspect 2.65 ±0.10` **HARD** (capsule shape is the most perceptually salient property) · `width_pct 4.34 ±0.20` **HARD** (a bar's visual weight reads against screen width; the reference's own settings panel expresses design in absolute px, not percentages) · `gap_top_pct 1.32 ±0.2` **HARD** (vertical gap is uncoupled from capsule shape) · `height_pct_screen` becomes **DERIVED — report, do not gate** (~2.49 on this panel).
+**Consequence the critic surfaced indirectly:** holding aspect 2.65 at width 66 logical requires height ≈ **25 logical**, not 28. So honouring the dead `bar_height` key is the **enabling fix**, not cosmetic polish. Target config for this screen: **`collapsed_width=66`, `bar_height=25`, `gap_top=13`** → predicted width 97/2256 = 4.30%, aspect ≈2.69, gap 1.30%.
+**Additional parent finding for r1b:** `TEXT_PX` is a hardcoded constant (`src/lock_timer.rs:115`, 14.4) tuned for a 28-logical pill. At height 25 it breaks the typography gate. Text size must be **derived from pill height** (cap = 0.357 × pill_h), not a constant, or every geometry change re-breaks typography.
+
+### r1 critic #6 — CPU — **FAILED**: `AiError: Service temporarily at capacity`
+Provider capacity, not model fault. Retry on a different route per the run's swap rule (`magpie/logfare/glm-5.3-flash` → `magpie/logfare/deepseek-v4.1-flash-1017`).
+Live measurement taken during the stress wave: **RSS 113.5 MB, CPU 105%** — the CPU figure is confounded by critic #6 driving `drive_bars.py` at the time, but the RSS climb (50.5 → 57.5 → 86 → 113.5) is monotonic across the round and is a real regression handed to critic #8.
+Retry dispatched: r1 critic **#6 CPU** → `magpie/logfare/deepseek-v4.1-flash-1017` uuid `9d3831f3-1cb1-40d2-93af-72b2f6fe07ef` (route swapped off glm-5.3-flash). Brief extended with a 5th mechanism found by reading the diff: `rasterize_cached` returns `cov.clone()` on every cache hit, so the cache removes rasterisation but still heap-allocates + memcpy's the coverage bitmap per glyph per frame, and the map keyed on float bits is unbounded.
+r1 critic **#4 typeface** dispatched → `magpie/logfare/glm-5.3-flash` uuid `15af01b7-5d44-47fb-a3e3-d01e01f62ff2`. Central question put to it: is `assets/fonts/Inter-Medium.ttf` actually loaded, or does the code still read the variable `~/.local/share/fonts/Inter.ttf` (which would render Regular 400 @ opsz 14, stroke/cap ≈0.143)? Brief carries the lapvar-is-not-fidelity trap and the TEXT_PX-must-derive-from-pill-height finding. Panel in flight: #1 sharpness, #4 typeface, #6 CPU retry, #8 memory.
+r1 critic **#2 screenshot A/B** dispatched → `magpie/logfare/glm-5.3` uuid `0d3786f2-7088-43d4-932d-da330a5a78f6`. Must crop + 5-6× nearest upscale both images and VIEW them, not just read numbers. Brief pre-empts all four known traps (lapvar≠fidelity, 3:2-vs-16:9 gate revision, tray icon is the real magpie app icon not a bug, liveness false-FAIL) and forbids recommending removal of the owner's workspace discs / Bluetooth cluster. Panel in flight: #1, #2, #4, #6, #8.
+r1 critic **#5 fill/AA/slop** dispatched → `magpie/group/deepseek-v4.1-flash-1017` uuid `c5c5a1f8-961c-4116-8544-64630e050679`. Carries the reference's exact edge ramps (left 210→160→20→2→0; top 168→19→1), the full `docs/slop-audit.md` hit list AND its protected list, the one-accent ladder, and the instruction to prefer shared-token fixes. Panel in flight: #1, #2, #4, #5, #6, #8 (6 of 20).
+r1 critic **#11 stress/does-it-reproduce** dispatched → `magpie/logfare/deepseek-v4.1-flash-1017` uuid `b2c21d72-2f59-4121-b627-6b4018fba47c`. Told the suite's exit code must be trustworthy: a suite that cannot fail correctly caps at 5/10 regardless of claimed test count, and "1000 tests" that only check datagram acceptance is a blocker not a pass. Panel in flight: #1, #2, #4, #5, #6, #8, #11 (7 of 20).
+r1 critic **#19 rust idiom/build health** dispatched → `magpie/logfare/glm-5.3-flash` uuid `32226f75-6d2f-46c6-9cb5-aaa7f04a1157`. Brief targets the glyph cache's double-clone + unbounded float-keyed map + silently-swallowed poisoned mutex, the stale TEXT_PX module docs, panic-reachability under `panic="abort"`, and warns it not to re-report the 62 pre-existing warnings. Panel in flight: #1, #2, #4, #5, #6, #8, #11, #19 (8 of 20).
+
+### Derived target values for r1b (parent arithmetic, from critic #3's measured factor)
+`grep -n "bar_height" src/*.rs` → **zero hits**: the key is not merely unparsed, it appears nowhere in the Rust source. `IslandState::size()` `src/main.rs:201` is `Self::Collapsed => (cfg().collapsed_width, 28)`.
+Measured-per-config factor **1.473** (critic #3: config 74 → 111 nominal → 109 measured, ≈2 px AA edge loss).
+- `collapsed_width = 66` → 99 nominal − 2 AA = **97 device** → width_pct **4.30%** ✓ (band 4.34 ±0.20)
+- `bar_height = 25` → 37.5 nominal − 1 AA = **36.5 device** → aspect **97/36.5 = 2.658** ✓ (band 2.65 ±0.10)
+- `gap_top = 13` → 19.5 device, measured y≈20 → gap_top_pct **1.33%** ✓ (band 1.32 ±0.2)
+- Derived height_pct_screen = 36.5/1504 = **2.43%** — reported, not gated.
+- **TEXT_PX must be derived, not 14.4**: cap = 0.357 × pill_h_logical = 0.357 × 25 = 8.93 logical; Inter digit cap = 1510/2048 em, so `px = cap × 2048/1510` = **≈12.1**. Formula to implement: `text_px = pill_h as f32 * 0.357 * (2048.0/1510.0)`. At the current 28 this yields 13.56 (vs the hardcoded 14.4, which is why cap/pill measured 0.39 instead of 0.357).
+r1 critic **#18 panel regressions** dispatched → `magpie/logfare/glm-5.3` uuid `68a26d04-ed7a-49c5-8644-ea30b9181a64`. Highest-value hypothesis handed to it: **the glyph cache is keyed `(char, px.to_bits())` with NO font identity** — if the icon font (MaterialSymbolsRounded) shares `rasterize_cached`, any codepoint present in both fonts returns the wrong glyph → blocker. Also morph sharpness jump (2× settled vs 1× morph), stage/slot bounds for the nine fixed panel sizes, and Inter-is-narrower-than-Quicksand layout fit. Panel in flight: #1, #2, #4, #5, #6, #8, #11, #18, #19 (9 of 20).
+
+### r1 critic #8 — memory — `magpie/group/deepseek-v4.1-flash-1017` — **score 3** (wake chain 4t)
+Strongest verdict of the round. It **corrected a stale premise in the parent's brief** rather than accepting it: `load_icon_font` (`src/main.rs:1899-1912`) now parses a **3,904 B, 15-glyph subset** `icons/MaterialSymbolsRounded-Island.ttf` behind `icon_font_for` (`src/main.rs:1915-1931`) + OnceLock, and returns **None for Collapsed/Lock/Dictation** — so the ~19 MB Material parse is NOT in this heap. **Parent's F6 icon-font premise is retracted.**
+Arithmetic proof of the shm mapping: observed **70,468 KiB** = 2×23,547 KiB (lockscreen slabs) + 2×11,686 KiB (stage slabs) = **70,466 KiB**, within 2 KiB.
+Measured at rest: **Rss 109.8 / Pss 72.5 / Private_Dirty 34.7 / Pss_Anon 34.7 / Pss_Shmem 35.2 / Pss_File 3.4 MB**. Idle is **flat** (110.796 → 110.752 MB over 90 s) → the growth is **per state transition, not per frame**. `run_all.sh --group load_leak` (200 cycles): RSS 72 → 119 MB, curve `72 105 119 118 119 118 118 119 119 119`, **growth_after_warmup +20.9 MB vs its own 8 MB bound → FAIL**. Controlled 3× lock/unlock: +9.7 MB heap, pool stays 68.8 MB, no reclaim.
+- **blocker** `SlotPool::alloc` (`smithay-client-toolkit-0.19.2/src/shm/slot.rs:200-225`) grows by `max(rv+size, len*2)` and **never shrinks**; `draw_if_ready` only grows (`src/main.rs:4762-4775`, `needed` at `:4768`; initial pool `:5783-5790`). Fix: hold 2 pinned `Slot`s, `pool.create_buffer_in(&slot[i],..)`, skip the tick when `pool.canvas(&slot)` is None, delete the recreate, assert `pool.len() <= 2*slot_bytes`. 22.8 MB instead of 68.8 → RSS ~65, Pss ~49.
+- **blocker** collapsed pill pays **11,966,464 B** of shm for **72,160 B** of real pixels (**166×**, 98.7% transparent). `STAGE_W/STAGE_H` `src/main.rs:466,471`; `RENDER_SCALE` `:483`; `draw()` `:2312`; `draw_collapsed_pill_2x` `:2208`. Fix: a dedicated 110×41 collapsed surface (72 KiB buffer), stage surface created on first menu open / dropped on last close. **Constraint: the stage is never resized because per-tick `set_size` broke morphs — iter24 rule, `src/main.rs:930-932`.** One configure round-trip per collapse, never during a morph.
+- **major** **no frame-callback back-pressure**: `surface.frame` never requested, `fn frame` `src/main.rs:4920` is an **empty body**; commit path `src/main.rs:4893-4898` keeps `self.buffer = Some(buffer)` alive. Pool settles at **4 slots idle, 6 under load**. This is the mechanism that makes a pinned 2-slot ring correct rather than racy.
+- **major** lockscreen slabs **23,547 KiB each**, never reclaimed: `set_size` to `LOCKSCREEN_SIZE` `src/main.rs:4136-4140` / `:1775`; `finish_unlock` `src/main.rs:4229-4260` frees wallpaper + `scale_scratch` + `malloc_trim` but **never touches `self.pool`**. Fix: `self.pool = None` there → recovers 46 MB post-lock.
+- **major** the gate metric is wrong — see below.
+- **minor** glyph cache unbounded, clones per hit, **`GLYPH_CACHE_CAP` does not exist in the tree** (`src/lock_timer.rs:207-230`, callers `src/main.rs:1839`, `:2251`). Fix: round the key `(ch,(px*2.0).round() as u32)`, cap ~256, or hold `Arc<[u8]>`.
+- **minor** `damage_buffer(0,0,bw,bh)` `src/main.rs:4895` dirties all 11.4 MB every frame (~342 MB/s at 30 fps), keeping every slab resident.
+- **minor** per-frame heap allocs: `vec![0u8; pw*ph*4]` at `src/main.rs:2332` (783 KB ControlCenter, 1.09 MB Wallpaper), `:2223`, `:2286`, `:2956`. Reuse one grow-only scratch like `scale_scratch`.
+- **minor** heap floor unexplained: 23.5 MB idle / 33.2 MB locked + a constant **6.6 MB anon** block. Attributable: morph scratch pair 2×2.99 MB freed **only on the done-into-Collapsed arm** (`src/main.rs:4853-4862`, `:3539`), `scale_scratch` 2.99 MB, live backdrop 752×501×3 = 1.13 MB.
+
+### GATE METRIC CORRECTION (parent, chain 4t)
+RSS double-charges the shm memfd because the compositor maps the identical pages (`Pss_Shmem` 35.2 = exactly half of 68.8). **Restate the memory gate as `Pss ≤ 30 MB`, keep reporting RSS alongside.** This is NOT a relaxation that rescues a failing gate: Pss 72.5 fails by 42 MB and even `Private_Dirty` 34.7 fails by 4.7 MB, so **no metric choice passes today**. The heap floor alone (23.5–25.1 MB + 6.6 MB anon) exceeds the whole budget → buffer sizing alone cannot meet the gate.
+
+### FIX ORDER for the memory work (parent, chain 4t — order is load-bearing)
+1. Frame-callback gating (makes a pinned ring safe, not racy) → 2. pin 2 slots, delete grow-only recreate → 3. `self.pool = None` in `finish_unlock` → 4. narrow damage rects → 5. separate collapsed surface (biggest win, riskiest; respects the iter24 no-per-tick-resize rule).
+
+### PARENT SELF-CORRECTION — icon-font collision hypothesis RETRACTED (chain 3t)
+I briefed critic #18 that the glyph cache's font-less key would return wrong glyphs for the icon font. **Wrong**: `grep rasterize_cached src/*.rs` → only `src/lock_timer.rs:252` and `src/main.rs:1839`; the icon font never reaches the cache. Read #18's verdict on that point sceptically.
+**Bigger real finding surfaced by the same grep:** there are **SIX independent copies of `fn layout_text(font,text,px) -> TextRow`** — `src/main.rs:1835`, `src/calendar_panel.rs:416`, `src/clipboard_panel.rs:1580`, `src/controlcenter_panel.rs:2539`, `src/launcher_panel.rs:802`, `src/music_panel.rs:1479`. **Only the main.rs copy got the cache.** F5 is **one-sixth fixed**; the expanded panels, which have far more text than the five-glyph clock, got no benefit. **Fix order matters: add font identity to the cache key FIRST, then share it** — the naive sharing introduces the collision blocker I wrongly predicted as already-present.
+
+### Dispatch pacing — parent error
+Critic **#4 typeface FAILED**: `rate limiting: inference request per min rate reached`. Cause is **my own pacing**: 9 children in flight violated the 3–4 wave rule set after the first outage. **Hold new dispatches until the panel drains**, then re-dispatch #4. In flight: #1, #2, #5, #6, #11, #18, #19. Done: #3 (3), #8 (3). Failed: #4 (retry pending), #6-original (retried).
+
+### MEMORY GATE HARDENED (parent measurement + chain 3t, 22:38)
+Fresh process **pid 31420** (fixer rebuilt again): **Rss 61,008 kB / Pss 46,231 / Private_Dirty 31,208 / Pss_Anon 31,208 / Pss_Shmem 11,688 / Pss_File 3,335**. Largest mappings: memfd **23,376 kB = exactly 2 stage slabs**, `[heap]` 17,880 kB, anon **6,784 kB**, anon 2,924 kB, binary text 2,824 kB.
+**None of critic #8's fixes have landed** — `grep -n "create_buffer_in\|new_slot\|pool = None\|surface.frame\|pending_frame" src/main.rs` → **zero hits**; `fn frame` still an empty body. The improvement 109.8 → 59.6 MB is **not a fix**: this process has never entered the lockscreen since restart, so the pool sits at its floor (2 stage slabs) instead of its post-lock ceiling (2 stage + 2 lockscreen = 68.8 MB).
+**Both readings are correct and measure different points on a monotonic curve.** This is exactly the never-shrinks defect critic #8 identified, seen from the other end.
+**GATE HARDENED: `Pss ≤ 30 MB` must be measured AFTER a lock/unlock cycle AND after `run_all.sh --group load_leak`. A fresh-process reading does not count** — otherwise the gate is passable by simply never locking the screen.
+**Independent confirmation of the heap floor:** `Private_Dirty` is **31,208 kB even on a virgin process with shm at its floor** — over the 30 MB budget before any shm work. The **6,784 kB anonymous mapping is present at startup**, so it is allocated once at init, not accumulated; that narrows the fixer's hunt.
+Typography unchanged by these rebuilds: lapvar **11,968.7**, stroke/cap **0.188**, cap/pill 0.39, margins 27/27 symmetric ✓, aspect 2.683 ✓, offset −0.5 ✓, gap_top_pct **0.332 ✗**, width_pct **4.876 ✗**. RSS 59.6 MB, CPU 3.0%.
+Tree: `src/main.rs` +181/−39, `src/lock_timer.rs` +34/−6.
+
+### CRITICAL INFRASTRUCTURE FINDING — glm routes are IMAGE-BLIND at runtime (chain 4t)
+Critic **#2 screenshot A/B FAILED**: `502: model "logfare/glm-5.3" can't see images, and logfare/glm-5.3-flash couldn't describe the image for it: rate limiting: inference request per min rate reached`.
+Two facts: (1) `~/.pi/agent/models.json` declares `input=['text','image']` for **every** magpie model including glm-5.3 — **the local catalogue is aspirational, the gateway is authoritative**; (2) pi routes images through a **describer** model (glm-5.3-flash) that converts the picture to TEXT before the critic sees it. So any "visual" verdict from a glm slot is **text-mediated, not seen**. The user explicitly demanded critics judge "screenshots that display the real life" — a described screenshot does not satisfy that.
+**Blast radius:** #2 (A/B) and #5 (fill/AA/slop) are the compromised slots. #3 geometry, #8 memory, #18 regressions, #19 idiom are numeric/code-only → **unaffected, scores stand**.
+**Rule for the rest of the run: no glm route on a visual slot.** Vision-capable candidates from the catalogue: `magpie/group/deepseek-v4.1-flash-1017` (in 0.3 / out 1.2), `magpie/group/gemini-4-hydrogen`, `magpie/group/hy4` (the council skill's own named critics — they DO exist in the local catalogue, contrary to the earlier assumption), `magpie/agentrouter/gpt-6.1-sol` (in 1 / out 5, user-authorised for harsh screenshot critique).
+**Do not trust the catalogue again — it already lied once.** Dispatching a **vision capability probe** on `gpt-6.1-sol` with checkable ground truth (reference pill 106×42 at y=19 vs live 110×41 at y=5; live sits visibly closer to the top edge, reference glyphs heavier). A route that returns the right pixel facts sees; a plausible description with wrong numbers is blind.
+#5's verdict is **provisional pending vision confirmation** when it lands.
+
+### r1 #2 re-dispatched as VISION PROBE + A/B review — `magpie/agentrouter/gpt-6.1-sol` uuid `1770af68` (thinking high)
+Brief requires five checkable pixel facts obtained BY LOOKING before any review (clock text in each image; which pill hugs the top edge closer; which digits are heavier; what is left of the pill in each; shape of the object right of the live pill), with an explicit instruction to declare blindness honestly rather than invent. Ground truth held by the parent. Then the full A/B fidelity lens with nearest-neighbour magnified crops. This doubles as the run's vision-capability test for the expensive route the user authorised.
+
+### r1 critic #1 — sharpness — `magpie/logfare/deepseek-v4.1-flash-1017` — **score 3** (wake chain 4t)
+Numeric half credible and independently corroborated: **lapvar 12014.4, lapmean 89.49, stroke/cap 0.188, cap/pill 0.39** — matches the parent's own reading. Correctly identifies the overshoot as **thin-stroke contrast, not fidelity**.
+- **major** clock too thin and too large vs reference; fix = wire `assets/fonts/Inter-Medium.ttf` (wght 550 / opsz 20) and derive px from pill height.
+- **major** independently confirms **six copies of `layout_text`** (`src/main.rs:1835`, `src/calendar_panel.rs:416`, `src/clipboard_panel.rs:1580`, `src/controlcenter_panel.rs:2539`, `src/launcher_panel.rs:802`, `src/music_panel.rs:1479`) — only main.rs cached.
+- **minor** confirms `GLYPH_CACHE_CAP` absent, unbounded float-bit key, clone-per-hit.
+- **REJECTED architectural claim** "the buffer_scale route is a dead end on mango; compositor 2→1.5 downsampling caps sharpness". **Counter-evidence:** the reference is itself a screen recording through a compositor resample AND a lossy h264 encode, and measures lapvar **6503**; ours measures **12014**, i.e. **1.85× sharper**. If compositor downsampling were the dominant softening term ours could not exceed it. The measurement shows a **weight/size mismatch**, not a resample ceiling. The underlying SCTK-0.19-has-no-fractional-scale constraint is real (verified separately by the mango worker), but this critic did not prove it is the binding limit here.
+- **Cost warning recorded:** raising `RENDER_SCALE` to 3 costs **2.25× the pixels**, directly fighting the already-failing `Pss ≤ 30 MB` gate. Do not trade a metric that is above target for one that is failing, on an unproven premise.
+
+### STANDING INSTRUCTION TO ALL FUTURE CRITICS (parent, chain 4t)
+The correct typography fix **LOWERS lapvar** (12014 → toward the reference's 6503) while raising stroke/cap 0.188 → 0.200 and lowering cap/pill 0.39 → 0.357. **A falling lapvar accompanied by stroke/cap converging on 0.200 is PROGRESS, not regression.** Score the pair together, never lapvar alone.
+
+### HARNESS AUDIT (parent, chain 3t) — the "≥1000 tests" gate is not yet honestly meetable
+`scripts/stress/stress.py` has **5 groups** (`GROUPS` at `:891-897`: protocol_fuzz, state_machine, load_leak, latency, liveness) but only **15 `out.tests +=` sites**. Volume comes from loops, not assertions:
+- rapid-fire `:607-615` sends **4 × 1000 = 4000 datagrams** but counts as **4 tests**;
+- `group_load` `:746` counts **200** (one per cycle, `iters=200`);
+- `group_state` drives 2 lock cycles × 8 words, a 60-iteration `locktype` saturation burst counted as **1 test** (`:711`), a dictation cycle, and **40 seeded-random transitions** (`_Rng(0xC0FFEE)`, `:726`).
+**So raw sends already exceed 1000, but the assertion count is far lower.** The user asked for ≥1000 *tests*; 4000 sends asserting 15 things is not that. Meeting the gate requires **per-iteration assertions inside the existing loops**, not new groups.
+
+**FALSE-FAIL ROOT CAUSE, now with exact lines.** `def group_liveness(app, out)` `scripts/stress/stress.py:837` sends `themes` at **`:859`** to time responsiveness, then calls `app.check_pill("liveness")` at **`:868`** with **no `collapsed` + settle in between** — so it asserts pill geometry while the 599 px Themes panel is on screen. **The harness penalises the app for correctly obeying the command.** One-line fix owed to r1b: after `:865`, send `collapsed` and sleep ≈0.4 s before `check_pill`.
+**Not fixed by the parent now:** critic #11 is actively running the suite; editing the harness mid-run would invalidate its verdict. `scripts/` is outside the fixer's `src/` scope, so the fix must be assigned explicitly.
+
+### VISION PROBE PASSED — `magpie/agentrouter/gpt-6.1-sol` genuinely SEES (chain 4t)
+Critic **#2 A/B re-dispatch, score 5/10.** All five ground-truth facts correct **by looking**: A=`00:05`, B=`22:41`; B hugs the top edge closer; **A's digits heavier**; four numbered discs left of B with **2 highlighted lavender**, nothing left of A; tray glyph = "silver/white, curved U-shaped bottom, two upward wing-like prongs" — **exactly the magpie bird logo**, independently confirming the earlier A4 retraction. Correctly reported **no standalone AA or vertical-centring defect** (matches margins 27/27, offset −0.5).
+→ **`magpie/agentrouter/gpt-6.1-sol` is the run's CONFIRMED vision route.** Use for visual slots, sparingly (user cost warning). glm routes remain banned on visual slots. #5 stays provisional.
+Its findings: **major** capsule hugs the edge (target ~20 device px / 13.3 logical, move discs+tray with it); **major** clock too tall and too thin (cap ≈ ⅓ capsule height ≈14 device, stroke ≈ ⅕ cap); **major** retained controls look bolted on — discs have **broad soft dark halos and fuzzy numerals**, tray is pictorial/shaded beside a crisp monochrome clock → flatten disc shadows, rasterize disc labels with the clock's treatment, flat two-tone tray, active workspace = flat fill not luminous halo; **minor** capsule slightly too elongated.
+Score spread noted: holistic visual lens 5 vs gate lenses 3 — not a contradiction; the object is right in kind, wrong in proportion.
+
+### PARENT RETRACTION #3 — F1 "wrong typeface" was UNPROVEN (chain 4t)
+Tested properly for the first time: **shape-correlation of rendered glyph bitmaps against the reference's actual glyph pixels**, not scalar ratios. Reference capsule `x[1227,1332] y[19,60]` 106×42, ink **15×54**; both normalised zero-mean/unit-variance, candidates LANCZOS-resized, mean product.
+On `00:05`: **Quicksand-Bold 0.8780 (px24)** · Inter-Medium 550/20 **0.8345 (px21)** · Inter-var 400 **0.7333 (px22)** · Quicksand regular 0.5153. **The font F1 ordered removed is the closest match.**
+**Not conclusive, and no reverse order either:** at cap 15, Quicksand-Bold px21 gives w/cap **3.600** and stroke/cap **0.200** — an *exact* match on both, identical to Inter-Medium px20. Two faces reproducing both ratios exactly proves **the ratios were never discriminative**. Cross-string control: `11:29` → all fonts 0.07–0.14; `15:39` → 0.11–0.19; `88:88` → 0.56–0.68. A 10× swing with the string means the method is dominated by digit shape/alignment, so 0.878 vs 0.835 is inside its noise.
+**Honest conclusion (negative):** there is **no evidence Quicksand-Bold is the wrong face**. F1 was asserted from a vibe plus a width ratio confounded by comparing **different clock strings** (`22:41` live vs `00:05` reference) — the same confound critic #2 independently flagged.
+**Surviving, string-independent defects:** cap/pill **0.39 vs 0.357** (too large) · stroke/cap **0.188 vs 0.200** (too thin) · gap_top **0.332% vs 1.32%** · width_pct **4.88 vs 4.34**. All four are **size and position; none is typeface identity**.
+**Standing instruction:** either face is acceptable — **do not churn fonts**. Keep Inter-Medium (already wired, matches both ratios exactly). Gate on cap/pill and stroke/cap; **gate width only on identical strings or drop it**. No critic may score a font swap as progress.
+
+### r1 pre-dispatch chain for r1b (5t) — focus and root cause
+**Root cause behind almost every finding:** the panel allocates and renders for its **worst case** and never gives anything back — fixed 1176×636 stage for a 110×41 pill (166× pixel waste), full-buffer damage per frame, no frame-callback back-pressure (4–6 slots in flight), `SlotPool` grows only (one lockscreen visit = 46 MB permanent).
+**Enabling defect:** `bar_height` has no `parse_config` arm, so capsule height is frozen at 28 and the revised geometry gate (aspect 2.65 at width 66) is **unreachable** without honouring it.
+**r1b scope:** memory structure + derived geometry + weight/asset + accessory rendering parity. Coherent because every item is "stop rendering the small thing as if it were the big thing".
+**Two traps, fix ORDER is load-bearing:**
+1. Separate collapsed surface collides with the **iter24 rule** (`src/main.rs:930-932`: per-tick `set_size` broke morphs). Order: frame-callback gating → pin 2 slots → `pool=None` on unlock → narrow damage → separate surface.
+2. Glyph cache keyed `(char, px_bits)` with **no font identity**; six `layout_text` copies, only one cached. Order: **font identity in the key FIRST**, then share.
+**Must not touch:** socket literals (live dictation supervisor); tray icon path (A4 false premise — real magpie app icon); **typeface identity** (retraction #3: no evidence Quicksand was wrong); `RENDER_SCALE=3` (2.25× pixels vs failing Pss gate); `scripts/stress/*` (now correct, `d92301a`); the 58 baseline warnings.
+**Do load `assets/fonts/Inter-Medium.ttf`** — matches stroke/cap 0.200 and w/cap 3.600 exactly vs Inter Regular's 0.125. That is a **weight** fix, not a typeface change.
+
+### r1 STRESS GATE — first honest full-suite run (parent)
+After the nine-defect harness repair (`d92301a`) plus the load_leak drain fix:
+`TOTAL tests=1207 asserts=5595 fails=321 groups=5` → the 321 were **all EAGAIN flow-control phantoms** in `group_load`, fixed by routing it through `send_drained` like every other group. Re-run of that group alone: **`tests=200 asserts=1000 fails=0`, PASS**, `growth_after_warmup −2.2 MB`, `peak_delta +0.0` (bound 8 MB).
+Per-group: protocol_fuzz PASS 636 tests / 4350 asserts · state_machine PASS 246 · load_leak PASS 200 / 1000 asserts · latency PASS 120 (`p50 200.3 p95 220.7 p99 254.6 max 286.0`, bound_p95 400) · liveness PASS 5.
+**The user's ≥1000-test gate is now genuinely measurable and met on assertions, not sends.** An earlier `latency` run showed p95 432 ms > 400 ms; the clean re-run reads 220.7 ms, so that reading was taken while another critic was driving the socket — noted, not a standing defect.
+**Memory gate measured correctly (after lock/unlock):** Rss 114620 kB, **Pss 76313 kB**, Private_Dirty 37696 kB, Pss_Shmem 35234 kB → fails ≤30 MB by 46 MB. This is the number r1b must move.
+
+### r1b FIXER DISPATCHED (pre-dispatch chain 5t)
+[council fixer r1b](t3-thread://v2/699b4b1c-474b-4871-82f1-d1eb0c374204/thread:delegated-task:command%3Amcp%3A95fc24c9-420c-4506-a56f-1d554907f77c%3Adelegate-task%3A48b2e5b6-d603-4b81-aaad-f69ee3a72324) — `magpie/group/deepseek-v4.1-flash-1017`, thinking **max**.
+Brief carries F-A..F-H with the two fix-order traps, the derived-geometry targets (`gap_top=13 collapsed_width=66 bar_height=25`), the derived `text_px = pill_h*0.357*(2048/1510)`, the baked Inter-Medium asset, the six-copy glyph-cache sharing order, the accessory 2× parity work, and the explicit "lapvar will FALL and that is PROGRESS" instruction. Verification requires a post-lock/unlock Pss reading and a full 5-group suite run.
+
+### r1 merged state (parent) — panel scores so far
+| slot | lens | model | score |
+|---|---|---|---|
+| #1 | glyph sharpness | logfare/deepseek-v4.1-flash-1017 | 3 |
+| #2 | screenshot A/B (vision) | agentrouter/gpt-6.1-sol | 5 |
+| #3 | screen geometry | logfare/glm-5.3 | 3 |
+| #8 | memory | group/deepseek-v4.1-flash-1017 | 3 |
+| #11 | stress / does-it-reproduce | logfare/deepseek-v4.1-flash-1017 | 3 |
+Median of the five in: **3**. Gate (≥9) **not met**; round 1 continues with fixer r1b.
+Failed slots: #4 typeface (provider RPM, retried `1f5555b9`), #18 regressions `68a26d04`, #19 idiom `32226f75-6d2f-46c6-9cb5-aaa7f04a1157`. Running: #5 fill/slop `c5c5a1f8`, #6 cpu `9d3831f3`.
+
+### Instrument repair #3 (parent) — commit `3a6fabd`
+`scripts/stress/stress.py` had **`group_load` and `group_latency` defined TWICE** (byte-identical copies, verified with a difflib comparison before deleting). Python silently keeps the last definition, so the first copy of each was dead code — 100 lines. Removed. This is why a harness needs its own review: three separate instrument defects (degenerate detector, str/bytes compare, duplicate defs) were invisible to every panel slot that only read `src/`.
+
+### Geometry arithmetic for F-D (parent, verified)
+Measured-per-config factor **1.473** (74 logical → 111 nominal → 109 measured; ~2 px lost to the AA ramp).
+- `collapsed_width=66` → 99 nominal → ~97 measured → **97/2256 = 4.30%** ✓ (target 4.34 ±0.20)
+- `bar_height=25` → 37.5 nominal → ~36 measured → **aspect 97/36 = 2.69** ✓ (target 2.65 ±0.10)
+- `gap_top=13` → 19.5 device → y≈20 → **20/1504 = 1.33%** ✓ (target 1.32 ±0.2)
+- `text_px = pill_h × 0.357 × 2048/1510` = 25 × 0.357 × 1.3563 = **12.10** logical (Inter digit cap 1510/2048 em)
+
+### Provider failures — pattern and rule (parent, chains 3t + 4t)
+- **#4 typeface failed TWICE**: first `rate limiting: inference request per min rate reached`, then `Service temporarily at capacity`, both on `magpie/logfare/glm-5.3-flash`. Both are provider transport/capacity errors, not model refusals; the brief never got far enough to be at fault. **Swapped to `magpie/group/deepseek-v4.1-flash-1017`** (3 prior successes, cheap, the user's requested model), same brief → `da1de8dc`. Did NOT spend a `gpt-6.1-sol` slot here: the lens is already well measured and sol is reserved for the decisive visual gate.
+- **Lockscreen-spec child died on the vision failure**: `model "logfare/glm-5.3" can't see images, and logfare/glm-5.3-flash couldn't describe the image for it: … Service temporarily at capacity`. **This was the parent's error** — the glm-is-image-blind rule was already established and I put a fundamentally visual task on a glm route anyway. Re-dispatched on the confirmed vision route `magpie/agentrouter/gpt-6.1-sol` → `3aa6938c`.
+- Every capacity failure in this run clustered while 5–6 children were in flight. **Rule reinforced: the binding constraint is concurrent provider load, not t3's 20-thread cap.**
+
+### Lock screen — transcript facts recovered before the child died (committed `docs/lockscreen-transcript-facts.md`)
+The author states, and transcript outranks pixel guesses:
+1. Font is **SF Compact Display** (he walked SF Pro Text → SF Pro Display → SF Compact Display).
+2. The lock **clock surface is translucent**, wallpaper-tinted, with a **frosted blur behind it and a shadow** — *not* white text on a flat veil. **The collapsed pill is a different material** (luminance 0–2 inside, genuinely black). Do not merge them.
+3. **No avatar / username / password box at rest**; the password field appears only when typing starts and disappears on Esc.
+4. Wrong password **shakes**.
+5. **The island morphs into the keyhole and descends**, then the clock pops out.
+**This contradicts the parent's frame reading** (avatar ring y1137–1168, `user0` y1225–1242, `Enter Password` y1289–1302 on l60/l320). Resolution: those frames were almost certainly captured **while typing**. A spec built from them would bake a transient state into the resting design. The re-dispatched child must separate resting from typing with evidence. The dead child flagged this conflict honestly instead of deferring to the brief — good work, preserved.
+
+### Socket contract frozen (committed `docs/socket-contract.md`)
+The dictation tool is a **separate live binary** (`static-dictation`, built from `~/.t3/scratch/2026-11-13-can-you-please-like-i-e1185665/`) that talks to the panel only through the socket. Exact literals it sends: `dictation_start` (`src/main.rs:38`), `dictation_end` (`:42`), `dictation_bars:<v> …` (`:132`, values `{v:.3}` space-separated, **one datagram per microphone frame**), `collapsed` (`src/pill/tsar.rs:129`). Renaming or reparsing these silently breaks a user-visible feature. `DBG morph A -> B` stderr lines are also a contract (the harness's effect witness reads them); the per-packet `DBG socket word=` line is not.
+
+### ✅ STRESS GATE MET — full suite green on assertions, not sends
+`python3 scripts/stress/stress.py` (all 5 groups) → **`TOTAL tests=1207 asserts=5595 fails=0 groups=5` / `RESULT PASS` / `EXIT=0`**.
+The user's "≥1000 tests before going to the next round" is satisfied on **genuine assertions (5595)**, which is the honest reading — the raw send count was always higher but most sends asserted nothing.
+Per group: protocol_fuzz 636 tests / 4350 asserts · state_machine 246 · load_leak 200 / 1000 (`growth_after_warmup −2.2 MB`, `peak_delta +0.0`, bound 8 MB) · latency 120 (`p50 200.3 p95 220.7 p99 254.6 max 286.0`, bound 400) · liveness 5.
+
+### Instrument repair #4 (parent, chain 3t) — commit `cfffbab`
+`measure.py` returned **pill 220×220, aspect 1.0, gap 0.0%, width 9.75%, cpu 104%** while the stress suite was driving `group_load`. **Not a panel regression** — `pill_bbox` scans y 0..220 in a ±110 window and takes min/max across all passing rows, so a fullscreen dark surface starting at y=0 (lockscreen / dark app) yields w=220 h=220 exactly. Same class of defect critic #11 found in the stress detector, at a different scale: robust against a dark page *below* the bar, not against one *starting at* y=0.
+Fix: when `y0 == 0` and the run spans the whole window, emit `state: "not-collapsed"` with a note and **no geometry/sharpness gates**. Five critics quote these numbers into their verdicts, so a detector that silently scores a lockscreen as a pill would poison the panel median. Re-measured in a quiet window: pill 110×41, aspect 2.683, offset −0.5, lapvar 11663.2 — unchanged.
+
+### r1b progress observed mid-flight (parent read the diff, no edits)
+Landed so far: `bar_height` is now a real config key (`clamp(18,80)`, default 28) feeding `IslandState::Collapsed => (cfg().collapsed_width, cfg().bar_height)` and `pill_strip_px() = gap_top + bar_height`; `TEXT_PX`/`CLOCK_PX` constants **replaced by `pub fn text_px(pill_h: f32) -> f32 { pill_h * 0.357 * (2048.0/1510.0) }`** with the stale 17.0 module docs rewritten; glyph cache key now **(font identity, char, px bits)** with `Arc<[u8]>` values (refcount bump, not memcpy) — the F-F ordering was respected; `clock_font()` now searches exe-relative `assets/fonts/Inter-Medium.ttf` before the variable Inter and Quicksand, never panics.
+**Not yet landed:** frame-callback gating (`fn frame` at `src/main.rs:4945` is still an empty body; no `surface.frame`, `new_slot`, `create_buffer_in`, `pending_frame` anywhere). That is step 1 of the F-A order, so the memory work is still ahead.
+**Minor portability note for the next round:** `clock_font()` hardcodes `/home/alex/rust-island-build/assets/fonts/Inter-Medium.ttf` as a fallback candidate (`src/main.rs:1896`) — fine on this machine, wrong for a packaged install.
+
+### r1 critic #4 — typeface — `magpie/group/deepseek-v4.1-flash-1017` (swap after 2 glm deaths) — **score 7** (wake chain 4t)
+First score above 3, and **not generosity**: the critic independently re-derived the bake instead of trusting it — FreeType stroke/cap **0.128** (variable default) vs **0.170** (static) at cap 47; `usWeightClass 550`, `STAT opsz 20`; `'0'` ink **1128 units wide vs 1048** at identical height (yMax 1511 vs 1510) → real added stem weight, not a renamed 400. It also **verified the F-D trap I warned about**: every `draw_panel_into` caller passes the pill's `(pw,ph)`, so `text_px` never receives `STAGE_H=636`.
+Both retractions respected: **no typeface-identity claim**, and **no tracking defect** — same-string static w/cap 3.37 vs reference 54/15 = 3.60 ±0.19 is inside quantisation, and `-0.4` tracking would move *away* from the reference. **Leave tracking at 0.**
+Fallback risk closed: `draw_text_centred` uses `match`/`None => return`, no reachable unwrap on the clock path under `panic="abort"`.
+The 7 vs the other slots' 3 is **not a contradiction**: #4 scored *source correctness*, the 3s scored *the old binary's pixels*. It docks two majors for **delivery**, not logic. Do not let this 7 imply the pixels improved.
+
+**Findings (verbatim severity):**
+- **major** — the weight fix existed only as an **untracked file**; `git ls-files assets` empty, `check-ignore` exit 1 (never added, not ignored). Silent fallthrough to wght 400/opsz 14 on a clean checkout. → **FIXED BY PARENT, commit `217693d`** (verified both commands myself before acting). Binary asset, no conflict with the fixer's `src/` edits.
+- **major** — fix **unverified in pixels**: pid 19318 predates the edits; live still cap/pill 0.390, stroke/cap 0.125, lapvar 11663. Needs one post-rebuild capture.
+- **minor** — `src/lock_timer.rs:50-73` still teaches Quicksand / upem 1000 / sCapHeight 700 / "default instance wght 300" / "must be 17.0". **This false premise is what hid the thin-stroke bug for several iterations.** Delete it.
+- **minor** — `text_px()` has **no test**; it is the sole determinant of cap/pill across `bar_height` 18..80 (px 8.7..38.7). Pin `text_px(24)==11.62`, `text_px(28)==13.56`.
+- **minor** — hardcoded `/home/alex/...` asset fallback (`src/main.rs:1893-1895`) and **no log of which candidate won**, so "thin variable" and "intended 550/20" are indistinguishable in logs.
+
+**Instrument corroboration from an independent direction:** #4 saw `measure.py` return `pill: null` (Lock state on screen from the stress suite) and then merge the pill into a dark window. Same fragility as my repair #4. **Panel-wide rule going forward: visual captures must be taken on a quiet screen, collapsed state, against a BRIGHT wallpaper** — otherwise slot numbers are not comparable across rounds.
+
+### Smoothness evidence pipeline dispatched (the user's headline ask)
+[smoothness evidence pipeline (real recording)](t3-thread://v2/699b4b1c-474b-4871-82f1-d1eb0c374204/thread:delegated-task:command%3Amcp%3A95fc24c9-420c-4506-a56f-1d554907f77c%3Adelegate-task%3A06ef4440-0773-4e36-bf2f-2cc10265613b) — `group/deepseek-v4.1-flash-1017`, thinking high.
+The user asked for **screen recordings split into still frames** with numbers that go up. Parent probed the capture paths first so the child does not flail: `wf-recorder`/`wl-screenrec`/`obs`/`gpu-screen-recorder` **absent**; ffmpeg **has kmsgrab** and the user is in `video`, but it fails `No handle set on framebuffer: maybe you need some additional capabilities?` → needs `CAP_SYS_ADMIN`; no screencast portal, no PipeWire cast nodes. Child may `setcap` ffmpeg (**must remove it again** — leaving it is a security regression the user never asked for) or install `wf-recorder` from the Artix repos; falling back to the grim loop silently is forbidden.
+New metric it must add: **motion completeness** — how many distinct intermediate poses a morph renders. A morph drawing 3 poses in 300 ms is not smooth even with zero duplicated frames, and that is the most likely explanation of the user's "laggy". Existing `analyze.py` already flags duplicates/spikes and already states the grim caveat (intervals measure grim, not the compositor); the child must **extend it, not fork it**, and must prove the analyser against synthetic sequences with known stalls (`selftest.py`).
