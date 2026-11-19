@@ -1271,3 +1271,28 @@ swaybg -i ~/.config/mango/wallpaper/wallpaper.png -m fill &
 Already present in `~/.config/mango/autostart.sh:58-60`; it simply is not running in this
 session. Until it is, every screenshot shows `root_color 0x141424` behind the bar and
 **no visual critic can fairly judge the bar against the reference**.
+
+## ⛔ PARENT SELF-CORRECTION #11 — the lapvar_norm "+26% too sharp" gap is a VIDEO artefact
+Carried since the first critic and quoted by five slots as evidence our glyphs are wrong.
+**It is not a rendering defect.** Chain of checks, each run:
+1. **Same-string ink area, cap-normalised** (removes the "00:05" vs "03:21" confound):
+   reference **1.569** ink/cap², ours simulated through the real pipeline **1.639**
+   ⇒ **ratio 1.045**. The glyphs are the right weight and shape, within 4.5 %.
+2. **Contrast rescaling changes lapvar_norm by 0.0** — confirms the normalisation works
+   and the residual is NOT a contrast effect.
+3. **Band-limiting explains it exactly.** Our render through a small Gaussian:
+   | blur | lapvar_norm |
+   |---|---|
+   | 0.0 px | 1005.4 |
+   | **0.3 px** | **873.3** |
+   | 0.5 px | 674.7 |
+   Reference (a compressed video frame): **784.8**.
+   The reference sits between our 0.3 px and 0.5 px blur — i.e. **his frame is
+   band-limited by video compression**, ours is a clean framebuffer capture.
+**Conclusion: do NOT blur our output to chase this number.** Matching a compression
+artefact would make the real desktop worse. `lapvar_norm` is only comparable between
+two captures of the same kind; ours-vs-video is not that. Keep it as a REGRESSION
+detector (live-vs-live), not as a reference target.
+Two measurement bugs found and avoided while checking: the `>110` mask on the reference
+crop selects the bright WALLPAPER unless restricted to the pill interior (gave cap=42,
+the pill height); and glyph-run splitting merges adjacent digits at this resolution.
