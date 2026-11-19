@@ -1165,3 +1165,23 @@ rect, every interior pixel equals the full-stage result:
 **847 rect cases across 8 sizes, 0 mismatches** (`scripts/perf/region_exactness.rs`,
 commit `0d71059`). Includes 1x1, 1xN, Nx1, odd sizes, edge-touching and fully-outside rects.
 So the optimisation is safe; the remaining morph cost is untouched, not broken.
+
+## r1 wake — #28b user additions (score 6). All three headline findings parent-verified.
+Credible, not generous: it ran `bluetoothctl show` against a dead system bus to prove
+the failure path, and read the owner's own bind.conf. Verified in tree:
+- **blocker** `src/controlcenter_panel.rs:932` `bluetooth_on: live_bluetooth_on().unwrap_or(true)`
+  — unknown adapter renders as accent-blue "On". The other three toggles default false.
+  Fix: `.unwrap_or(false)` + tri-valued Unavailable ("No adapter", disabled pill).
+- **major** `WS_COUNT = 4` (`src/main.rs:953`) but `~/.config/mango/bind.conf:78-82`
+  bind SUPER+5..9 to `view`. Tag 5..9 ⇒ **every disc dark**, the creator's one
+  non-negotiable "you are here" cue vanishes. Reachable by a documented keypress.
+- **major** `client_count`/`is_urgent` are returned by `mmsg get all-tags` and read by
+  nobody (`parse_active_tag`, `src/main.rs:1267`) ⇒ occupied == empty. Data already paid for.
+- **major** BT tile navigates (`CcBtOpen`) while its 3 identical neighbours toggle
+  (`src/main.rs:1673`) — 4 interactions for a one-bit change.
+- **minor, verified** two blues on one screen: `WS_ACTIVE_FILL = (147,164,245)`
+  (`src/main.rs:970`) vs `library::ISLAND_ACCENT` = (124,162,245). **26 units on red**,
+  same as the parent's earlier measurement — independent confirmation. Fix: bind the
+  const to `library::ISLAND_ACCENT`, do NOT change the hue.
+- **minor** disc drop-shadow: WS_DISC_SS=8 ⇒ ~170k shadow evals/frame under an opaque
+  disc on a near-black bar, invisible. Reference discs have no shadow. Delete.
