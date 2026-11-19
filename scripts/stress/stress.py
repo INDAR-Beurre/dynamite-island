@@ -623,6 +623,54 @@ def _log_reacted(app, budget=0.6):
     return False
 
 
+def _inert_batch(app, out, problems, payloads, label, budget=1.0):
+    """Every payload must be a no-op; on a reaction, NAME the culprit.
+
+    The old form checked one witness for a whole batch and, on a hit, added
+    len(batch) to fails - blaming 282 innocents for one guilty payload and
+    never saying which. Inert payloads log nothing, so the healthy path still
+    costs exactly one witness; only a failure pays the log2(n) bisection.
+    """
+    def reacts(sub):
+        app.drain()
+        app.log_mark()
+        for p in sub:
+            r = app.send_drained(p)
+            if r != "ok":
+                out.fails += 1
+                problems.append(f"{label}: send returned {r}")
+        return _log_reacted(app, budget=budget)
+
+    out.tests += len(payloads)
+    out.asserts += len(payloads)      # one inertness expectation per payload
+    if not reacts(payloads):
+        app.guard(label)
+        return
+
+    culprits = []
+
+    def hunt(sub):
+        if len(sub) == 1:
+            culprits.append(sub[0])
+            return
+        mid = len(sub) // 2
+        for half in (sub[:mid], sub[mid:]):
+            if reacts(half):
+                hunt(half)
+
+    hunt(payloads)
+    for p in culprits:
+        out.fails += 1
+        problems.append(f"{label}: payload {p[:48]!r} EXECUTED (must be inert)")
+    if not culprits:
+        out.fails += 1
+        problems.append(f"{label}: batch reacted but bisection found no single "
+                        f"culprit (effect is order-dependent)")
+    # a guilty payload moved the panel; put it back before the next batch
+    app.send_drained(b"collapsed")
+    app.guard(label)
+
+
 def group_protocol(app, out):
     """1. PROTOCOL FUZZ."""
     problems = []
@@ -688,83 +736,38 @@ def group_protocol(app, out):
     # the variants loop above). These must all be silent no-ops.
     inert_args = [b"\x00", b"\x00\x00", b"\xff\xfe", b"\x80",
                   b"A" * 4096, utf8_long, b"\x01\x02\x03"]
-    app.drain()
-    app.log_mark()
-    inert_sent = 0
-    for w in STATE_WORDS + SPECIAL_WORDS:
-        for arg in inert_args:
-            out.tests += 1
-            inert_sent += 1
-            r = app.send_drained(w + arg)
-            if r != "ok":
-                out.fails += 1
-                problems.append(
-                    f"{w.decode()}+{len(arg)}B garbage: send {r}")
-    if _log_reacted(app, budget=1.0):
-        out.fails += inert_sent
-        problems.append(
-            f"{inert_sent} word+garbage payloads: at least one was executed "
-            f"as its bare word (prefix matching instead of full-string match)")
-    app.guard("word+garbage payloads")
+    _inert_batch(app, out, problems,
+                 [w + arg for w in STATE_WORDS + SPECIAL_WORDS
+                  for arg in inert_args],
+                 "word+garbage")
 
     # case near-misses for every valid word (must be inert: the match is
     # case-sensitive and happens after trim())
-    app.drain()
-    app.log_mark()
+    near = []
     for w in STATE_WORDS + SPECIAL_WORDS:
-        s = w.decode()
-        for m in (s.upper(), s.capitalize(), s.replace("e", "E")):
+        t = w.decode()
+        for m in (t.upper(), t.capitalize(), t.replace("e", "E")):
             # A word with no 'e' makes replace("e","E") a no-op, so the
             # "near-miss" was the real word and executed legitimately.
-            if m == s:
-                continue
-            out.tests += 1
-            out.asserts += 1
-            r = app.send_drained(m.encode())
-            if r != "ok":
-                out.fails += 1
-                problems.append(f"near-miss {m!r}: send {r}")
-    if _log_reacted(app, budget=1.0):
-        out.fails += 1
-        problems.append("case near-miss words were accepted (match is not "
-                        "case-sensitive)")
-    app.guard("case near-miss")
+            if m != t:
+                near.append(m.encode())
+    _inert_batch(app, out, problems, near, "case near-miss")
 
     # two valid words in one datagram: must not execute either.
     # All pairs are sent back to back; one check covers the batch because a
     # compound payload can never match a word (the handler compares the
     # whole trimmed string), so a single stray log line indicts the batch.
-    app.drain()
-    app.log_mark()
-    compound = [(a, b) for a in STATE_WORDS for b in STATE_WORDS if a != b]
-    for a, b in compound:
-        out.tests += 1
-        r = app.send_drained(a + b" " + b)
-        if r != "ok":
-            out.fails += 1
-            problems.append(f"pair {a.decode()}+{b.decode()}: send {r}")
-    if _log_reacted(app):
-        out.fails += len(compound)
-        problems.append(
-            f"{len(compound)} two-word datagrams: a word inside a compound "
-            f"payload was executed (no argument validation)")
-    app.guard("compound payload")
+    _inert_batch(app, out, problems,
+                 [a + b" " + b for a in STATE_WORDS for b in STATE_WORDS
+                  if a != b],
+                 "compound payload", budget=0.6)
 
     # newline injection: two commands in one datagram must not run
-    app.drain()
-    app.log_mark()
-    for a, b in [(b"collapsed", b"music"), (b"lockscreen", b"unlock"),
-                 (b"themes", b"collapsed")]:
-        out.tests += 1
-        r = app.send_drained(a + b"\n" + b)
-        if r != "ok":
-            out.fails += 1
-            problems.append(f"injection {a}+{b}: send {r}")
-    if _log_reacted(app):
-        out.fails += 1
-        problems.append("newline injection: a word was executed out of a "
-                        "newline-separated datagram")
-    app.guard("newline injection")
+    _inert_batch(app, out, problems,
+                 [a + b"\n" + b for a, b in
+                  [(b"collapsed", b"music"), (b"lockscreen", b"unlock"),
+                   (b"themes", b"collapsed")]],
+                 "newline injection", budget=0.6)
 
     # dictation bar payloads: valid, clamped, NaN/inf, wrong arity
     bars_cases = [
