@@ -1239,3 +1239,23 @@ Caught BEFORE the fixer applied it (r1c died on dispatch). Brief §5c records it
 ## Fixer r1c FAILED on dispatch — `YJS: Upstream error`, model swap
 Second consecutive failure on `magpie/group/deepseek-v4.1-flash-1017` (r1b died
 mid-round, r1c died instantly). Per the skill's two-strike rule the fixer model swaps.
+
+## ★ ROOT CAUSE of "it looks really bad compared to his setup" — NOT our code (chain 4t)
+The owner's complaint was partly a **desktop state problem, not a panel defect**.
+Measured: the entire top band of every screenshot is flat **RGB(20,20,36)**, full
+screen width, including x=5 and x=2250 — far outside our 1764-device-px stage.
+`~/.config/mango/config.conf:115` **`root_color = 0x141424ff`** = **(20,20,36)** exactly.
+`swaybg` IS installed (`/usr/bin/swaybg`) and `~/.config/mango/wallpaper/wallpaper.png`
+exists (765 KB), and `autostart.sh:58-60` would launch it — **but no swaybg process is
+running** (`pgrep -a swaybg` empty). So the compositor's bare root colour is on screen.
+Consequences, all previously mis-attributed to the panel:
+- The reference frames have a **bright blue sky + white cloud** behind the pill; ours
+  have a flat near-black band. Any A/B "ours looks worse" judgement was comparing a
+  pill on wallpaper against a pill on nothing.
+- `scripts/stress` detector repair #8 (DARK 40 -> 12) was needed **because the wallpaper
+  was absent**, not because the owner chose a dark wallpaper.
+- The frost path samples the wallpaper FILE (`src/wallpaper_blur.rs:404`), so the pill
+  material itself is unaffected — which is why the pill still matched.
+**This also means every "flat black backdrop" screenshot in the run is not representative.**
+Not fixed by the parent: starting a wallpaper daemon changes the owner's live desktop,
+which is theirs to choose. Recorded as an environment finding + a one-line remedy.
