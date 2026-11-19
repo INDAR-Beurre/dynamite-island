@@ -1080,3 +1080,22 @@ Drove `collapsed`, waited 3 s, recorded through the repaired instrument (state w
 | **idle CPU** | — | 2–9% | **0.5%** | ✅ |
 **Aspect is essentially solved** (4.029 → 2.632 vs 2.643). **Idle CPU is solved** (2–9% → 0.5%). The remaining sharpness gap is **weight, not rasterisation**: stroke/cap went 0.154 (too thin) → 0.231 (too heavy), passing straight through the 0.200 target. That is a one-value correction, not a redesign.
 `lapvar_norm` rose 1665.7 → 1784.4 while stroke stayed 0.231 — consistent with the pill growing 96→100 px wide (more ink, same weight), not a regression. **Do not read lapvar alone**; the standing instruction holds.
+
+### #27b lockscreen visual — score 4 (`group/hy4`, narrow brief, vision confirmed)
+Retry after #27 died twice. Credible: it **saw the images** (describes the teal frosting varying across x, distinguishes the comparison foil) and confirms the parts we got right — **no avatar/username/date/bottom box, no frosted card**, keyhole descent and clock pop encoded.
+- **blocker** — clock is a **flat fill**: blits `C_WHITE` over the glyphs then `C_CYAN` as a left-edge gradient (`src/lockscreen.rs:1000-1008`). Cannot produce wallpaper-sampled frosting. Fix: sample wallpaper beneath each glyph at 1.030× centred zoom, blur the glyph-only mask ~24 px, apply the vertical veil, composite through the glyph mask; **remove the flat white base and cyan overlay**.
+- **major** — clock **~16% too wide**: `CLOCK_PX_FRAC 0.27*h` with `4*0.60 + 0.21` em advances ⇒ ~1015 px at 2560×1440 (**39.6%**) vs measured **872×279 (34%)**. Height is close ⇒ **retune horizontal advances, do not shrink the whole clock** (`src/lockscreen.rs:29, 188-193, 411-425`).
+- **major** — clock typeface is **Quicksand Bold**, creator states **SF Compact Display** (`src/lockscreen.rs:20, 29, 77`). ⚠️ **Parent caveat: SF Compact Display is an Apple font we do not have and cannot ship.** The pill clock already uses baked Inter-Medium. Do NOT instruct a fixer to load a font that does not exist — it will silently fall back. Treat as "match the reference's letterform proportions", verify by measurement.
+- **minor** — dots too large: `DOT_D_1080 = 9.0` → 12 px at 1440 vs measured **8–9 px**; pitch 12@1080 → ~16 px is **correct, keep it** (`src/lockscreen.rs:228, 898-903`).
+- **minor** — wrong-password shake is a **static +4*s offset**, no alternation or decay (`src/lockscreen.rs:53, 234, 353-355, 874-879`). Needs a decaying alternating dx over ~150 ms.
+
+### #28 user-additions critic FAILED — `WorkBuddy AI: Too many requests, please try again later.`
+First failure for this slot (RPM on `group/hy4`). One retry allowed; will re-dispatch on a different route rather than hammer the same provider.
+
+### New instrument: `scripts/blurtest.py` — his own acceptance test, made runnable
+He states the rule twice (*"contrast is basically deciding where people look first"*, *"whatever that you can still see in the blurry version is what your desktop is shouting about"*). This blurs a capture and ranks the survivors, so the rule is **checkable instead of a matter of taste**.
+**Three defects found by running it, not reading it** (all fixed, committed):
+1. A **global median** baseline labels half of every image as a survivor — including the wallpaper itself (first run returned one 1,730,800 px "survivor" spanning the whole frame). Use a **much wider blur as the local neighbourhood**; broad wallpaper gradients cancel.
+2. **Sign matters**: a black pill on bright wallpaper shouts as loudly as a bright tile on a dark one. Rank by magnitude, report the sign.
+3. **Sigma must scale from the FULL frame height**, else `--crop` to the bar strip shrinks the blur to 2 px and turns the test into an edge detector (74 spurious survivors → 5).
+**Reference bar strip** (`s17.png`, crop 0,0,2560,140, σ 21.6): **5 survivors**, top one dark shout −99 area 89,600 spanning x[770,1530] — the pill plus its neighbours reading as one quiet dark band. Nothing saturated survives. **That is the target: few, dark, low-magnitude.**
