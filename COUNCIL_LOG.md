@@ -1185,3 +1185,30 @@ the failure path, and read the owner's own bind.conf. Verified in tree:
   const to `library::ISLAND_ACCENT`, do NOT change the hue.
 - **minor** disc drop-shadow: WS_DISC_SS=8 ⇒ ~170k shadow evals/frame under an opaque
   disc on a near-black bar, invisible. Reference discs have no shadow. Delete.
+
+## ⚠️ Fixer r1b FAILED (transport) — tree verified sound before re-dispatch
+`YJS: Upstream error` — provider transport, not a refusal. Unlike a critic, a fixer
+dies holding a dirty tree, so the parent verified the inherited state before spending
+another child: **`cargo build --release --offline` 0 errors / 61 warnings**, and
+**`cargo test --release --offline` 303 passed / 0 failed**. The tree is sound.
+
+### Instrument repair #11 — the state witness was silently dead (commit `12df3cf`)
+`measure.py::panel_state()` read only `DBG enter state=`, which is printed on
+**POINTER ENTER** (`src/main.rs:5653`). A panel driven purely over the socket never
+emits it ⇒ the guard returned `None` and **fell back to the pixel heuristics it exists
+to replace**, while looking alive. This is the seventh mis-score class.
+Fix: also read `DBG morph A -> B (morph_running=…)` (`src/main.rs:4764`), which fires
+on every state change and is already a contract the stress harness depends on.
+Second trap: that line is printed **BEFORE** the animation and there is **no completion
+line**, so `morph_running=true` stays true forever ⇒ trusting it refuses every
+measurement. Added `settled()`: two captures 200 ms apart (> anim_ms 160) compared
+**in the bar strip only** — a whole-screen compare never settles because a terminal
+cursor elsewhere keeps changing (measured: 2040 changed px at y[987,1132], far below
+the bar). New `scripts/measure_witness_selftest.py`: **10/10 PASS**.
+
+### Verified state of the product at r1b's end (`r1b-final-verified`, quiet)
+pill **99×38**, aspect **2.605** (ref 2.643, 1.4% off), centre offset **0.0 px**,
+cap/pill **0.342** (ref 0.357), stroke/cap **0.231** (ref 0.200, **+15.5% too heavy**),
+lapvar_norm **1609.55** (ref 1277.0, +26.0%), **RSS 30.8 MB**, **idle CPU 0.5%**.
+Baseline was aspect 4.029 / RSS 44.2 MB / CPU 2–9%. Geometry and CPU are essentially
+solved; the remaining sharpness gap is **stroke weight**, one value.
