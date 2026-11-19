@@ -17,8 +17,14 @@ M = 1024
 BOUND = 8.0
 
 
-def verdict(rss):
-    """(fails, growth_mb, peak_mb, excursions) — mirrors group_load."""
+def verdict(rss, settled=None):
+    """(fails, growth_mb, peak_mb, excursions) — mirrors group_load.
+
+    `settled` models the six samples group_load takes AFTER driving the panel
+    back to `collapsed`. Without it the verdict measures wherever the loop
+    happened to stop: a real run ended with a lock surface still up and
+    reported +11.6 MB on a panel that rests at 67 MB.
+    """
     tail_all = rss[20:]
     # The baseline is the SETTLED region [40:60], not the whole tail (a slow
     # leak raises its own median and hides itself: +0.08 MB/iter read as
@@ -27,7 +33,8 @@ def verdict(rss):
     # [40:60] is past every allocation observed and still early enough that a
     # slow leak separates from it.
     base = statistics.median(rss[40:60])
-    growth = (statistics.median(rss[-20:]) - base) / M
+    tail = settled if settled is not None else rss[-6:]
+    growth = (statistics.median(tail) - base) / M
     peak = (max(tail_all) - base) / M
     excursions = []
     run = start = 0
@@ -76,6 +83,18 @@ CASES.append(("persistent step +25MB at i110",
 CASES.append(("late step +25MB at i170",
               S((1, 58), (169, 85), (30, 110)), 1))
 
+# --- the loop stopped mid-excursion: the settle samples decide ----------
+# Real failure: the suite ended with a lock surface still resident and
+# called +11.6 MB of "growth". Driving home to `collapsed` first is what
+# makes the verdict about retention rather than about where the loop ended.
+SETTLE_CASES = [
+    ("ends mid-reload, rests at 67", S((1, 62), (56, 68), (121, 79), (22, 79)),
+     [67 * M] * 6, 0),
+    ("ends mid-reload, LEAKED to 95", S((1, 62), (56, 68), (121, 79), (22, 79)),
+     [95 * M] * 6, 1),
+    ("flat loop, settle confirms", S((1, 62), (199, 68)), [68 * M] * 6, 0),
+]
+
 
 def main():
     bad = 0
@@ -91,7 +110,17 @@ def main():
         print(f"{tag} {name:34s} growth={g:+6.1f} peak={peak:+6.1f} "
               f"excursions={len(exc)} -> {'FAIL' if fails else 'PASS'} "
               f"(want {'FAIL' if want else 'PASS'})")
-    print(f"\n{len(CASES) - bad}/{len(CASES)} assertions pass")
+    total = len(CASES)
+    for name, rss, settled, want in SETTLE_CASES:
+        fails, g, peak, exc = verdict(rss, settled)
+        ok = fails == want
+        bad += 0 if ok else 1
+        total += 1
+        tag = "ok " if ok else "BAD"
+        print(f"{tag} {name:34s} growth={g:+6.1f} peak={peak:+6.1f} "
+              f"-> {'FAIL' if fails else 'PASS'} "
+              f"(want {'FAIL' if want else 'PASS'})")
+    print(f"\n{total - bad}/{total} assertions pass")
     return 1 if bad else 0
 
 

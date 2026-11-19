@@ -1107,6 +1107,19 @@ def group_load(app, out):
                 over_run, over_peak = 0, 0.0
 
     if len(rss) == iters:
+        # Settle back to the resting state before judging. The loop can END
+        # while a lock surface is still up (measured: last=79 MB with a
+        # 24 MB shm slot resident, reported as +11.6 MB of "growth" on a
+        # panel that returns to 67 MB). That is a measurement of WHERE the
+        # loop stopped, not of retention. Drive it home and sample again.
+        for w in (b"unlock", b"collapsed"):
+            app.send_drained(w)
+            time.sleep(0.6)
+        for _ in range(6):
+            kb = app.rss_kb()
+            if kb is not None:
+                rss.append(kb)
+            time.sleep(0.25)
         warm = rss[:20]                      # one-time lazy allocations:
         tail = rss[20:]                      # lock wallpaper + shm slot ring
         # Baseline = the SETTLED region, not the first post-warmup samples.
@@ -1116,7 +1129,9 @@ def group_load(app, out):
         # past every allocation observed and still early enough that a slow
         # +0.08 MB/iter leak separates from it (+11.2 MB over 200 iterations).
         base = statistics.median(rss[40:60])
-        growth = (statistics.median(rss[-20:]) - base) / 1024.0
+        # Tail = the post-settle samples only. Averaging them with in-loop
+        # samples would let a long excursion drag the "resting" number up.
+        growth = (statistics.median(rss[-6:]) - base) / 1024.0
         peak = (max(tail) - base) / 1024.0
         bound = 8.0
         out.asserts += 1
