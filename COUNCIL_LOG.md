@@ -2178,3 +2178,46 @@ Final: runs must be symmetric about screen centre within 0.05W and in
 [0.05W, 0.78W], then p90 width. Expectation from IslandState::size()
 (src/main.rs:199), not invented bands. 9/9 PASS; mutation-tested against a
 collapsed capture (all 6 rejected).
+
+## r2 verdicts in (chain 2t each)
+- #34 lockscreen pixels (vision, group/hy4): **7**. Credible — it measured
+  normalised crops and named constants. Direction right on all three
+  findings; magnitudes wrong on two (see retraction #14). Its proposed
+  0.53 em tabular fix would still have left the clock ~7% wide.
+- #37 test integrity (group/hy4): **6**. Highest-value verdict of the round:
+  it MUTATION-TESTED the 317 Rust tests in a /tmp copy.
+  CAUGHT: panel_fill_white, veil_radial, Easing::apply EaseOutQuad->linear.
+  SURVIVED: clock_ink_white, text_px_constant, morph_easing_linear_prod,
+  themes_render_empty. It also cleared the 19-test r1d reconciliation as
+  justified, not papered over — the question I most wanted answered.
+- #36 packaging: FAILED (logfare RPM). #35 dictation: FAILED (model
+  unavailable). Both provider transport, not refusals; re-dispatch below.
+
+## Parent fix: lock clock proportional advances (chain 5t)
+Critic #34 said "too wide"; I measured live ink 1073x293 = 40% too wide, not
+the ~10% the critic estimated. Mechanism found by measuring the reference
+'11:28' glyph pitches: 160/169/104/207 px. A TABULAR layout gives a constant
+digit->digit pitch; 1->1 is 160 while 2->8 is 207, so the reference uses the
+font's own advances. Quicksand-Bold hmtx '1' .389 / ':' .273 / '2' .569 match
+the measured .4014/.2609/.5194 within run-edge error.
+Fix: rasterize_clock and lockscreen_layout now sum m.advance_width instead
+of forcing 0.60 em cells. Deleted DIGIT_ADVANCE_EM / COLON_ADVANCE_EM.
+Verified: ink 937x293, ink/cap 3.1980 vs reference 3.1219 (+2.4%, inside
+error). 319 tests pass (added clock_block_uses_proportional_advances, which
+fails under a tabular regression). Build 0 errors.
+The small PILL clock stays tabular on purpose — verified at w/cap 3.600 and
+must not shift as digits change. Two clocks, two rules, documented.
+
+## Retraction #14 (chain 4t)
+Almost wrote a finding telling a fixer to shrink CLOCK_PX_FRAC by 12% because
+live ink/W .41534 vs reference .33906. Wrong: the screens differ in shape
+(16:9 vs 3:2) and the clock scales from HEIGHT. The invariant is ink/cap.
+Fourth occurrence of this error class; caught before dispatch.
+
+## Instrument repair #27 — motion run_all.sh
+Two fixes. (a) panel_exe_mtime was empty whenever a fixer had rebuilt over
+the binary: /proc/PID/exe reads "...(deleted)" and date -r on that literal
+fails. Now stats the link itself. (b) Added a load gate: loadavg > 6.0 exits
+2 with RESULT INVALID. Observed three concurrent rustc at 94/77/64% dropping
+57-74% of frames and reading travel_px=0, morph_poses=1, pose_hold 337.8 ms
+on a panel that idles at 0.5% CPU. That run must not be scored.
