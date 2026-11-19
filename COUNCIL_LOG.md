@@ -2275,3 +2275,4 @@ r2 panel dispatched: 15 slots in one turn. Models: hy4 #1/#2/#3/#15;
 logfare deepseek #4/#8/#14; group deepseek #5/#9/#13; logfare glm-5.3 #6/#11;
 fasfas deepseek #7/#12; logfare glm-5.3-flash #10. All read-only.
 r2 #1 pill (hy4) score 8: black fill, centre, ink and font metrics on target; live pill 94x36 = 4.167% W vs reference 4.336%, aspect 2.611 vs 2.643. One major: capsule ~4% undersized. Suggested re-measure runtime geometry toward 98x37 device px, preserving text. Not yet applied.
+r2 #10 portability: logfare glm-5.3-flash failed `Service temporarily at capacity`; one retry on group deepseek-1017 as #10b, same read-only brief.
