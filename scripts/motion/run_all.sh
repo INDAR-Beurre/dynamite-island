@@ -96,7 +96,10 @@ printf 'stamp=%s\nregion=%s\ntrials=%s\nloadavg=%s\n' "$STAMP" "$REGION" "$TRIAL
 PID=$(pidof dynamite-rust 2>/dev/null | awk '{print $1}')
 { echo "panel_pid=$PID"
   echo "panel_exe_started=$( [ -n "$PID" ] && ps -o lstart= -p "$PID" | sed 's/^ *//' )"
-  echo "panel_exe_mtime=$( [ -e "/proc/$PID/exe" ] && date -r "$(readlink -f /proc/$PID/exe)" '+(%Y-%m-%d %H:%M:%S)' )"
+  # /proc/PID/exe reads "...dynamite-rust (deleted)" once a fixer rebuilds
+  # over it; date -r on that literal fails and the stamp comes out empty.
+  # Stat the link itself: it still points at the running inode.
+  echo "panel_exe_mtime=$( [ -n "$PID" ] && date -r "/proc/$PID/exe" '+(%Y-%m-%d %H:%M:%S)' 2>/dev/null )"
   echo "panel_exe=$( [ -n "$PID" ] && readlink -f /proc/$PID/exe )"; } > "$OUT/panel.txt"
 cat "$OUT/panel.txt" | sed 's/^/  /' 
 sleep "$SETTLE"
@@ -211,6 +214,19 @@ if vr and vr[0][2] and po:
           else f"cross-check 05-vfr: {vr[0][2]['poses']} poses vs 04 median {st.median(po)}: DISAGREE")
 print(f"\nmedia: {out}   (keep out of git)")
 EOF
+
+# A morph measurement taken while the machine is compiling measures the
+# scheduler, not the panel. Observed: three concurrent rustc at 94/77/64%
+# dropped 57-74% of captured frames and read travel_px=0, morph_poses=1,
+# pose_hold 337.8 ms on a panel that idles at 0.5% CPU. Refuse to score it
+# rather than let a critic quote it as a product verdict.
+LOAD1=$(cut -d' ' -f1 /proc/loadavg)
+if awk "BEGIN{exit !($LOAD1 > 6.0)}"; then
+  say "RESULT INVALID: loadavg $LOAD1 > 6.0 — the machine was busy (builds,"
+  say "  other agents). Frame drops and pose counts below measure contention,"
+  say "  not the panel. Re-run in a quiet window; do not score this run."
+  exit 2
+fi
 
 if [ ${#FAILED[@]} -gt 0 ]; then
   say "FAILED stages: ${FAILED[*]}"; exit 1

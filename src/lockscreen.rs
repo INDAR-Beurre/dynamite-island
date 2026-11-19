@@ -26,9 +26,11 @@
 //! ---------------------------------------------------------------------------
 //!   Giant clock block: 868 x 279 ink at 2560x1440 (ink/W .33906,
 //!     cap/H .19375), TRUE CENTRE on both axes. Glyphs: Quicksand Bold at
-//!     pixelSize = 0.27 x surface height: measured ink width is within
-//!     0.01 % of the reference, so CLOCK_PX_FRAC stays. Advance: tabular
-//!     digit cells 0.60 em, colon cell 0.21 em.
+//!     pixelSize = 0.27 x surface height: cap/H matches the reference
+//!     within 0.6 %, so CLOCK_PX_FRAC stays. Advance: the font's own
+//!     PROPORTIONAL advances ('1' .389 em, '2' .569, ':' .273), NOT tabular
+//!     cells — the reference's digit pitches are 160 px for 1->1 and 207 px
+//!     for 2->8, which a tabular layout cannot produce.
 //!   Clock material (no white base, no cyan specular: both were the OLD
 //!     design and are deleted): the glyphs are wallpaper-sampled frosting.
 //!     The registered (1.030x) wallpaper is blurred at radius
@@ -188,10 +190,6 @@ pub const REF_H: f32 = 1080.0;
 
 /// Giant clock pixelSize as a fraction of surface height (0.27).
 pub const CLOCK_PX_FRAC: f32 = 0.27;
-/// Digit advance, in em (0.60 em ~ 175 px @1080).
-pub const DIGIT_ADVANCE_EM: f32 = 0.60;
-/// Colon advance, in em (0.21 em ~ 60 px @1080, measured narrow).
-pub const COLON_ADVANCE_EM: f32 = 0.21;
 /// Cap-height ratio of Quicksand Bold (~0.70) — used for the layout box.
 pub const CAP_HEIGHT_RATIO: f32 = 0.70;
 
@@ -445,11 +443,13 @@ pub struct LockLayout {
     pub date_line: Rect,   // text top row; only meaningful if drawn
 }
 
-pub fn lockscreen_layout(w: u32, h: u32, dots: u8) -> LockLayout {
+pub fn lockscreen_layout(w: u32, h: u32, dots: u8, font: &Font, time: &str) -> LockLayout {
     let s = scale(h);
     let px = CLOCK_PX_FRAC * h as f32;
-    // 4 digit cells + 1 narrow colon cell.
-    let block_w = (4.0 * DIGIT_ADVANCE_EM + COLON_ADVANCE_EM) * px;
+    // Same proportional advances the rasteriser uses, so the audited block
+    // and the drawn block agree. Depends on the time string: "11:11" is
+    // narrower than "00:08", exactly as in the reference.
+    let block_w: f32 = time.chars().map(|c| font.rasterize(c, px).0.advance_width).sum();
     let block_h = CAP_HEIGHT_RATIO * px;
     let pill_w = pill_width_1080(dots) * s;
     LockLayout {
@@ -712,27 +712,28 @@ fn rasterize_clock(font: &Font, text: &str, px: f32) -> Mask {
         Some(lm) => (lm.ascent, (lm.ascent - lm.descent).ceil().max(1.0) as usize),
         None => (px, px.ceil().max(1.0) as usize),
     };
-    // Total advance with fixed tabular cells.
+    // PROPORTIONAL advances, not tabular cells. Measured on the reference
+    // '11:28' frame: glyph starts 844/1004/1173/1277/1484 -> pitches
+    // 160/169/104/207 px. A tabular layout would make every digit->digit
+    // pitch equal; 1->1 is 160 while 2->8 is 207, so the reference uses the
+    // font's own advances. Quicksand-Bold hmtx: '1' .389 em, ':' .273,
+    // '2' .569 — matching the measured .4014/.2609/.5194 within run-edge
+    // error. Natural total for '11:28' = 2.1680 em vs the reference ink
+    // span 2.1853 em (ratio 1.008). Forcing 0.60 em per digit gave 2.6100 em
+    // = 1.204x too wide (live ink 1073 px vs the reference's 871 at the same
+    // cap height). The small pill clock stays tabular on purpose: it is
+    // verified at w/cap 3.600 and must not shift as digits change.
     let mut mw = 0.0f32;
     for ch in text.chars() {
-        mw += if ch == ':' {
-            COLON_ADVANCE_EM * px
-        } else {
-            DIGIT_ADVANCE_EM * px
-        };
+        mw += font.rasterize(ch, px).0.advance_width;
     }
     let mw = mw.ceil().max(1.0) as usize;
     let mut cov = vec![0.0f32; mw * mh];
     let mut pen = 0.0f32;
     for ch in text.chars() {
-        let cell_w = if ch == ':' {
-            COLON_ADVANCE_EM * px
-        } else {
-            DIGIT_ADVANCE_EM * px
-        };
         let (m, c) = font.rasterize(ch, px);
-        // Centre the glyph's advance box inside its fixed cell.
-        let gx = pen + (cell_w - m.advance_width) / 2.0 + m.xmin as f32;
+        let cell_w = m.advance_width;
+        let gx = pen + m.xmin as f32;
         let gy = ascent - m.ymin as f32 - m.height as f32;
         let x0 = gx.round() as i32;
         let y0 = gy.round() as i32;
@@ -1280,7 +1281,7 @@ pub fn draw_lockscreen(
 ) {
     let s = scale(h);
     let anim = data.anim;
-    let l = lockscreen_layout(w, h, data.dots);
+    let l = lockscreen_layout(w, h, data.dots, font, &data.time_hhmm);
 
     // --- (1) Registered wallpaper + (2) vertical veil + (3) clock. ---
     // Registration (1.030x about centre) and the material blur are the same
@@ -1424,18 +1425,49 @@ mod tests {
         // ~1 dot behind the count); the settled width is 153 @1080.
         // Dot pitch 12.0 comes from the dot CENTRES (f0635 y=19 row:
         // peaks at x 304,308,...,336 @640), not from this width.
-        let l = lockscreen_layout(1504, H, 9);
+        let l = lockscreen_layout(1504, H, 9, &clock_test_font(), "11:28");
         assert!(l.pill.w > 138.0 && l.pill.w < 146.0); // 153 * 1002/1080
+    }
+
+    fn clock_test_font() -> Font {
+        Font::from_bytes(
+            include_bytes!("../assets/fonts/Quicksand-Bold.ttf").to_vec(),
+            FontSettings::default(),
+        )
+        .expect("vendored Quicksand-Bold parses")
     }
 
     #[test]
     fn clock_block_is_centred() {
-        let l = lockscreen_layout(1504, H, 0);
+        let f = clock_test_font();
+        let l = lockscreen_layout(1504, H, 0, &f, "11:28");
         assert!((l.clock_block.cx() - 752.0).abs() < 1.0);
         assert!((l.clock_block.cy() - H as f32 / 2.0).abs() < 1.0);
-        // 759 x 204 @1080 -> ~705 x 189 on the Surface.
-        assert!(l.clock_block.w > 690.0 && l.clock_block.w < 720.0);
         assert!(l.clock_block.h > 180.0 && l.clock_block.h < 200.0);
+    }
+
+    /// The reference clock uses the font's PROPORTIONAL advances, so the
+    /// block width tracks the time string. Reference '11:28' ink span is
+    /// 871 px at cap 279 on 2560x1440 => width/cap 3.122. Tabular cells
+    /// (the old 0.60 em per digit) gave 1.204x that. Pin the ratio, and pin
+    /// that a narrow-digit time really is narrower — a tabular regression
+    /// makes both assertions fail.
+    #[test]
+    fn clock_block_uses_proportional_advances() {
+        let f = clock_test_font();
+        let px = CLOCK_PX_FRAC * H as f32;
+        let cap = CAP_HEIGHT_RATIO * px;
+        let wide = lockscreen_layout(1504, H, 0, &f, "11:28").clock_block.w;
+        let ratio = wide / cap;
+        assert!(
+            (ratio - 3.122).abs() < 0.10,
+            "'11:28' width/cap {ratio:.4}, reference 3.122"
+        );
+        let narrow = lockscreen_layout(1504, H, 0, &f, "11:11").clock_block.w;
+        assert!(
+            narrow < wide * 0.92,
+            "'11:11' ({narrow:.1}) should be clearly narrower than '11:28' ({wide:.1})"
+        );
     }
 
     /// The discriminating property of a VERTICAL veil: at any given row the

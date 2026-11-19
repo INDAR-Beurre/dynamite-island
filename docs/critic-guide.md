@@ -103,3 +103,38 @@ Do not unify them.
 ```json
 {"score":0,"summary":"...","findings":[{"severity":"blocker|major|minor","title":"...","detail":"...","where":"..."}],"what_would_make_it_a_10":"..."}
 ```
+## Retraction #14 — the lock clock's `width_frac` is NOT a cross-screen gate
+
+The reference frame is 2560x1440 (16:9); this screen is 2256x1504 (3:2).
+`CLOCK_PX_FRAC` derives the giant clock from **height**, so the same cap
+fraction buys a larger *width* fraction on a narrower screen. Comparing
+`ink/W` across the two is the same error class as retractions #9, #10, #13.
+
+**The invariant is ink/cap.** Reference `871/279 = 3.1219`.
+
+The lock clock also uses the font's **proportional** advances, so its width
+tracks the time string: `11:11` is much narrower than `00:08`. Always control
+the string, or compare ink/cap on the same string.
+
+Measured after the proportional fix: live ink `937x293`, ink/cap **3.1980**
+(+2.4%, inside run-edge error). Predicting our width from the reference's
+ink/cap and our cap gives 914.7 px; measured 937 px because `13:09` has wider
+glyphs than `11:28`. **Do not shrink `CLOCK_PX_FRAC`.**
+
+## Lock capsule and dots — corrected magnitudes
+
+Critic #34 reported the rest capsule as "30% too wide, 11% too short" using
+screen-width fractions. Under the height invariant (these are small
+top-anchored objects the reference scales from height, as we do):
+
+| metric | reference /H | ours /H | ratio |
+|---|---|---|---|
+| capsule width | .04722 | .05186 | **1.098** |
+| capsule height | .02778 | .02460 | **0.886** |
+| dot diameter | .00590 | .00798 | **1.352** |
+| dot pitch | .01125 | .01130 | 1.005 |
+
+So: capsule ~10% too wide and ~11% too short, dots ~35% too large, pitch
+correct. Constants at `src/lockscreen.rs`: `PILL_W_1080 57.0 -> ~51.8`,
+`PILL_H_1080 27.0 -> ~30.4`, `DOT_D_1080 9.0 -> ~6.7`, `DOT_PITCH_1080 12.0`
+unchanged. Re-measure after changing; do not compute and assume.
