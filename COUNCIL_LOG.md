@@ -1373,3 +1373,10 @@ not the 62–105 ms the profiler and critic #25 reported. Different build (that 
 instrumented pre-r1b binary) and different load. The *ratio* is the durable result
 (**~7× to ~300× cheaper**), and even at 9 ms the old path plus a 2.7 ms draw plus three
 stage-sized memsets could not sustain 60 Hz. Do not quote 62 ms as today's number.
+**Memset half measured too** (first attempt read 0.000 ms — the compiler eliminated the
+dead fills; `black_box` + a dirtying write fixed it):
+three stage-sized `fill(0)` = **0.578 ms**; three rect-sized clears = **0.052 ms**.
+So the memsets were **~0.6 ms/frame, not the dominant cost** — the upscale was. Honest
+attribution: the rect fix buys ~8 ms on a full-stage morph and ~0.5 ms of memset; the
+upscale is ~94 % of the saving. My earlier brief implied the memsets were co-equal; they
+were not.
