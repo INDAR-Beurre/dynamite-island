@@ -2009,3 +2009,54 @@ png 0.17, so the "no PNG decoder" comment is false).
 
 Brief carries all six retractions and the do-not-touch list, including
 `src/lockscreen.rs` (just finished and verified) and the no-lockout rule.
+
+## r1e died (model unavailable) — work verified and committed; r1f dispatched
+
+`1adfb483` failed with "The model is temporarily unavailable" AFTER landing
+real work. Parent verified before committing: **317 passed / 0 failed** (was
+297/19), `halo_check.py` holes 0 PASS. Committed as one base so the next
+fixer starts from known-good rather than a half-built tree.
+
+Landed: C_HIGHLIGHT (25,26,31) neutral in all three panels, Power geometry,
+the 19 test reconciliations. **NOT landed**: `redraw_panel_content_2x`
+(`src/main.rs:3021`) was written then disabled with `if false` at
+`src/main.rs:5973`, and its match only handles Power. Settled expanded
+panels are still 1x-upscaled — critic #24's blocker stands.
+
+**r1f** = `magpie/fasfas-ai/deepseek-v4.1-flash`, thinking max,
+uuid `9c75d17d-c2e9-4c8b-acd7-1c3b7e88dfb0`. Third provider tried; logfare
+and group both rate-limited. Tasks: enable+extend the 2x panel path (find
+out why it was disabled first); morph pose count; the smaller measured
+corrections; the wallpaper PNG decode.
+
+## Motion instruments — three more defects (parent, chain 5t)
+
+1. **`motion.py` built grim regions in SCREEN coords** while the output sits
+   at layout y=1543. Stage 00 died with "supplied geometry did not intersect
+   with any outputs" while stages 01-05 ran fine, because `run_all.sh` had
+   the origin query and `motion.py` did not. Added `layout_origin()`;
+   `crop_x` stays screen-relative because `analyse_frame` indexes inside the
+   grabbed image. Verified: region `339,1554 827x127`, crop_x 339.
+2. **A maximised app window merged into the island body.** The T3 title bar
+   is dark and spans the full crop, so `centre_run` returned w=1240 and
+   total_h **183** against a 76 px target — a fake **2.744 overshoot**.
+   BODY_WMAX was 1250, above the crop width, so nothing rejected it. Now
+   capped at 90% of the crop: the island is centred with wallpaper on both
+   sides, a maximised window is not. Series went
+   `37x14, 183x4, 76...` -> `37x14, 78x4, 76...`; overshoot 2.744 -> **0.154**.
+3. **Strobe scored above a real slideshow.** Its steps are all the same
+   size, so the 1.8x-median spike test saw nothing unusual and J=0.0;
+   C=0.2, D=0 gave 68.0 vs slideshow 48.7. The defect is not step size but
+   that it REVISITS shapes. Added `revisit_rate = (poses-uniq)/(poses-1)`
+   and `J = max(spike_rate, revisit_rate)`. Strobe now **45.5 < 48.7**.
+   First attempt (dividing spikes by uniq-1) did nothing — spikes was 0,
+   so the denominator was irrelevant. Selftest caught it.
+
+All three committed with the selftest green: perfect 100 > duplicate 68.5 >
+slideshow 48.7 > strobe 45.5 > teleport 4.0.
+
+**Honest morph state after the instrument fixes**: 3, 4, 5 poses over three
+trials; pose_hold_median 75-99 ms; settle 283 ms; duplicate_ratio 0.785.
+Reference is 14 poses / 233 ms. The defect is real and unfixed — it is r1f's
+task 2. Earlier "12 poses" readings came from `analyze.py` on a crop that
+included the app window; the bounded instrument is the trustworthy one.
