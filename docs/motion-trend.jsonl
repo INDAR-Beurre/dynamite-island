@@ -1,0 +1,1 @@
+{"label": "r1f-pre", "kind": "motion", "source": "wf-recorder 60Hz", "trials": 3, "poses": [4, 3, 5], "pose_hold_median_ms": 66.3, "settle_ms_worst": 283.5, "duplicate_ratio": 0.785, "overshoot_frac": 0.154, "reference": {"poses": 14, "span_ms": 233, "easing": "easeOutQuad", "overshoot": 0.011}, "pose_hold_per_trial": [50.0, 66.3, 66.7], "latency_ms_worst": 150.4}
