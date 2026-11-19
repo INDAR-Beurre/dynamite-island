@@ -582,6 +582,14 @@ pub fn listen(tx: crossbeam_channel::Sender<HotkeyEvent>) -> Result<()> {
             if found == 0 {
                 return stdin_fallback(&tx); // nothing readable at all
             }
+            // r2 #7d: event nodes existed but none could be opened (lost
+            // input-group/ACL, no /dev/uinput). `found` counts directories,
+            // not watchers, so this looked healthy with no hotkey at all.
+            if armed == 0 {
+                eprintln!(
+                    "hk: {found} input nodes present but 0 could be opened —                      no hotkey. Check the `input` group and /dev/uinput."
+                );
+            }
             first_scan = false;
         }
         // shortcut: 2s poll instead of inotify; fine for a tool that idles at 10ms anyway

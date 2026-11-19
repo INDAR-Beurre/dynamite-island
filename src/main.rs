@@ -59,7 +59,7 @@
 use std::os::unix::net::UnixDatagram;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
@@ -1091,6 +1091,26 @@ fn morph_capsule_oy(from_state: IslandState, to_state: IslandState, progress: f3
 }
 
 /// Panel rect inside the stage: (x, y, w, h).
+/// Stage-y band of the search field in the four typing panels, or None.
+/// All four declare SEARCH_Y = 14 with SEARCH_H 34..36 (launcher_panel.rs:210,
+/// clipboard_panel.rs:121, wallpaper_panel.rs:156, themes_panel.rs:203); 50 is
+/// the tallest. Panel-local, so add the panel origin.
+fn in_search_band_stage(pos: (f64, f64), state: IslandState) -> bool {
+    if !TYPING_STATES.contains(&state) {
+        return false;
+    }
+    let (_, oy) = panel_origin(state);
+    let top = (oy + 14.0) as f64;
+    // The field only wins pixels BELOW the pill's centre line. At the
+    // default bar_height=28 the pill centre (y 17) lands exactly on the
+    // field's first row, so a plain band test would take the centre away
+    // from the collapse target and break iter27b. Below-centre keeps the
+    // pill's own middle a close button at every bar_height.
+    let (_, py, _, ph) = panel_rect_stage(IslandState::Collapsed);
+    let centre = (py + ph / 2.0) as f64;
+    pos.1 > centre && pos.1 >= top && pos.1 < top + 36.0
+}
+
 fn panel_rect_stage(state: IslandState) -> (f32, f32, f32, f32) {
     let (ox, oy) = panel_origin(state);
     let (pw, ph) = state.size();
@@ -1623,8 +1643,10 @@ fn ensure_tag_poller() {
     STARTED.get_or_init(|| {
         let _ = active_tag_cached(); // init the cache (seed 1)
         std::thread::spawn(|| loop {
-            if let Some(t) = read_tag_state() {
-                apply_tag_state(t);
+            if !TAG_STREAMING.load(std::sync::atomic::Ordering::Relaxed) {
+                if let Some(t) = read_tag_state() {
+                    apply_tag_state(t);
+                }
             }
             std::thread::sleep(std::time::Duration::from_secs(1));
         });
@@ -1654,6 +1676,12 @@ fn ensure_tag_poller() {
 /// (nonblocking poke; a byte already queued means the loop is woken).
 static TAG_WAKE_TX: std::sync::OnceLock<std::sync::Mutex<std::os::unix::net::UnixStream>> =
     std::sync::OnceLock::new();
+/// True while `mmsg watch all-tags` is streaming (r2 #5b). The 1 Hz poll
+/// costs 7.6 ms of CHILD CPU per tick — measured as 93% of the panel's
+/// whole "idle" figure — and duplicates this stream, which costs 0.00%.
+/// Poll only when the stream is down, which is what "fallback" means.
+static TAG_STREAMING: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 /// Store the watcher's poke end (called once from main()).
 fn set_tag_wake_tx(tx: std::os::unix::net::UnixStream) {
     let _ = TAG_WAKE_TX.set(std::sync::Mutex::new(tx));
@@ -1683,6 +1711,7 @@ fn tag_watch_loop() {
             Ok(mut child) => {
                 if let Some(stdout) = child.stdout.take() {
                     let reader = std::io::BufReader::new(stdout);
+                    TAG_STREAMING.store(true, std::sync::atomic::Ordering::Relaxed);
                     for line in reader.lines() {
                         let Ok(line) = line else { break };
                         if let Some(t) = parse_tag_state(&line) {
@@ -1692,6 +1721,7 @@ fn tag_watch_loop() {
                         }
                     }
                 }
+                TAG_STREAMING.store(false, std::sync::atomic::Ordering::Relaxed);
                 let _ = child.wait();
             }
             Err(_) => {
@@ -2057,7 +2087,17 @@ fn classify_press(
             // repro point lies outside it, and no nav disc overlaps it
             // (discs sit outside the panel edges). No wired control lives
             // there either (controls are unwired, open item a6).
-            if point_in_panel_stage(pos, IslandState::Collapsed) {
+            // r2 #14b: since r1d §0 the panel covers the pill row, so the
+            // pill rect now overlaps the search field of the four typing
+            // panels (field at panel-local y 14..50 = stage 17..53; pill
+            // spans stage 3..28). The bottom 11 px of the pill rect sat on
+            // top of the field, so clicking the top-centre of the field —
+            // exactly where a user clicks to type — collapsed the panel.
+            // The field wins those pixels; the pill centre (y 15.5) is
+            // above the field, so pill-click-collapses still holds.
+            if point_in_panel_stage(pos, IslandState::Collapsed)
+                && !in_search_band_stage(pos, state)
+            {
                 return PressAction::Collapse;
             }
             // 3) Transparent stage margin (or a bridge strip): no-op.
@@ -4474,6 +4514,11 @@ struct Island {
     // Preview only — no session lock, no keyboard input.
     lock_dots: u8,
     lock_wrong: bool,
+    /// Last dictation datagram (r2 #8c). SOCK_DGRAM has no ack, so a lost
+    /// `dictation_end` — or a SIGKILLed producer — left the pill expanded
+    /// with frozen bars forever. Bars arrive ~33/s while recording, so a
+    /// gap this long means the producer is gone. None = not dictating.
+    dictation_seen: Option<Instant>,
     lock_wallpaper: Option<Vec<u8>>,
     // Morph state (v0.4): the running 400 ms animation, the state whose
     // content is fading out, and the timer token driving it.
@@ -7531,15 +7576,27 @@ fn main() {
                                     }
                                 }
                                 *DICTATION_BARS.lock().unwrap() = bars;
+                                state.dictation_seen = Some(Instant::now());
+                                // r2 #8c: bars are sent only while recording
+                                // (tools/dictation/src/main.rs, inside `if
+                                // recording`), so they are themselves proof
+                                // that an utterance is live. If the panel
+                                // restarted mid-utterance it booted Collapsed
+                                // and the rest of the sentence had no UI.
+                                if state.state == IslandState::Collapsed {
+                                    state.request_state(IslandState::Dictation);
+                                }
                                 if state.state == IslandState::Dictation {
                                     state.draw_if_ready();
                                 }
                             } else if word == "dictation_start" {
+                                state.dictation_seen = Some(Instant::now());
                                 if state.state != IslandState::Dictation {
                                     state.request_state(IslandState::Dictation);
                                 }
                                 state.draw_if_ready();
                             } else if word == "dictation_end" {
+                                state.dictation_seen = None;
                                 if state.state == IslandState::Dictation {
                                     state.request_state(IslandState::Collapsed);
                                 }
@@ -7688,6 +7745,7 @@ fn main() {
         state: IslandState::Collapsed,
         lock_dots: 0,
         lock_wrong: false,
+        dictation_seen: None,
         lock_wallpaper: None,
         morph: None,
         morph_from_state: IslandState::Collapsed,
@@ -8089,6 +8147,39 @@ mod iter26_tests {
                 "{state:?}"
             );
         }
+    }
+
+    #[test]
+    fn search_field_wins_the_pixels_it_overlaps_with_the_pill() {
+        // r2 #14b: the pill rect used to swallow the top-centre strip of
+        // every search field. A click inside the field must NOT collapse,
+        // and the pill centre must still collapse (iter27b).
+        let (ppx, ppy, ppw, pph) = panel_rect_stage(IslandState::Collapsed);
+        let cx = (ppx + ppw / 2.0) as f64;
+        for state in TYPING_STATES {
+            let (_, oy) = panel_origin(state);
+            // A point in the overlap: inside the pill rect AND the field,
+            // below the pill centre (default bar_height=28 puts the centre
+            // exactly on the field's first row).
+            let y = (oy + 20.0) as f64;
+            assert!(y >= ppy as f64 && y < (ppy + pph) as f64, "{state:?}");
+            assert!(in_search_band_stage((cx, y), state), "{state:?}");
+            assert_ne!(
+                classify_press((cx, y), state, false, 0, 0, 0),
+                PressAction::Collapse,
+                "{state:?}: clicking the search field collapsed the panel"
+            );
+            // The pill centre is above the field, so it still collapses.
+            let centre = (cx, (ppy + pph / 2.0) as f64);
+            assert!(!in_search_band_stage(centre, state), "{state:?}");
+            assert_eq!(
+                classify_press(centre, state, false, 0, 0, 0),
+                PressAction::Collapse,
+                "{state:?}"
+            );
+        }
+        // Non-typing menus keep the pill as their close target everywhere.
+        assert!(!in_search_band_stage((cx, 20.0), IslandState::Music));
     }
 
     #[test]

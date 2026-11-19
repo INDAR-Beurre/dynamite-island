@@ -203,6 +203,29 @@ pub fn set_panel_open(open: bool) {
     PANEL_OPEN.store(open, Ordering::Relaxed);
 }
 
+/// Whether a menu panel is open. Shared with the ControlCenter/Music
+/// refreshers so they stop spawning subprocesses while nothing is shown.
+pub fn panel_open() -> bool {
+    PANEL_OPEN.load(Ordering::Relaxed)
+}
+
+/// Sleep `total`, but wake within 250 ms of a panel opening so the first
+/// refresh is immediate rather than up to one interval late (r2 #5b).
+/// Returns true if a panel is open now.
+pub fn park_while_closed(total: std::time::Duration) -> bool {
+    const SLICE: std::time::Duration = std::time::Duration::from_millis(250);
+    let mut left = total;
+    while left > std::time::Duration::ZERO {
+        if panel_open() {
+            return true;
+        }
+        let nap = left.min(SLICE);
+        std::thread::sleep(nap);
+        left = left.saturating_sub(nap);
+    }
+    panel_open()
+}
+
 /// The cached live-backdrop clean frame, if one has been captured.
 /// Also starts the probe thread lazily (no-op without Wayland).
 /// None until the first clean capture lands (~1 s after start).

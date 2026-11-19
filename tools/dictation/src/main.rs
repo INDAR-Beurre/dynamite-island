@@ -30,6 +30,13 @@ fn dynamite_send(msg: &str) {
     };
     let path = PathBuf::from(rt).join("dynamite-rust.sock");
     if let Ok(sock) = UnixDatagram::unbound() {
+        // r2 #7d: a BLOCKING send froze the whole tool. Measured on this
+        // kernel (net.unix.max_dgram_qlen=10): a bound receiver that does
+        // not recv() takes 11 datagrams then sendto blocks forever. Bars
+        // go out every 30 ms, so a stalled panel made dictation deaf — and
+        // EndOnDrop calls this too, so the exit guard hung in exactly the
+        // case it exists for. Never let the panel stop this process.
+        let _ = sock.set_nonblocking(true);
         let _ = sock.send_to(msg.as_bytes(), path);
     }
 }
@@ -55,6 +62,25 @@ impl Drop for EndOnDrop {
     }
 }
 
+/// r2 #7d: `kill`, Ctrl-C, session end and dinit shutdown all bypass Drop,
+/// so the pill stayed expanded with frozen bars and the in-flight sentence
+/// was lost. A handler cannot touch the Vec safely, so the audio lives
+/// behind a Mutex the handler only try_locks: if the main loop holds it the
+/// handler skips the save rather than deadlock. `dictation_hide` is a
+/// non-blocking sendto, which is async-signal-safe enough in practice.
+static LIVE_AUDIO: std::sync::Mutex<Vec<f32>> = std::sync::Mutex::new(Vec::new());
+
+extern "C" fn on_term(_sig: libc::c_int) {
+    dictation_hide();
+    if let Ok(mut a) = LIVE_AUDIO.try_lock() {
+        if !a.is_empty() {
+            groq::save_failed(&a);
+            a.clear();
+        }
+    }
+    unsafe { libc::_exit(0) };
+}
+
 /// ms of silence after speech before we finalize an utterance.
 const SILENCE_MS: u32 = 700;
 /// 30 ms frames @ 16 kHz.
@@ -73,11 +99,12 @@ fn main() {
     // A closed stdout reader (e.g. piped to `head`) must kill us silently, not panic in println.
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+        libc::signal(libc::SIGTERM, on_term as libc::sighandler_t);
+        libc::signal(libc::SIGINT, on_term as libc::sighandler_t);
+        libc::signal(libc::SIGHUP, on_term as libc::sighandler_t);
     }
 
     let cfg = config::load();
-    // No separate overlay: the waveform lives in the Dynamite pill.
-    let pill: Option<pill::PillHandle> = None;
 
     let (hk_tx, hk_rx) = unbounded::<HotkeyEvent>();
     let recording_flag = Arc::new(AtomicBool::new(false));
@@ -121,6 +148,10 @@ fn main() {
     let mut voice_frames: u32 = 0;
     let mut utterance: Vec<f32> = Vec::new();
     let mut buf: Vec<f32> = Vec::new();
+    // Audio captured DURING a blocking Groq POST. Hold mode keeps recording
+    // through the 55 s flush, and drop_backlog() used to throw that audio
+    // away — a silent hole in a long dictation (r2 #7d).
+    let mut spill: Vec<f32> = Vec::new();
 
     // H1 harness hook: STATIC_DICTATION_DUMP_FRAMES=<dir> spawns a headless
     // frame dumper rendering the pill's real Sim+canvas pipeline offscreen,
@@ -147,6 +178,9 @@ fn main() {
                     utterance.drain(..excess);
                 }
                 utterance.extend_from_slice(&frame);
+                if let Ok(mut live) = LIVE_AUDIO.try_lock() {
+                    live.extend_from_slice(&frame);
+                }
                 let rms = (frame.iter().map(|s| s * s).sum::<f32>() / frame.len() as f32).sqrt();
                 let bands = band_analyzer.energies(&frame);
                 let active = voice || rms >= 0.006;
@@ -165,13 +199,17 @@ fn main() {
                     // Hold mode keeps one utterance open until Super release,
                     // flushing only near Groq's 60 s safety limit (~55 s).
                     if utterance.len() >= 16_000 * 55 {
-                        finalize(&cfg, &pill, &mut utterance, &mut voice_frames, &mut ep);
-                        audio.drop_backlog();
+                        finalize(&cfg, &audio, &mut spill, &mut utterance, &mut voice_frames, &mut ep);
+                        // Still recording: the spill IS the start of the next
+                        // sentence, not stale room audio (r2 #7d).
+                        utterance.extend_from_slice(&spill);
+                        spill.clear();
                         dictation_show();
                     }
                 } else if ep.push(voice) == Decision::End {
-                    finalize(&cfg, &pill, &mut utterance, &mut voice_frames, &mut ep);
-                    audio.drop_backlog();
+                    finalize(&cfg, &audio, &mut spill, &mut utterance, &mut voice_frames, &mut ep);
+                    utterance.extend_from_slice(&spill);
+                    spill.clear();
                     // Socket-driven toggle mode keeps going until the next toggle
                     dictation_show();
                 }
@@ -190,6 +228,10 @@ fn main() {
                         audio.drop_backlog();
                         buf.clear();
                         utterance.clear();
+                        spill.clear();
+                        if let Ok(mut live) = LIVE_AUDIO.try_lock() {
+                            live.clear();
+                        }
                         sim = pill::vecmentor::Sim::new(pill::vecmentor::wave_params());
                         dictation_show();
                         recording = true;
@@ -203,8 +245,10 @@ fn main() {
                         recording = false;
                         recording_flag.store(false, Ordering::SeqCst);
                         dictation_hide();
-                        finalize(&cfg, &pill, &mut utterance, &mut voice_frames, &mut ep);
-                        audio.drop_backlog();
+                        finalize(&cfg, &audio, &mut spill, &mut utterance, &mut voice_frames, &mut ep);
+                        // Recording ended: trailing audio is room noise, not
+                        // the start of anything. Drop it.
+                        spill.clear();
                     }
                 }
                 HotkeyEvent::Toggle => {
@@ -217,14 +261,20 @@ fn main() {
                         hold_active = false;
                         recording_flag.store(false, Ordering::SeqCst);
                         dictation_hide();
-                        finalize(&cfg, &pill, &mut utterance, &mut voice_frames, &mut ep);
-                        audio.drop_backlog();
+                        finalize(&cfg, &audio, &mut spill, &mut utterance, &mut voice_frames, &mut ep);
+                        // Recording ended: trailing audio is room noise, not
+                        // the start of anything. Drop it.
+                        spill.clear();
                     } else {
                         ep = endpoint::EndPointer::new(SILENCE_MS);
                         voice_frames = 0;
                         audio.drop_backlog();
                         buf.clear();
                         utterance.clear();
+                        spill.clear();
+                        if let Ok(mut live) = LIVE_AUDIO.try_lock() {
+                            live.clear();
+                        }
                         hold_active = false;
                         sim = pill::vecmentor::Sim::new(pill::vecmentor::wave_params());
                         dictation_show();
@@ -245,12 +295,18 @@ fn main() {
 /// Send utterance → groq → output. Blocking; at most one utterance in flight by construction.
 fn finalize(
     cfg: &config::Config,
-    pill: &Option<pill::PillHandle>,
+    audio: &capture::AudioIn,
+    spill: &mut Vec<f32>,
     utterance: &mut Vec<f32>,
     voice_frames: &mut u32,
     ep: &mut endpoint::EndPointer,
 ) {
     *ep = endpoint::EndPointer::new(SILENCE_MS);
+    // r2 #7d: hold mode keeps recording through this blocking POST. Take
+    // what the callback already queued BEFORE it, and again after, so the
+    // words spoken while Groq was thinking are carried into the next
+    // utterance instead of being dropped by drop_backlog().
+    audio.drain_into(spill);
     // Hide before the blocking network call so the pill vanishes the instant dictation stops.
     dictation_hide();
     if !worth_transcribing(*voice_frames, utterance.len()) {
@@ -273,7 +329,11 @@ fn finalize(
             }
         }
     }
+    audio.drain_into(spill);
     utterance.clear();
+    if let Ok(mut live) = LIVE_AUDIO.try_lock() {
+        live.clear();
+    }
     *voice_frames = 0;
 }
 

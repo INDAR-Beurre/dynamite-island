@@ -23,6 +23,16 @@ if [ "$(stat -c %s "$LOG" 2>/dev/null || echo 0)" -gt 1048576 ]; then
     chmod 600 "$LOG" 2>/dev/null || true
 fi
 
+# r2 #8c: no lock meant a second supervisor started a second binary; the
+# newcomer stole the control socket and the old writer kept appending to a
+# rotated file. Take an exclusive lock for the whole supervision, not per child.
+LOCK="$HOME/.cache/static-dictation.lock"
+exec 9>"$LOCK"
+if ! flock -n 9; then
+    echo "supervisor: another supervisor holds $LOCK; exiting" >&2
+    exit 0
+fi
+
 BIN="$here/target/release/static-dictation"
 if [ ! -x "$BIN" ]; then
     # stderr as well as the log: a failure buried in ~/.cache is invisible
@@ -34,7 +44,26 @@ if [ ! -x "$BIN" ]; then
     exit 1
 fi
 
+# Forward our TERM to the child: stopping the supervisor used to leave the
+# child dictating with an orphaned hotkey grab (r2 #7d).
+child=""
+trap '[ -n "$child" ] && kill -TERM "$child" 2>/dev/null; exit 0' TERM INT
+
+rotate() {
+    if [ "$(stat -c %s "$LOG" 2>/dev/null || echo 0)" -gt 1048576 ]; then
+        mv -f "$LOG" "$LOG.1"
+        : >>"$LOG"
+        chmod 600 "$LOG" 2>/dev/null || true
+    fi
+}
+
 while true; do
-    "$BIN" >>"$LOG" 2>&1
+    # Rotate INSIDE the loop: a stable instance appends forever, and the
+    # startup-only check relied on frequent restarts to bound the file.
+    rotate
+    "$BIN" >>"$LOG" 2>&1 &
+    child=$!
+    wait "$child"
+    child=""
     sleep 1
 done

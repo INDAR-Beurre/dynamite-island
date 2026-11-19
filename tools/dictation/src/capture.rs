@@ -49,11 +49,25 @@ pub fn start() -> Result<AudioIn> {
 
     let native_rate = config.sample_rate().0;
     let channels = config.channels() as usize;
-    let (tx, rx) = bounded::<Vec<f32>>(256);
+    // r2 #7d: 256 chunks was sized for a fast loop, but hold mode blocks in
+    // a Groq POST (60 s timeout) while the mic keeps running. Chunk length
+    // is the device quantum resampled to 16 k (~341 samples at a 1024-frame
+    // 48 k quantum), NOT a fixed 30 ms, so a count bound is only an estimate.
+    // shortcut: ~40-60 s of headroom; a POST slower than that still loses the
+    // middle. Upgrade to a sample-budgeted queue if that ever shows up.
+    let (tx, rx) = bounded::<Vec<f32>>(2048);
     let (cb_tx, cb_rx) = (tx.clone(), rx.clone());
     let warned = AtomicBool::new(false);
 
-    let err_cb = |e| eprintln!("capture stream error: {e}");
+    // r2 #7d: after suspend/resume or a PipeWire restart the stream dies and
+    // every later press ended in worth_transcribing -> clear(), which looks
+    // exactly like "the user said nothing". Say which one it is.
+    let err_cb = |e| {
+        eprintln!(
+            "capture: STREAM ERROR: {e} — microphone is dead until restart; \
+             dictation will capture nothing (not silence from the user)"
+        );
+    };
     // shortcut: cpal Stream is !Send, so build+play it on the thread that keeps it.
     let (init_tx, init_rx) = crossbeam_channel::bounded::<Result<()>>(1);
     std::thread::spawn(move || {
@@ -138,8 +152,7 @@ impl AudioIn {
     }
 
     /// Take every queued chunk into `buf`, leaving the queue empty.
-    // shortcut: tests use it; main still on the try_recv compat loop — fine as-is
-    #[cfg(test)]
+    /// Used by finalize() to rescue audio captured during the blocking POST.
     pub fn drain_into(&self, buf: &mut Vec<f32>) {
         while let Ok(chunk) = self.rx.try_recv() {
             buf.extend_from_slice(&chunk);

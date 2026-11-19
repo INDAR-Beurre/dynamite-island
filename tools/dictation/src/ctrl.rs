@@ -47,9 +47,31 @@ pub fn parse_cmd(line: &str) -> Option<&'static str> {
 /// via keyboard hotkeys; the socket is a convenience, not a dependency.
 pub fn spawn(tx: Sender<HotkeyEvent>, recording: Arc<AtomicBool>) {
     let path = sock_path();
-    let _ = std::fs::remove_file(&path); // stale socket from a previous run
+    // r2 #7d/#8c: this used to unlink unconditionally, so a second launch
+    // stole the control channel from the live instance (which kept an
+    // unreachable listener) and then hung opening the mic. Probe first:
+    // if something answers, a live owner exists — refuse, do not unlink.
+    if UnixStream::connect(&path).is_ok() {
+        eprintln!(
+            "ctrl: {} already has a live owner; this instance will not take it",
+            path.display()
+        );
+        return;
+    }
     let listener = match UnixListener::bind(&path) {
         Ok(l) => l,
+        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+            // Nobody answered the probe, so this is a stale file from a
+            // crashed run. Safe to replace.
+            let _ = std::fs::remove_file(&path);
+            match UnixListener::bind(&path) {
+                Ok(l) => l,
+                Err(e) => {
+                    eprintln!("ctrl: socket bind failed: {e}");
+                    return;
+                }
+            }
+        }
         Err(e) => {
             eprintln!("ctrl: socket bind failed: {e}");
             return;

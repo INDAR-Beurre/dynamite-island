@@ -1156,6 +1156,14 @@ fn ensure_refresher() {
             // and the keep-alive in select_player().
             let mut sticky: Option<String> = None;
             loop {
+                // r2 #5b: 27.2 ms CPU of playerctl per second, forever,
+                // even with zero players and the pill collapsed (~2.7% of
+                // a core). Only poll while the panel is actually shown.
+                if !crate::wallpaper_blur::park_while_closed(
+                    std::time::Duration::from_secs(1),
+                ) {
+                    continue;
+                }
                 // iter114 W3: a transient failure (None) keeps the
                 // last good snapshot — a single slow playerctl call
                 // must never blank a playing track to idle.

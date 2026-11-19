@@ -975,8 +975,19 @@ fn ensure_cc_refresher() {
         // NOTE: the trailing `;` matters — without it the closure
         // returns the JoinHandle and `OnceLock<()>` fails to compile.
         std::thread::spawn(|| loop {
+            // r2 #5b: this loop ran forever once any menu had been drawn,
+            // costing ~78.5 ms CPU of subprocesses every 5 s (~1.6% of a
+            // core) with the pill collapsed and nothing on screen. Park
+            // while closed; wake within 250 ms of opening so the panel is
+            // never stale.
+            if !crate::wallpaper_blur::panel_open() {
+                crate::wallpaper_blur::park_while_closed(CC_REFRESH_INTERVAL);
+                if !crate::wallpaper_blur::panel_open() {
+                    continue;
+                }
+            }
             refresh_cc_cache();
-            std::thread::sleep(CC_REFRESH_INTERVAL);
+            crate::wallpaper_blur::park_while_closed(CC_REFRESH_INTERVAL);
         });
     });
 }
@@ -3921,6 +3932,11 @@ mod iter85_tests {
         // value tracks the system reader once the first poll has run.
         // (The first poll is immediate on refresher spawn; allow up to
         // ~6 s for the thread + two `brightnessctl` spawns.)
+        // r2 #5b gated the refresher on a panel being open (it used to
+        // spawn subprocesses forever with nothing on screen). This test
+        // asserts the cache tracks the system, so it must present the same
+        // condition production does: an open panel.
+        crate::wallpaper_blur::set_panel_open(true);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(6);
         let mut d = ControlCenterData::live();
         while std::time::Instant::now() < deadline {
@@ -3941,6 +3957,7 @@ mod iter85_tests {
                 lv
             );
         }
+        crate::wallpaper_blur::set_panel_open(false);
     }
 
     // iter86: double-click race — flip-parity proofs. Pure logic (no
