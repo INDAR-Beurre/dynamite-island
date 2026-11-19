@@ -213,6 +213,11 @@ def analyse_frame(path, cx, prev_path=None):
 
     # ---- body: first wide dark run below the capsule, contiguous with it ----
     blo, bhi = max(0, cx - PAD_DEV), min(W, cx + PAD_DEV)
+    # A run that fills the crop is an APP WINDOW, not the island. The island
+    # is centred with wallpaper on both sides; a maximised window is not.
+    # Measured: the T3 title bar merged into the capsule and reported
+    # total_h 183 against a 76 px target -- a fake 2.744 "overshoot".
+    body_wmax = min(BODY_WMAX, int((bhi - blo) * 0.90))
     body_top = body_bottom = None
     body_w = 0
     body_area = 0
@@ -221,7 +226,7 @@ def analyse_frame(path, cx, prev_path=None):
         if r is None:
             continue
         w = r[1] - r[0] + 1
-        if BODY_WMIN <= w <= BODY_WMAX:
+        if BODY_WMIN <= w <= body_wmax:
             body_top = yy
             body_w = w
             break
@@ -232,7 +237,7 @@ def analyse_frame(path, cx, prev_path=None):
             if r is None:
                 break
             w = r[1] - r[0] + 1
-            if not (BODY_WMIN <= w <= BODY_WMAX):
+            if not (BODY_WMIN <= w <= body_wmax):
                 break
             body_w = max(body_w, w)
             body_area += int(dark[yy, blo:bhi].sum())
@@ -406,12 +411,34 @@ def count_poses(frames, cx, t_from, t_to):
             "pose_hold_median_ms": round(float(np.median(holds)), 1)}
 
 # --------------------------------------------------------------------------- #
+def layout_origin():
+    """The output's LAYOUT ORIGIN, which is not (0,0).
+
+    eDP-1 sits at y=1543 here. grim/wf-recorder take LAYOUT coordinates, so a
+    region built from screen-relative pixels misses the output entirely:
+    "supplied geometry did not intersect with any outputs", zero frames.
+    run_all.sh already queried this; motion.py did not, so stage 00 died
+    while stages 01-05 ran fine.
+    """
+    try:
+        mons = json.loads(subprocess.run(
+            ["mmsg", "get", "all-monitors"],
+            capture_output=True, text=True, check=True).stdout)["monitors"]
+        m = next((m for m in mons if m.get("active")), mons[0])
+        return int(m["x"]), int(m["y"])
+    except Exception:
+        return 0, 0
+
+
+ORIGIN_X, ORIGIN_Y = layout_origin()
+
+
 def region_for(cx_dev, cap_y0_dev):
-    x = int(round((cx_dev - PAD_DEV) / SCALE))
-    y = int(round((cap_y0_dev - 4) / SCALE))
+    x = int(round((cx_dev - PAD_DEV) / SCALE)) + ORIGIN_X
+    y = int(round((cap_y0_dev - 4) / SCALE)) + ORIGIN_Y
     w = int(round(2 * PAD_DEV / SCALE))
     h = int(round(BAND_DEV / SCALE))
-    return f"{max(0, x)},{max(0, y)} {w}x{h}", max(0, x)
+    return f"{max(0, x)},{max(0, y)} {w}x{h}", max(0, x - ORIGIN_X)
 
 
 def grab(region, path):

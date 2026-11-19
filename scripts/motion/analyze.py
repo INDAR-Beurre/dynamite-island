@@ -120,7 +120,15 @@ def analyse_motion(run, rel, deltas, frames, x0, y0, x1, y1):
         uniq = count_unique_frames(run, frames, x0, y0, x1, y1)
         completeness = min(1.0, uniq / POSE_TARGET, pose_rate / PANEL_HZ)
     dup_rate = duplicates / max(1, frames_in_window - 1)
-    jump_rate = (len(spikes) / max(1, poses - 1)) if poses >= 2 else None
+    # A strobe's steps are all the SAME size, so the spike test sees nothing
+    # unusual (threshold is 1.8x the median) and J came out 0.0 -- scoring a
+    # two-state flicker 68, above a real slideshow's 48.7. What is wrong with
+    # a strobe is not step size but that it REVISITS shapes instead of
+    # advancing. Count steps that fail to show a new shape as jumps too.
+    spike_rate = (len(spikes) / max(1, poses - 1)) if poses >= 2 else None
+    revisit_rate = ((poses - uniq) / max(1, poses - 1)) if poses >= 2 else None
+    jump_rate = max(spike_rate or 0.0, revisit_rate or 0.0) \
+        if poses >= 2 else None
     return {
         "measurable": True,
         "window_ms": [round(lo_ms, 0), round(rel[w1], 0)],
@@ -131,7 +139,8 @@ def analyse_motion(run, rel, deltas, frames, x0, y0, x1, y1):
         "duplicates": duplicates,
         "duplicate_rate": round(dup_rate, 3),
         "spikes": len(spikes),
-        "jump_rate": None if jump_rate is None else round(jump_rate, 3),
+        "revisit_rate": None if revisit_rate is None else round(revisit_rate, 3),
+        "jump_rate": None if jump_rate is None else round(min(1.0, jump_rate), 3),
         "spike_threshold": (None if thr == float("inf") else round(thr, 3)),
         "pose_rate_hz": None if pose_rate is None else round(pose_rate, 1),
         "completeness": None if completeness is None else round(completeness, 3),
