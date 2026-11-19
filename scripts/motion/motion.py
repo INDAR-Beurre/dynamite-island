@@ -32,9 +32,14 @@ CAP_MAX_H = 70     # a capsule is never taller than this
 BODY_WMIN = 250    # narrower than this below the capsule = text, not a body
 BODY_WMAX = 1250   # wider = terminal window / wallpaper, not the island
 BODY_MAX_GAP = 12  # rows the body may start below the capsule (one rounded rect)
-BODY_MAX_H = 220
+# 220 was sized when the panel HUNG BELOW the pill. Since r1d §0 the panel
+# grows INTO the pill band, so the measured object is the whole capsule:
+# ControlCenter is 447 logical x 1.5 = 670 device px. A 220 cap truncated it
+# at 147 and read the residual 76 as "overshoot_frac 1.75".
+BODY_MAX_H = 700
 PAD_DEV = 620      # crop half-width around island centre
-BAND_DEV = 190     # crop height
+BAND_DEV = 760     # crop height: must contain the tallest panel (670) + top
+                   # offset + shadow. 190 was the pre-§0 pill+hang-below band.
 SCALE = 1.5
 # scratch frames: /tmp here is a small tmpfs and a burst of PPMs is ~0.5 GB
 SHM = "/dev/shm" if os.path.isdir("/dev/shm") else "/tmp"
@@ -175,7 +180,21 @@ def edge_ramps(lum_row, a, b):
 
 
 def analyse_frame(path, cx, prev_path=None):
-    """Compound island geometry for one frame, or None if nothing detected."""
+    """Island geometry for one frame, or None if nothing detected.
+
+    Model (rewritten after the height series proved the old one wrong): the
+    island is ONE rounded capsule, and since r1d §0 an expanded panel grows
+    INTO the pill band, so there is no "pill then body" pair to separate.
+    The measured object is therefore the widest dark run per row and the
+    contiguous vertical span of those rows.
+
+    Why not the centre column: a glyph, toggle or icon crossing screen centre
+    narrows that run to ~190 px while the panel is still 656 px wide, and the
+    old scan stopped there. Measured on a settled ControlCenter: real bottom
+    607 device px, old detector reported 81, so the morph's target height
+    read 77 instead of ~600 and every derived gate (latency, settle,
+    overshoot) was measuring the detector's failure, not the animation.
+    """
     a = np.asarray(Image.open(path).convert("RGB"), dtype=np.int32)
     lum = (a[:, :, 0] * 299 + a[:, :, 1] * 587 + a[:, :, 2] * 114) // 1000
     H, W = lum.shape
@@ -183,80 +202,70 @@ def analyse_frame(path, cx, prev_path=None):
     thr = dark_threshold(bg)
     dark = lum < thr
     cx = int(min(max(cx, 0), W - 1))
-    lo, hi = max(0, cx - HALF), min(W, cx + HALF)
 
-    rows = dark[:, lo:hi].sum(axis=1)
-    cap_y0 = None
-    for y in range(H):
-        if rows[y] >= 10:
-            cap_y0 = y
+    # Widest dark run per row was tried twice and is wrong in both
+    # directions: stopping at a bright row truncates the panel at its first
+    # label (ControlCenter read 275 of 670), and bridging gaps to the end of
+    # the crop measures the whole wallpaper (collapsed read 1484 of 37).
+    #
+    # What works is CONNECTIVITY. Close the dark mask so glyph/label holes
+    # join their own panel, label the components, and take the one containing
+    # the pill. Verified against hand-measured ground truth:
+    #   settled ControlCenter  h 670 w 658 top 7
+    #   settled themes         h 549 w 900 top 20
+    #   settled music          h 225 w 918 top 20
+    #   collapsed pill         h  37 w 100 top 20
+    from scipy import ndimage
+    closed = ndimage.binary_closing(dark, structure=np.ones((15, 5)))
+    lab, _n = ndimage.label(closed)
+    # seed: the dark run nearest the top on the centre-ish column
+    seed = None
+    for y in range(min(80, H)):
+        if closed[y, cx]:
+            seed = lab[y, cx]
             break
-    if cap_y0 is None:
+    if not seed:
+        # centre column may be bright; take the largest component in the band
+        band = lab[:80]
+        ids, counts = np.unique(band[band > 0], return_counts=True)
+        if ids.size == 0:
+            return None
+        seed = int(ids[np.argmax(counts)])
+    ys, xs = np.where(lab == seed)
+    if ys.size == 0:
         return None
-
-    y = cap_y0
-    cap_ws = []
-    best_row = cap_y0
-    best_w = 0
-    while y < H and y - cap_y0 < CAP_MAX_H and rows[y] >= 10:
-        r = centre_run(dark[y], cx, lo, hi)
-        if r:
-            w = r[1] - r[0] + 1
-            cap_ws.append(w)
-            if w > best_w:                # widest row = no glyph gaps in it
-                best_w, best_row = w, y
-        y += 1
-    cap_h = y - cap_y0
-    if cap_h < 6 or not cap_ws:
-        return None
-    cap_end = y
-
-    # ---- body: first wide dark run below the capsule, contiguous with it ----
-    blo, bhi = max(0, cx - PAD_DEV), min(W, cx + PAD_DEV)
-    # A run that fills the crop is an APP WINDOW, not the island. The island
-    # is centred with wallpaper on both sides; a maximised window is not.
-    # Measured: the T3 title bar merged into the capsule and reported
-    # total_h 183 against a 76 px target -- a fake 2.744 "overshoot".
-    body_wmax = min(BODY_WMAX, int((bhi - blo) * 0.90))
-    body_top = body_bottom = None
-    body_w = 0
-    body_area = 0
-    for yy in range(cap_end, min(H, cap_end + BODY_MAX_GAP + 1)):
-        r = centre_run(dark[yy], cx, blo, bhi)
-        if r is None:
-            continue
-        w = r[1] - r[0] + 1
-        if BODY_WMIN <= w <= body_wmax:
-            body_top = yy
-            body_w = w
-            break
-    if body_top is not None:
-        yy = body_top
-        while yy < H and yy - body_top < BODY_MAX_H:
-            r = centre_run(dark[yy], cx, blo, bhi)
-            if r is None:
-                break
-            w = r[1] - r[0] + 1
-            if not (BODY_WMIN <= w <= body_wmax):
-                break
-            body_w = max(body_w, w)
-            body_area += int(dark[yy, blo:bhi].sum())
-            body_bottom = yy
-            yy += 1
+    cap_y0 = int(ys.min())
+    bottom = int(ys.max())
+    x0, x1 = int(xs.min()), int(xs.max())
+    cap_w = x1 - x0 + 1
 
     g = {
-        "cap_y0": int(cap_y0),
-        "cap_h": int(cap_h),
-        "cap_w": int(max(cap_ws)),
-        "body_top": int(body_top) if body_top is not None else None,
-        "body_h": int(body_bottom - body_top + 1) if body_top is not None else 0,
-        "body_w": int(body_w),
-        "body_area": int(body_area),
+        "cap_y0": cap_y0,
+        "cap_h": int(bottom - cap_y0 + 1),
+        "cap_w": int(cap_w),
+        "body_top": None,
+        "body_h": 0,
+        "body_w": int(cap_w),
+        "body_area": int(dark[cap_y0:bottom + 1].sum()),
+        "region_left": x0,
+        "region_right": x1,
     }
-    g["bottom"] = int(body_bottom if body_bottom is not None else cap_end - 1)
-    g["total_h"] = int(g["bottom"] - cap_y0 + 1)
+    g["bottom"] = bottom
+    g["total_h"] = int(bottom - cap_y0 + 1)
+
     ramps = []
-    wr = centre_run(dark[best_row], cx, lo, hi)
+    # AA ramp on the island's own left/right edges, measured on the widest
+    # row of the detected component. A settled capsule is a single run there;
+    # an expanded panel has glyphs crossing centre, so use the component's
+    # actual bounds rather than the centre run.
+    best_row = cap_y0
+    best_w = 0
+    for y in range(cap_y0, bottom + 1):
+        row = np.where(lab[y] == seed)[0]
+        if row.size and row[-1] - row[0] + 1 > best_w:
+            best_w = int(row[-1] - row[0] + 1)
+            best_row = y
+    wr = centre_run(dark[best_row], cx, max(0, cx - HALF), min(W, cx + HALF))
     if wr:
         ramps = edge_ramps(lum[best_row], wr[0], wr[1])
     g["edge_ramp"] = round(float(np.mean(ramps)), 2) if ramps else None
@@ -526,7 +535,34 @@ def pct(v, q):
 
 
 # --------------------------------------------------------------------------- #
-def main():
+def measure_on_empty_tag():
+    """Move to an empty tag for the whole measurement, restore afterwards.
+
+    The island is anchored over the owner's maximised dark editor window, and
+    below y~90 the panel and that window are the same colour, so no pixel
+    heuristic can separate them (measured: ControlCenter read 82 px of a real
+    670, themes read 770 by merging the window). On an empty tag there is no
+    window and the detector reads the true extents (CC 670, themes 549).
+    The owner's tag is restored in a finally block: leaving them on an empty
+    workspace would be a hostile side effect of running a test.
+    """
+    try:
+        raw = subprocess.run(["mmsg", "get", "all-tags"], capture_output=True,
+                             text=True, check=True).stdout
+        tags = json.loads(raw)["all_tags"][0]["tags"]
+        current = next(t["index"] for t in tags if t["is_active"])
+        empty = next((t["index"] for t in tags
+                      if not t["is_active"] and t["client_count"] == 0), None)
+    except Exception:
+        return None
+    if empty is None:
+        return None
+    subprocess.run(["mmsg", "dispatch", f"view,{empty}"], capture_output=True)
+    time.sleep(0.5)
+    return current
+
+
+def run():
     ap = argparse.ArgumentParser()
     ap.add_argument("--state", default="controlcenter")
     ap.add_argument("--pre", default="collapsed")
@@ -1037,6 +1073,17 @@ def main():
           f"{len(res['unresolved'])} unresolved: "
           f"{', '.join(res['unresolved']) or 'none'})", file=sys.stderr)
     return 0 if res["pass"] else 1
+
+
+def main():
+    previous_tag = measure_on_empty_tag()
+    try:
+        return run()
+    finally:
+        if previous_tag is not None:
+            subprocess.run(["mmsg", "dispatch", f"view,{previous_tag}"],
+                           capture_output=True)
+            time.sleep(0.3)
 
 
 if __name__ == "__main__":

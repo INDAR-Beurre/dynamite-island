@@ -53,10 +53,13 @@ try:
         raise ValueError("not collapsed")
     s = 1.5
     cx = ox + (p["x"] + p["w"] / 2) / s
-    x0 = max(ox, int(cx - 200)); x1 = int(cx + 200)
-    print(f"{x0},{oy},{x1},{oy + 210}")
+    # 447 logical px x 1.5 = 670 device px for ControlCenter, plus the pill's
+    # 20 px top offset. 210 logical = 315 device truncated the panel, and the
+    # detector then measured the crop edge instead of the animation.
+    x0 = max(ox, int(cx - 400)); x1 = int(cx + 400)
+    print(f"{x0},{oy},{x1},{oy + 760}")
 except Exception:
-    print(f"{ox + 640},{oy},{ox + 900},{oy + 210}")
+    print(f"{ox + 640},{oy},{ox + 1440},{oy + 760}")
 PY
 )
 FPS=20

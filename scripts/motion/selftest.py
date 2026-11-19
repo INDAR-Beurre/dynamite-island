@@ -243,6 +243,32 @@ def main() -> int:
             if not ok:
                 fails.append(f"order:{a}>{b}")
 
+        # 10. connected-component geometry against hand-measured captures.
+        # These files are /tmp artefacts, so skip cleanly on a fresh machine
+        # rather than pretending to pass. The four expected extents were
+        # measured by hand before the detector was rewritten.
+        cases = [
+            ("/tmp/motion-empty-cc/w00_00025.png", 670, 658, 7),
+            ("/tmp/empty_themes.png", 549, 900, 20),
+            ("/tmp/empty_music.png", 225, 918, 20),
+            ("/tmp/empty_collapsed.png", 37, 100, 20),
+        ]
+        if all(Path(p).exists() for p, *_ in cases):
+            import motion as motion_mod
+            print("\n10. island geometry (hand-measured frames)")
+            for path, want_h, want_w, want_top in cases:
+                cx = Image.open(path).width // 2
+                g = motion_mod.analyse_frame(path, cx)
+                got = (g["total_h"], g["cap_w"], g["cap_y0"])
+                want = (want_h, want_w, want_top)
+                ok = got == want
+                print(f"  {Path(path).name:22s} want {want} got {got} "
+                      f"[{'ok' if ok else 'FAIL'}]")
+                if not ok:
+                    fails.append(f"geometry:{Path(path).name}")
+        else:
+            print("\n10. island geometry: SKIPPED (/tmp ground-truth frames absent)")
+
         if fails:
             print(f"\nFAIL: {len(fails)} check(s): {', '.join(fails)}")
             return 1

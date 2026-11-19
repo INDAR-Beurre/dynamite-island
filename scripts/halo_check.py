@@ -33,12 +33,15 @@ def panel_bbox(a):
     """Panel rect in the top band.
 
     Two traps this avoids:
-      * the app window below y~98 is also dark and much wider, so the scan
-        is capped at the band the island can occupy;
+      * the app window below y~88 is also dark and much wider, so the scan
+        is capped at the band the island can occupy (the island starts at
+        gap_top 13*1.5 = 20 device px; the owner's window title bar starts
+        at y~88 here, and taking any of its rows would both widen the
+        panel rect and report that window's text as a hole);
       * the hole itself SPLITS the panel's dark run on the affected rows,
         so the width must come from the unbroken lower rows, not the top.
     """
-    band = a[:95]
+    band = a[:88]
     dark = band.max(axis=2) <= 24
 
     def widest(y):

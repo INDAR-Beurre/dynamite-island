@@ -41,6 +41,19 @@ LOGICAL_W = {
 SCALE = 1.5
 TOL = 0.12          # +-12%: rounded corners and AA shave a few px per side
 
+# Declared logical heights, same source (IslandState::size). Used only to
+# bound the ink window: the row span cannot see past the 88-row band cap.
+# Clipboard and TrayMenu size themselves from live content (clipboard:
+# 74 + (n-1)*47.5 + 42 + 12.5 for n rows, min 200 empty; tray: 60 + 28*n,
+# clamped to 440), so their entry is the MINIMUM, and the ink window for a
+# dynamic state is capped by the measured span's own bottom instead.
+LOGICAL_H = {
+    "power": 118, "music": 150, "calendar": 262, "controlcenter": 447,
+    "launcher": 366, "wallpaper": 270, "themes": 366,
+    "clipboard": 200, "traymenu": 88,
+}
+DYNAMIC_H = {"clipboard", "traymenu"}
+
 
 def send(word):
     d = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
@@ -59,7 +72,10 @@ def measure(state, settle=1.5):
 
     # The island lives in the top band. Below it the app window is also dark
     # and far wider, so cap the scan (same trap halo_check.py documents).
-    band = a[:200]
+    # Measured on this desktop: the owner's window starts at y=90 at x=400,
+    # so a 200-row band always included it and the wallpaper panel (1512 px)
+    # merged with the window and read 0.84 of screen width.
+    band = a[:88]
     dark = band.max(axis=2) <= 24
     cx = W // 2
     # Take the CONTIGUOUS dark run containing screen centre on each row, not
@@ -112,15 +128,46 @@ def measure(state, settle=1.5):
     # ignoring the handful of rows that merged with something else.
     widths = sorted(r[1] - r[0] + 1 for _, r in runs)
     pw_typ = widths[min(len(widths) - 1, int(len(widths) * 0.90))]
-    x0 = min(r[0] for _, r in runs)
-    x1 = max(r[1] for _, r in runs)
-    x1 = x0 + pw_typ - 1
+    # x-extent = the median run's edges, NOT the union over rows. A single
+    # row that bleeds into the app window drags the union by hundreds of px
+    # (calendar read 738 px against a 513 px panel, launcher 827 against
+    # 756). The panel is centred, so the median run is the honest rect;
+    # the p90 width above is still what guards against glyph-crossed rows.
+    lefts = sorted(r[0] for _, r in runs)
+    rights = sorted(r[1] for _, r in runs)
+    x0 = lefts[len(lefts) // 2]
+    x1 = rights[len(rights) // 2]
+    # Trust the p90 width when the median run is narrower: rounded corners
+    # shave the top rows and content cuts the middle ones, so the median can
+    # under-read the true fill. Re-centre it on the median run's centre.
+    if pw_typ > x1 - x0 + 1:
+        mid = (x0 + x1) // 2
+        x0 = mid - pw_typ // 2
+        x1 = x0 + pw_typ - 1
     pw, ph = x1 - x0 + 1, y1 - y0 + 1
     frac = pw / W
 
     # Content: bright pixels strictly inside, away from the rounded corners.
+    # The height comes from the DECLARED logical size, not the row span: the
+    # band cap (88 rows, to keep the app window out) truncates the span of
+    # every state taller than ~46 logical px, so measuring ink inside the
+    # span reads 0.00% on a perfectly drawn music panel. Width is measured
+    # from pixels; height is verified separately by the containment test in
+    # src/main.rs (stage_extent_tests).
     r = 8
-    inner = a[y0 + r:y1 - r + 1, x0 + r:x1 - r + 1]
+    want_h = int(round(LOGICAL_H.get(state, 0) * SCALE))
+    if want_h:
+        top = runs[0][0]
+        bottom = runs[-1][0]
+        if state in DYNAMIC_H:
+            # Dynamic states: the real height is whatever the live content
+            # made it. Use the span when it is taller than the minimum, and
+            # still give a short span enough rows to contain its rows.
+            y1 = top + max(want_h, bottom - top + 1) - 1
+        else:
+            y1 = top + want_h - 1
+        y0 = top
+    inner = a[y0 + r:min(y1 - r + 1, a.shape[0]), x0 + r:x1 - r + 1]
     lum = inner.mean(axis=2)
     ink = float((lum > 110).mean()) if lum.size else 0.0
 

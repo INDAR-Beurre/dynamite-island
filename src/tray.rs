@@ -294,7 +294,13 @@ pub fn open_menu_snapshot() -> (String, Vec<MenuRow>) {
 pub fn tray_menu_size() -> (u32, u32) {
     let rows = tray_menu().read().unwrap().rows.len();
     let h = 16 + 28 + rows as u32 * 28 + 16;
-    (404, h.clamp(96, 480))
+    // 440 cap: this state hangs BELOW the pill row at panel_top_menu(),
+    // so its bottom is 33 + h + shadow 15 and must stay inside the stage
+    // (STAGE_H 512). shortcut: a DBusMenu longer than 15 rows is clipped
+    // at the bottom (there is no row scroll here) — if that matters, add
+    // scrolling in menu_row_hit/draw rather than growing the surface every
+    // other state reserves.
+    (404, h.clamp(96, 440))
 }
 
 /// Hit-test a panel-local point against the open menu's rows:

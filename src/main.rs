@@ -10,7 +10,7 @@
 //! Morph animation (400 ms, ease-out cubic + two-phase content
 //! cross-fade) is implemented in morph.rs and wired via begin_morph.
 //! - Layer: overlay, anchored TOP (unanchored horizontally = centred by the
-//!   compositor), ONE fixed-size "stage" surface 1176x636 (iter24 a2) with
+//!   compositor), ONE fixed-size "stage" surface 1176x512 (iter24 a2) with
 //!   the panel drawn centred inside it and the nav discs OUTSIDE the panel
 //!   edges; margin-top 0, so the pill top stays at gap_top 3 and the panel top at 31. The stage
 //!   never resizes for island states (only the lockscreen preview goes
@@ -459,7 +459,7 @@ const WHEEL_COOLDOWN: Duration = Duration::from_millis(150);
 // reference panel to grow out of (it is the owner's addition).
 // The stage keeps slack for the ~1% settle overshoot plus the
 // panel-shadow tails, so
-// STAGE_W = 1100 + 2*38 = 1176 and STAGE_H = 636. The layer top
+// STAGE_W = 1100 + 2*38 = 1176 and STAGE_H = 512. The layer top
 // margin is gap_top - STAGE_PAD_TOP (= 0 at the live gap_top 3),
 // so the pill top stays exactly at gap_top on screen. Panel centre
 // x stays 752: the stage is centred by the compositor and the panel
@@ -489,14 +489,17 @@ fn panel_top_menu() -> f32 {
 }
 /// Fixed stage surface size (see the sizing note above).
 const STAGE_W: u32 = (1100.0 + 2.0 * STAGE_PAD_X) as u32;
-/// 636 = menu top 31 + ControlCenter overshoot height 577.5 (+5 slack)
-/// (421 * 1.10) + panel-shadow tail 15 + 7.5 slack; the settled CC
-/// shadow bottom is 29 + 447 + 15 = 461, the morph-overshoot shadow
-/// bottom 31 + 577.5 + 15 = 623.5. (Sizing note stale since r1d; the
-/// live numbers: menus now start at 3, so the settled CC shadow
-/// bottom is 3 + 447 + 15 = 465 and the next gate re-checks the
-/// morph floor.)
-const STAGE_H: u32 = 636;
+/// Stage height, derived from the measured content extents rather than a
+/// stale constant: the deepest content rect is ControlCenter at
+/// STAGE_PAD_TOP 3 + 447 + pad 39 = 489 (pad = panel shadow blur 10 +
+/// shadow offset 5 + nav-disc radius 14 + nav-disc gap 8 + 2, see
+/// content_rect). TrayMenu's worst case (panel_top_menu 33 + a 480-tall
+/// menu) would be deeper, so it is clamped to 440 below.
+/// 636 was sized for a 525-tall panel with a 10% EaseOutBack overshoot;
+/// neither exists any more (CC is 447, the overshoot factors are 0).
+/// Every slot in the shm pool costs STAGE_W * STAGE_H * 4 * RENDER_SCALE^2
+/// bytes of reservation, so this is the pool's size, not just a constant.
+const STAGE_H: u32 = 512;
 
 /// Render scale (iter108, circles-roundness): the stage is drawn at
 /// logical 1x into a scratch canvas and then upscaled 2x into the shm
@@ -528,7 +531,7 @@ const SLOT_RING: usize = 2;
 /// every destination pixel centre maps to a source coordinate of
 /// i +/- 0.25 — the interpolation weights are exactly 1/4 and 3/4,
 /// done in fixed point (no float in the inner loop, no per-call
-/// allocation; a 1176x636 stage costs ~5 ms, see the iter108 perf
+/// allocation; a 1176x512 stage costs ~5 ms, see the iter108 perf
 /// test). Edges clamp by replication. The canvas is premultiplied
 /// (disc fills store colour*a with A=255 inside and (0,0,0,0)
 /// outside), so interpolating all four channels together is the
@@ -1208,7 +1211,7 @@ fn workspace_hit_stage(pos: (f64, f64)) -> Option<u8> {
 // the other side of the workspaces").
 //
 // Architecture — WHY the surface never resizes: the layer surface is
-// a fixed STAGE_W x STAGE_H (1176 x 636) sheet centred on screen by
+// a fixed STAGE_W x STAGE_H (1176 x 512) sheet centred on screen by
 // the compositor (Anchor::TOP only), and the pill is drawn centred in
 // that sheet, so the pill centre is screen 752 for ANY tray count.
 // "The stage widens to the right" therefore means the TOP-ROW CONTENT
@@ -4466,7 +4469,7 @@ struct Island {
     // frames instead of heap-allocating two fresh buffers per frame.
     // Grow-only: resized when a larger state is morphed to, zeroed
     // before each use in draw_if_ready. Stage-sized since iter24
-    // (1176x636x4 = 2,991,744 B each), so the retained pair is
+    // (1176x512x4 = 2,408,448 B each), so the retained pair is
     // 5,983,488 B = 5.98 MB at stage size and 2 x 1504x1002x4 =
     // 12,056,064 B = 11.77 MB at lockscreen size — NOT "~2 MB" as
     // this comment claimed before iter125. Freed on collapse-settle
@@ -4494,7 +4497,7 @@ struct Island {
     morph_tick: Option<std::time::Instant>,
     /// iter108: 1x stage scratch the frame is drawn into before the 2x
     /// upscale into the shm buffer (RENDER_SCALE). Grow-only, reused
-    /// across frames; stage-sized (1176x636x4 ~ 3 MB), lockscreen-sized
+    /// across frames; stage-sized (1176x512x4 ~ 2.4 MB), lockscreen-sized
     /// at most (1504x1002x4 ~ 6 MB) — far under the 100 MB PSS budget.
     scale_scratch: Vec<u8>,
     /// F-A: pinned 2-slot shm ring. `SlotPool::create_buffer` added a
@@ -4722,7 +4725,7 @@ impl Island {
 
     /// iter125: free the morph scratch buffers once settled in
     /// Collapsed (ram-root-cause-iter124 §5). The pair is stage-sized
-    /// (2 x 1176x636x4 = 5,983,488 B) and grow-only — without this,
+    /// (2 x 1176x512x4 = 4,816,896 B) and grow-only — without this,
     /// the first morph of the process retains ~5.9 MB for the process
     /// lifetime (iter123 probe: +5,972 kB PSS on one CC open, zero
     /// return on collapse). Takes the two buffers as disjoint field
@@ -5451,7 +5454,7 @@ impl Island {
         // iter125: same treatment for scale_scratch — a lockscreen draw
         // grows it to lockscreen size (1504x1002x4 = 6,028,032 B) and
         // it never shrinks. Free it here; the next draw_if_ready
-        // re-grows it stage-sized (1176x636x4, ~3 MB) on first use:
+        // re-grows it stage-sized (1176x512x4, ~2.4 MB) on first use:
         // one ~3 MB resize+zero, off the hot path. (Simple free, not
         // the stage/lockscreen split — the split saves one realloc but
         // adds a second scratch field for ~0 retained gain.)
@@ -5460,15 +5463,17 @@ impl Island {
         }
         // F-A step 3: the lockscreen-sized ring (two 24 MB slots) must
         // not outlive the preview. Dropping it here makes the next draw
-        // allocate exactly two stage-sized slots; if a configure has
-        // not landed yet the size check in draw_if_ready recreates it
-        // again, so this can only ever shrink.
-        if self.configured_size != lockscreen_size() {
-            self.pool = None;
-            self.slots.clear();
-            self.slot_bytes = 0;
-            self.last_rect = None;
-        }
+        // allocate exactly two stage-sized slots. This must NOT be
+        // conditional on the configured size having changed: the
+        // compositor may never send a stage-sized configure (nothing
+        // resized on its side), so the lock ring would stay resident for
+        // the rest of the session. The next draw re-derives the size from
+        // `stage_surface_size()` and rebuilds if needed.
+        self.buffer = None;
+        self.pool = None;
+        self.slots.clear();
+        self.slot_bytes = 0;
+        self.last_rect = None;
         // F-B: the morph scratch pair is freed on every exit path, not
         // only the morph-into-Collapsed arm.
         Self::free_morph_scratches(&mut self.morph_scratch_from, &mut self.morph_scratch_to);
@@ -5994,7 +5999,17 @@ impl Island {
         // (+ bridges) in stage coords, from the current frame geometry.
         self.update_input_region();
         let Some(layer) = &self.layer else { return };
-        let (w, h) = self.configured_size;
+        // The compositor does not necessarily send a fresh configure after
+        // the lock preview: its size is the layer's requested size, which
+        // we set back to the stage on exit, so the cached size can be stale.
+        // Re-derive it from the state instead of trusting the cache, or the
+        // fullscreen lock ring stays resident forever.
+        let (w, h) = if self.state == IslandState::Lockscreen {
+            lockscreen_size()
+        } else {
+            (STAGE_W, STAGE_H)
+        };
+        self.configured_size = (w, h);
         // Lockscreen preview data for this frame (iter14 + v0.7): live
         // dots / wrong flag from the Island fields; while a lock morph
         // run is active the anim is the run's phase at its wall-clock
@@ -6046,6 +6061,7 @@ impl Island {
         // in-flight slot is the back-pressure, so neither is ever written
         // while the compositor owns it.
         if self.slots.len() != SLOT_RING || self.slot_bytes != needed {
+
             // Drop the frame we attached before the pool goes away:
             // holding a Buffer of the old pool keeps its whole memfd
             // referenced (a full slab, seen as a late RSS step) until
@@ -7831,26 +7847,38 @@ mod iter26_tests {
 
     #[test]
     fn shadows_fit_inside_stage() {
-        // Tallest panel (ControlCenter, 525) bottom + shadow tail.
-        // Panel top is panel_top_menu() (31) since iter30 a3c.
-        let bottom = panel_top_menu() + 525.0 + PANEL_SHADOW_OFF.1 + PANEL_SHADOW_BLUR;
+        // Tallest panel (ControlCenter, 447) bottom + shadow tail.
+        // Since r1d §0 the menus draw at STAGE_PAD_TOP (the pill grows
+        // INTO the panel); only TrayMenu hangs at panel_top_menu().
+        let bottom = STAGE_PAD_TOP + 447.0 + PANEL_SHADOW_OFF.1 + PANEL_SHADOW_BLUR;
         assert!(bottom < STAGE_H as f32, "panel shadow bottom {bottom} >= {STAGE_H}");
-        // Morph overshoot: CC grows ~10% past target (EaseOutBack) —
-        // the overshoot shadow bottom must fit too.
-        let over_bottom = panel_top_menu() + 525.0 * 1.10 + PANEL_SHADOW_OFF.1 + PANEL_SHADOW_BLUR;
+        // Morph settle overshoot: the factors are 0 (r1f measured ~15%
+        // live vs the reference's ~1.1%), so this is the settled bound
+        // today and the right bound the day they are restored.
+        let over_bottom = STAGE_PAD_TOP
+            + 447.0 * (1.0 + crate::morph::H_OVERSHOOT)
+            + PANEL_SHADOW_OFF.1
+            + PANEL_SHADOW_BLUR;
         assert!(over_bottom < STAGE_H as f32, "overshoot shadow bottom {over_bottom} >= {STAGE_H}");
-        // Widest panel (Wallpaper, 1008) right edge + blur.
-        let right = (STAGE_W as f32 + 1008.0) / 2.0 + PANEL_SHADOW_BLUR;
+        // Widest panel right edge + blur, read from the live size rather
+        // than a hardcoded 1008 that can silently drift from it.
+        let (widest, _) = IslandState::Wallpaper.size();
+        let right = (STAGE_W as f32 + widest as f32) / 2.0 + PANEL_SHADOW_BLUR;
         assert!(right < STAGE_W as f32, "panel shadow right {right} >= {STAGE_W}");
         // Leftmost disc shadow edge (widest panel, left disc).
-        let left_cx = (STAGE_W as f32 - 1008.0) / 2.0 - NAV_DISC_GAP - NAV_DISC_R;
+        let left_cx = (STAGE_W as f32 - widest as f32) / 2.0 - NAV_DISC_GAP - NAV_DISC_R;
         let shadow_left = left_cx + DISC_SHADOW_OFF.0 - NAV_DISC_R - DISC_SHADOW_BLUR;
         assert!(shadow_left > 0.0, "disc shadow left {shadow_left} <= 0");
         // Disc shadow bottom (tallest menu: ControlCenter disc at
-        // panel mid-height 31 + 525/2).
+        // panel mid-height STAGE_PAD_TOP + 447/2).
         let ((_, cy_cc), _) = nav_disc_centres(IslandState::ControlCenter);
         let shadow_bottom = cy_cc + DISC_SHADOW_OFF.1 + NAV_DISC_R + DISC_SHADOW_BLUR;
         assert!(shadow_bottom < STAGE_H as f32);
+        // TrayMenu is the one state that hangs below the pill row, so it
+        // owns the bottom edge for a long DBusMenu (up to 480 tall).
+        let (_, th) = crate::tray::tray_menu_size();
+        let tray_bottom = panel_top_menu() + th as f32 + PANEL_SHADOW_OFF.1 + PANEL_SHADOW_BLUR;
+        assert!(tray_bottom < STAGE_H as f32, "tray shadow bottom {tray_bottom} >= {STAGE_H}");
     }
     // iter27 (D1/D2 hit-test): classify_press pins the new rules.
     // All positions are STAGE coords (stage origin on screen is
@@ -10245,5 +10273,40 @@ mod iter108_tray_tests {
         let action = classify_press((500.0, 85.0), IslandState::TrayMenu, false, 0, 0, 0);
         assert_eq!(action, PressAction::TrayMenuRow(1));
         crate::tray::set_menu_for_test("", vec![]);
+    }
+}
+
+#[cfg(test)]
+mod stage_extent_tests {
+    use super::*;
+    #[test]
+    fn every_state_content_rect_fits_the_stage() {
+
+
+        // Every settled state's content rect must fit the stage, plus the
+        // shadow tail. This is the assertion that lets STAGE_H shrink.
+        for st in [
+            IslandState::Collapsed,
+            IslandState::Dictation,
+            IslandState::Lock,
+            IslandState::Power,
+            IslandState::Music,
+            IslandState::Calendar,
+            IslandState::ControlCenter,
+            IslandState::Launcher,
+            IslandState::Wallpaper,
+            IslandState::Themes,
+            IslandState::Clipboard,
+            IslandState::TrayMenu,
+        ] {
+            let r = content_rect(st);
+            assert!(r.0 >= 0, "{st:?} left {}", r.0);
+            assert!(r.1 >= 0, "{st:?} top {}", r.1);
+            assert!(r.2 <= STAGE_W as i32, "{st:?} right {} > {STAGE_W}", r.2);
+            assert!(r.3 <= STAGE_H as i32, "{st:?} bottom {} > {STAGE_H}", r.3);
+        }
+        // The morph settles can only interpolate between two states that
+        // both fit, so this also bounds the growing frames (the overshoot
+        // factors are 0 today; see shadows_fit_inside_stage for the swell).
     }
 }
