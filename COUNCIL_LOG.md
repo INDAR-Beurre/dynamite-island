@@ -854,3 +854,33 @@ Whichever probe answers correctly takes the reference-spec brief; if both fail, 
 `704af058` answered **BLACK · `00:05` · light-on-dark · under 10% · blue** — every item matches the parent-established ground truth, including the exact clock string, which cannot be guessed from a filename.
 **This is the cheapest confirmed vision route found so far** (`group/hy4`, 65 K context) and it frees the expensive `agentrouter/gpt-6.1-sol` slot for the owner. All subsequent visual critics route here unless it fails.
 **Caveat to carry:** 65 K context is small for a spec task over ~120 frames. The brief must therefore name a *bounded* frame set rather than "look at everything", or the child will run out of window mid-spec.
+
+### ⛔ RETRACTED — critic #5's "#F2A65A accent" finding was a hallucination, and I forwarded it (chain 6t)
+Critic #5 filed a **major**: "the spec's single accent **#F2A65A** appears zero times in src/docs/assets". I recorded it at line 639 **without verifying it**. It is wrong.
+**Measured the reference directly.** `/tmp/ref/s/s13.png` is the power/control panel. The active **Lock** disc's modal interior colour is **#79A1F5 (121,161,245)**, next most common #7BA0F3 and #7BA0F5 — one periwinkle within video-compression noise. Our `src/calendar_panel.rs:187` `ACCENT = [0x7C,0xA2,0xF5]` = **#7CA2F5 (124,162,245)** is within **3 units per channel**. **Our accent hue is essentially correct.**
+**`grep -rn 'F2A65A'` across the whole repo and /tmp returns exactly one hit: COUNCIL_LOG.md:639 — the critic's own finding.** It is in no spec, no doc, no asset, no measurement. #F2A65A is an **orange**; the reference accent is a **periwinkle blue**.
+**Why this matters more than a normal wrong finding:** had a fixer obeyed it, it would have replaced a correct accent with orange and **destroyed the pixel match the owner explicitly asked for**, in the name of removing slop. A confident, specific, actionable instruction that is factually false is the most dangerous output a critic can produce. **Parent error: I merged it without checking.**
+**The real, surviving accent finding (restated with numbers):**
+- One hue is hand-typed in ≥4 places instead of coming from a token: `#7CA2F5` (`src/library.rs`, `src/calendar_panel.rs:187`), `#93A4F5` (`src/controlcenter_panel.rs:175`), `#74A3F6` (`src/controlcenter_panel.rs:180`), `#7AA2F7` (`src/music_panel.rs`). `library::ACCENT`/`theme_accent()` drive none of them ⇒ **theming cannot work**. Genuine defect, keep.
+- **New measured defect:** the control-centre toggle `#93A4F5 (147,164,245)` is **26 units too light on red** vs the reference `#79A1F5 (121,161,245)`. Fix toward the measured value. **Do not change the hue family.**
+
+### ✅ Both `hy4` AND `gemini-4-hydrogen` see images — 5/5 each
+`01427332` (gemini-4-hydrogen) answered **BLACK · `00:05` · light-on-dark · under 10% · blue with large white clouds**. Two cheap confirmed vision routes now exist; `agentrouter/gpt-6.1-sol` is no longer needed for routine visual critique, which respects the owner's warning about its cost.
+
+### Reference EXPANDED-panel geometry — parent-measured, first time any of this is specified
+All at 2560×1440, threshold max-channel ≤40, widest-dark-run per row, gaps ≤25 px bridged (the panels have internal separators that break a naive contiguous scan):
+| frame | panel | x-span | **w×h** | aspect | centre x |
+|---|---|---|---|---|---|
+| `s13` | **power / control** | 1011–1548 | **538×201** | 2.677 | **1279.5** |
+| `s37` | themes (search) | 881–1678 | 798×489 | 1.632 | 1279.5 |
+| `s5`,`s53` | launcher (search) | 942–1617 | 676×489 | 1.382 | 1279.5 |
+| `s73` | themes (list) | 881–1724 | 844×490 | 1.722 | 1302.5 |
+| `s45` | wallpapers | 513–1963 | 1451×143 | 10.147 | 1238.0 |
+**Every panel is horizontally centred on 1279.5 = screen centre**, same as the pill. Panel fill is **p10/p25/p50 = 0.0** — genuinely pure black, same material as the collapsed pill.
+**Power panel internals (`s13`, the one the owner cares about):**
+- 5 circular buttons, **diameter 54 px** (both the active blue and an inactive grey measure 54). **disc/panel-width = 54/538 = 0.1004.**
+- Active disc x[1253,1306] y[96,150]; inactive disc x[1088,1141] ⇒ **pitch ≈ 82 px**.
+- **Inactive disc fill (25,26,31)** — a very dark grey, NOT mid-grey.
+- Uptime line "Up 3 h 34 min": **cap height 10 px**, y[56,65].
+- Active label "Lock": **cap height 11 px**, y[173,183], peak luminance **222** (not 255 — the reference's white is slightly off-peak, consistent with the pill's 225.7).
+- Layout: uptime centred at top, disc row centred, active label centred below. **No title bar, no separators, no card-in-card.**
