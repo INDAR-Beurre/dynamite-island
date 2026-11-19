@@ -1320,3 +1320,6 @@ frame now.
 Re-measured from `docs/reference/pill-settled.png`: pill **111x42**, aspect **2.643**,
 centre offset **0.0**, cap **15**, stroke/cap **0.200**, width **4.336 %**, gap **1.319 %**.
 All canonical targets confirmed against uncorrupted evidence.
+**Both self-corrections re-verified against the CLEAN reference**: stem **3.00 px**
+(#9 confirmed), width **4.336 %** (#10 confirmed). Neither was poisoned by the
+contaminated file.
