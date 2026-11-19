@@ -2221,3 +2221,26 @@ fails. Now stats the link itself. (b) Added a load gate: loadavg > 6.0 exits
 2 with RESULT INVALID. Observed three concurrent rustc at 94/77/64% dropping
 57-74% of frames and reading travel_px=0, morph_poses=1, pose_hold 337.8 ms
 on a panel that idles at 0.5% CPU. That run must not be scored.
+
+## r2 motion instrument repaired, real latency isolated
+
+`scripts/motion/motion.py` now uses a closed, connected dark component rather
+than a centre-column scan. It reproduces all four hand-measured extents exactly:
+ControlCenter 670x658 at top 7, themes 549x900 at 20, music 225x918 at 20,
+collapsed 37x100 at 20. `scripts/motion/selftest.py` pins those cases and still
+passes its synthetic motion cases. `scripts/motion/run_all.sh` crops 760 logical
+px tall and measures on an empty tag, restoring the owner's tag in `finally`.
+
+Measured on the committed stage-512 build (`d8e3ca4`), quiet machine, 3 trials:
+16/16/17 distinct poses, pose hold median 16.7 ms, settle duration 216.6 ms,
+no reversals, no overshoot, 13 in-flight samples. This resolves the old 2-5
+pose readings: they were detector truncation, not proof of a two-frame morph.
+The remaining real failures are command-to-first-motion 348.8 ms,
+command-to-settle 565.3 ms, duplicate ratio 0.522. The first ~340 ms is flat,
+then the animation advances every frame. A read-only child is tracing the
+cause; do not claim smoothness complete until that delay is fixed and re-run.
+
+Stress on the same binary: TOTAL tests=1207 asserts=6179 fails=0 groups=5,
+load_leak growth -32.2 MB, peak_delta +2.0 MB, socket p95 0.7 ms.
+320 Rust tests pass, render_check PASS 9/9, halo_check PASS 8/8.
+Commits: d8e3ca4 (stage 512 + lock-ring release + detectors), 8ae0a00 (trend).
