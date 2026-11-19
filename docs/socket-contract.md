@@ -8,9 +8,8 @@ must treat them as a frozen public API.
 
 `tools/dictation/` builds `static-dictation`, the dictation tool the user asked
 to have "embedded nicely into the package". It is a **separate process** that
-talks to the panel only through this socket. (It used to live in
-`~/.t3/scratch/2026-11-13-can-you-please-like-i-e1185665/`; that path is now
-only a fallback in the supervisor.)
+talks to the panel only through this socket. It now lives in `tools/dictation/`
+in this repo; the old `~/.t3/scratch/…` path is gone and is **not** a fallback.
 
 | literal | producer | note |
 |---|---|---|

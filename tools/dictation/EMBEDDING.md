@@ -50,9 +50,10 @@ Deleting the pill module would make a single workspace safe.
 ## Launch
 
 `scripts/dictation_supervisor.sh` resolves its binary **relative to its own
-location**, prefers the in-repo build, and falls back to the original scratch
-binary if the in-repo one is missing — so a failed rebuild never leaves the
-owner without dictation.
+location** and uses the in-repo build. If it is missing it prints a build hint
+and exits 1 — it does **not** fall back to the old scratch binary. That fallback
+was removed on purpose: silently running a stale binary from a temp directory
+is how the tool became un-reproducible in the first place.
 
 `~/.config/mango/autostart.sh` now invokes the in-repo supervisor. The previous
 version is preserved as `autostart.sh.bak-dictation-embed-<timestamp>`.
