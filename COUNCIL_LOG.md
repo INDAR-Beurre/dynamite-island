@@ -2153,3 +2153,28 @@ because I passed MB where the series is kB — the BAD line caught it.
 
 **Full suite green: tests=1207 asserts=6179 fails=0 groups=5.**
 Latency p50 29.0 / p95 57.0 / p99 64.7 / max 76.5 ms (baseline p95 220.7).
+
+## r2 partial panel — frozen surfaces while r1f finishes (chain 3t)
+r1f is still editing src/main.rs, so a full r2 panel now would score a moving
+target. Four lenses whose surfaces are FROZEN were dispatched instead:
+- #34 lockscreen pixels (vision) — magpie/group/hy4, uuid adf0c0ad
+- #35 dictation robustness      — magpie/logfare/deepseek-v4.1-flash-1017, uuid f751068a
+- #36 packaging + portability   — magpie/logfare/glm-5.3-flash, uuid 412c23c5
+- #37 test integrity            — magpie/group/hy4, uuid 4d779e0a
+#37 is asked to MUTATION-TEST the 317 Rust tests in a /tmp copy and to audit
+docs/r1d-test-reconciliation.md for expectations edited to hide a regression.
+That is the highest-value question of the four: 19 assertions were changed
+after a deliberate design change, and only a reader can tell justification
+from papering-over.
+
+## Instrument repair #26 — scripts/render_check.py (4 detector traps)
+Purpose: the 246 stress state-machine tests read `DBG morph A -> B`, which
+proves the state moved, not that anything was DRAWN.
+Traps, each found by running: min/max caught the app title bar (0.977 W);
+contiguous dark run through screen centre still caught it (0.79-0.84 W);
+median run stops at discs/glyphs (CC p50 265 vs 657 actual); invented
+reference width bands failed 4 correct states.
+Final: runs must be symmetric about screen centre within 0.05W and in
+[0.05W, 0.78W], then p90 width. Expectation from IslandState::size()
+(src/main.rs:199), not invented bands. 9/9 PASS; mutation-tested against a
+collapsed capture (all 6 rejected).
