@@ -2081,3 +2081,32 @@ including `ends mid-reload, LEAKED to 95 -> FAIL`.
 **Full suite: tests=1207 asserts=6179 fails=0 groups=5, RESULT PASS.**
 Latency p50 29.0 / p95 57.0 / p99 64.7 / max 76.5 ms against a 400 ms bound
 (baseline p95 was 220.7). This is the best latency of the run.
+
+## Dictation lazy-capture probe — DEAD END, and it changed the fix (chain 4t)
+
+Critic #31 wants the mic opened on hotkey instead of at login: it keeps the
+HDA codec out of runtime suspend (`/sys/bus/pci/devices/0000:00:1f.3/power/
+runtime_status` = active with power_save=1 and playback closed), 28 threads,
+~100 ctx-switches/s, Pss 1.4 MB.
+
+Before handing that to a fixer I tried to measure mic-open latency, because
+if opening is slow, lazy capture clips the first word — worse than the
+battery it saves. Wrote a throwaway `examples/micopen.rs` including
+`src/capture.rs` by path.
+
+**It hung.** Not slow — hung. Thread dump while blocked:
+`micopen futex_do_wait`, `module-rt`, `alsa-pipewire`, `data-loop.0` all
+parked; `start()` never returned, 25 s timeout, exit 124. The live instance
+(pid 4035) holds the device, so a second opener blocks in cpal/PipeWire
+rather than failing.
+
+Two consequences:
+1. **The latency question is unanswered.** Do not claim lazy capture is safe.
+2. **A real robustness finding fell out**: `capture::start()` has no timeout.
+   `init_rx.recv()` (`tools/dictation/src/capture.rs:109`) waits forever, and
+   `main.rs:90` `.expect(...)` means a wedged audio server hangs dictation at
+   startup with no message. `recv_timeout` + a clear error is the fix, and it
+   is worth doing regardless of the lazy-capture decision.
+
+Probe deleted; no crate change. Live dictation untouched and verified alive
+(Pss 1393 kB, 28 threads, 5.58 M voluntary ctx switches).
