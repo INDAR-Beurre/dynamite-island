@@ -1947,3 +1947,43 @@ Also refuted my own zoom hypothesis: I tried registering the locked frame at
 correct path gives 1.32. **My inline test double-inverted the alpha**
 (`alpha_at` already returns alpha; I subtracted it from 1 again). The zoom
 idea was never tested — discard that experiment, not the model.
+
+## Lockscreen worker returned — verified independently (parent, chain 5t)
+
+Worker `8fb8a00d` completed, `src/lockscreen.rs` only (+603/−110). Claims
+checked against pixels, not the report:
+
+**Veil is vertical and the 1.030× registration is real.** Captured the live
+lock screen, then compared against the worker's own wallpaper asset
+(`~/.cache/dynamite/wallpaper-1504x1003.rgba`) resampled to device size:
+
+| y/H | alpha @x.03 / .5 / .97, zoom 1.000 | zoom **1.030** |
+|---|---|---|
+| 0.30 | 0.220 / 0.234 / 0.209 | **0.220 / 0.223 / 0.218** |
+| 0.50 | 0.198 / 0.223 / 0.226 | **0.225 / 0.226 / 0.226** |
+| 0.95 | 0.442 / 0.440 / 0.471 | **0.449 / 0.451 / 0.452** |
+
+Row spread collapses from 0.025–0.031 to **0.005 / 0.001 / 0.003** at 1.030×.
+That is the registration working, and it independently confirms the zoom
+constant. Values match the fitted recipe (plateau alpha .2236, bottom .4501).
+
+**Measurement lesson**: my first two attempts used a live *unlocked* capture
+as the reference and produced **negative transmission** (−0.37, −1.13) — the
+T3 window covers most of the screen, so those columns are not wallpaper in
+both frames. Only 6–203 of 2256 columns were usable below y/H 0.10. Use the
+asset the code actually samples, not a screenshot of a busy desktop.
+
+**Real defect it found in the other lane (accepted, not its scope)**:
+`load_lock_wallpaper()` (`src/main.rs:2384`) builds the filename from
+`lockscreen_size()` → `output_logical()` = **1504×1003** live, but the cached
+asset was **1504×1002**. Every lock entry silently fell back to opaque black.
+Worker generated the 1003-tall file by duplicating the last row (both now in
+`~/.cache/dynamite/`). **Fragile**: a hand-made asset keyed to one exact
+output size. The crate already vendors `png 0.17` and decodes PNG in
+`src/clipboard_panel.rs:1233`, so the doc comment "this crate has no PNG
+decoder" is false — decode the wallpaper directly instead of requiring a
+pre-rendered `.rgba` per resolution. Queued for the next fixer.
+
+Worker's own unverified item, honestly flagged: it never compared the ink
+against `docs/reference/lock-resting.png` inside Rust, only against the
+recomputed model (0.74/255 agreement).
