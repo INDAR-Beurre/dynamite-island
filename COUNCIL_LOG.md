@@ -1343,3 +1343,15 @@ Also verified: `ui_font()` embeds `Quicksand-Bold.ttf` via `include_bytes!`, log
 winning candidate, and the three duplicated `$HOME`-only loaders in tests were replaced
 with it. `std::process::exit(1)` replaces the panic only if the EMBEDDED font fails to
 parse (a corrupt build) — acceptable, and no longer reachable on a clean machine.
+
+## Round 1 panel — extended slots dispatched
+| # | lens | model | uuid |
+|---|---|---|---|
+| #30 | **reference motion spec from 855 video frames** | group/gemini-4-hydrogen | `8500a881` |
+| #31 | dictation always-on mic + idle RAM | fasfas-ai/deepseek-v4.1-flash | `ecac75af` |
+Fixer r1c (logfare) `2bfdb05f` in flight; it has landed `ui_font()` (embedded
+Quicksand-Bold, logs the winner, no panic) and the **bounded morph damage rect**
+(`union_rect(content_rect(from), content_rect(to))`, region upscale on morph frames,
+`clear_rect` instead of three stage-sized memsets). Parent verified the rect is safe
+under EaseOutCubic. Secondary findings (Bluetooth default, workspace tags, accent
+binding) not yet applied.
