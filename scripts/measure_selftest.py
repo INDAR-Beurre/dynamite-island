@@ -27,7 +27,7 @@ def frame(fill, box, v):
 def main() -> int:
     fails = []
 
-    ref_path = Path("/tmp/ref/s/s17.png")
+    ref_path = Path(__file__).resolve().parent.parent / "docs" / "reference" / "pill-settled.png"
     if ref_path.exists():
         b = pill_bbox(np.array(Image.open(ref_path).convert("RGB")))
         if not b or b.get("not_collapsed"):

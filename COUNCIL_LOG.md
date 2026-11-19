@@ -1296,3 +1296,27 @@ detector (live-vs-live), not as a reference target.
 Two measurement bugs found and avoided while checking: the `>110` mask on the reference
 crop selects the bright WALLPAPER unless restricted to the pill interior (gave cap=42,
 the pill height); and glyph-run splitting merges adjacent digits at this resolution.
+
+## 🚨 INSTRUMENT CATASTROPHE FOUND AND FIXED — the reference frame had been overwritten
+`/tmp/ref/s/s17.png` — the frame **every visual critic scored against for hours** — was
+**2256x1504, our own screen size**, mtime 03:35:45. It had been overwritten by a live
+capture. Cause: `scripts/measure.py::settled()` calls `shot(png)` to re-capture, and when
+`--png /tmp/ref/s/s17.png` was passed it **wrote the live screen over the reference**.
+`scripts/measure_selftest.py:30` pointed at that same path, so the self-test kept
+"passing" against our own output.
+**Blast radius checked**: of 1486 files under `/tmp/ref/`, exactly **1** was contaminated.
+All other reference frames are intact 2560x1440. Every number quoted from s17 before
+03:35 was genuine (111x42, cap 15, stroke/cap 0.200, lapvar_norm 1277.0) — those were
+measured while it was still the real frame, and they **reproduce exactly** from a clean
+frame now.
+**Fixes (three, all verified):**
+1. `--png` no longer consults the live panel's state (a still cannot be "mid-morph").
+2. `settled(png, allow_capture=False)` for a supplied PNG — it can neither settle nor
+   be overwritten.
+3. **The reference now lives in the repo**: `docs/reference/{pill-settled,panel-power,
+   lock-resting,lock-typing}.png`, copied from clean 2560x1440 frames (`s1`, `s13`,
+   `l40`, `l120`). `measure_selftest.py` points there. `/tmp` is scratch and was never
+   a safe home for the ground truth.
+Re-measured from `docs/reference/pill-settled.png`: pill **111x42**, aspect **2.643**,
+centre offset **0.0**, cap **15**, stroke/cap **0.200**, width **4.336 %**, gap **1.319 %**.
+All canonical targets confirmed against uncorrupted evidence.

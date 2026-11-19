@@ -261,7 +261,7 @@ def panel_state() -> dict | None:
     return None
 
 
-def settled(png: Path, tries: int = 3) -> bool:
+def settled(png: Path, tries: int = 3, allow_capture: bool = True) -> bool:
     """True when two captures `anim_ms` apart are pixel-identical.
 
     The morph witness is printed BEFORE the animation runs and there is no
@@ -276,6 +276,12 @@ def settled(png: Path, tries: int = 3) -> bool:
     # video elsewhere on the desktop keeps changing forever and would make this
     # refuse every measurement. The strip is where the island lives.
     strip = 220
+    if not allow_capture:
+        # A supplied PNG is a still: it cannot settle, and re-capturing over
+        # it would DESTROY the reference frame. That happened once -- s17.png
+        # was overwritten with a live capture and every critic then scored
+        # our own panel as "the reference".
+        return False
     try:
         prev = np.array(Image.open(png).convert("RGB"))[:strip]
     except OSError:
@@ -302,7 +308,10 @@ def main() -> int:
     out = {"png": str(png), "screen": {"w": W, "h": H}}
     bb = pill_bbox(a)
     out["pill"] = bb
-    st = panel_state()
+    # A supplied PNG is a reference frame, not our live panel. The running
+    # panel's state says nothing about it -- consulting it once made this
+    # tool overwrite the reference row with live geometry.
+    st = None if "--png" in sys.argv else panel_state()
     if st:
         out["panel"] = st
     # The panel's own witness outranks any pixel heuristic: a lock surface or
@@ -311,7 +320,7 @@ def main() -> int:
     if moving:
         # A finished morph still reads morph=true. Only refuse if it is
         # genuinely still animating.
-        if settled(png):
+        if settled(png, allow_capture="--png" not in sys.argv):
             st["morph"] = False
             st["settled_by"] = "two identical captures 200ms apart"
         else:
