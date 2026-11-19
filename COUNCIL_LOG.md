@@ -1355,3 +1355,21 @@ Quicksand-Bold, logs the winner, no panic) and the **bounded morph damage rect**
 `clear_rect` instead of three stage-sized memsets). Parent verified the rect is safe
 under EaseOutCubic. Secondary findings (Bluetooth default, workspace tags, accent
 binding) not yet applied.
+
+## ★ Measured prediction for r1c's morph fix — `scripts/perf/morph_rect_bench.rs`
+Extracted the fixer's actual `upscale_canvas_2x_region` + `clip_rect` from the working
+tree and timed realistic morph rects (`rustc -O`, no crate, no `src/` change):
+| rect | logical px | time |
+|---|---|---|
+| full stage (the OLD morph path) | 747,936 | **9.4–11.6 ms** |
+| collapsed pill only | 2,059 | **0.03 ms** |
+| pill → ControlCenter union | 91,298 | **1.26–1.48 ms** |
+| ControlCenter → Themes union | 195,840 | **2.75–3.03 ms** |
+**Every realistic morph rect is under 3.1 ms**, i.e. inside a 16.7 ms frame budget with
+room for the draw itself. At 160 ms / 16.7 ms the morph should now present **~10 poses**.
+Reproduce: `rustc -O -o /tmp/mb scripts/perf/morph_rect_bench.rs && /tmp/mb`.
+**Caveat, stated honestly**: this machine's full-stage upscale measures **9–12 ms** here,
+not the 62–105 ms the profiler and critic #25 reported. Different build (that was an
+instrumented pre-r1b binary) and different load. The *ratio* is the durable result
+(**~7× to ~300× cheaper**), and even at 9 ms the old path plus a 2.7 ms draw plus three
+stage-sized memsets could not sustain 60 Hz. Do not quote 62 ms as today's number.
