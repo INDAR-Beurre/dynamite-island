@@ -1259,3 +1259,15 @@ Consequences, all previously mis-attributed to the panel:
 **This also means every "flat black backdrop" screenshot in the run is not representative.**
 Not fixed by the parent: starting a wallpaper daemon changes the owner's live desktop,
 which is theirs to choose. Recorded as an environment finding + a one-line remedy.
+**Composite caveat**: pasting a rectangular pill crop onto a different backdrop shows a
+rectangular halo around BOTH pills (the crop carries its original background). That is a
+compositing artefact of the parent's A/B image, **not** a panel defect. Do not score it.
+A fair visual comparison needs the wallpaper daemon running so both are captured live.
+
+### Remedy for the owner (one line, NOT applied — it changes their live desktop)
+```sh
+swaybg -i ~/.config/mango/wallpaper/wallpaper.png -m fill &
+```
+Already present in `~/.config/mango/autostart.sh:58-60`; it simply is not running in this
+session. Until it is, every screenshot shows `root_color 0x141424` behind the bar and
+**no visual critic can fairly judge the bar against the reference**.
