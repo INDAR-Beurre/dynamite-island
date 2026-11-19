@@ -2110,3 +2110,46 @@ Two consequences:
 
 Probe deleted; no crate change. Live dictation untouched and verified alive
 (Pss 1393 kB, 28 threads, 5.58 M voluntary ctx switches).
+
+## r2 partial panel opened on FROZEN surfaces (chain 3t)
+
+r1f is still editing `src/main.rs`, so a full r2 panel now would score a
+moving target. Two surfaces are frozen and were dispatched instead:
+
+- **#34 lockscreen pixels (vision)** — `magpie/group/hy4`, thinking high,
+  uuid `adf0c0ad-ed64-4c35-aeb5-10ad020583ef`. `src/lockscreen.rs` finished
+  (+713/-110) and parent-verified. Bounded image set (hy4 has 65K context).
+- **#35 dictation robustness** — `magpie/logfare/deepseek-v4.1-flash-1017`,
+  thinking high, uuid `f751068a-80b0-410e-8c36-57f8557cd672`. Different crate,
+  no overlap with the fixer.
+
+Both briefs carry: the no-lockout rule, the known-open items in other lanes,
+and the false-finding traps (integer-pixel ratios across sizes, stadium
+corner contamination, video band-limiting, two-instance invalidation).
+
+## Instrument: render_check.py (parent)
+
+Closes a real gap — the 246 state-machine tests read `DBG morph A -> B`
+lines, which proves the state moved but not that anything was DRAWN.
+Four detector traps found by running it, each fixed:
+1. min/max of all dark pixels caught the app window title bar (0.977 W)
+2. contiguous centre run alone still caught it (0.79-0.84 W)
+3. median run stops at discs/glyphs (CC p50 265 vs 657 actual)
+4. invented reference width bands failed 4 correct states
+
+Final: runs symmetric about screen centre, p90 width, expectation from
+`IslandState::size()` x 1.5. **9/9 PASS.** Mutation-tested — a collapsed
+capture is rejected for all 6 states tried. `h` is documented as a LOWER
+BOUND (rows crossing content have no dark centre run), not a height.
+
+## Instrument: stress verdict (parent, repair #25)
+
+`load_leak` failed with +11.6 MB on a panel resting at 67 MB: the loop ENDED
+with a lock surface still resident, so the tail median landed inside the
+excursion. It measured WHERE the loop stopped, not retention. Now drives
+home to `collapsed`, takes 6 settle samples, judges those.
+Selftest 14/14 incl. a leaked-settle fixture. First version scored -67.9 MB
+because I passed MB where the series is kB — the BAD line caught it.
+
+**Full suite green: tests=1207 asserts=6179 fails=0 groups=5.**
+Latency p50 29.0 / p95 57.0 / p99 64.7 / max 76.5 ms (baseline p95 220.7).
