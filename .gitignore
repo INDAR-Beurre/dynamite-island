@@ -6,3 +6,10 @@ src.bak-*/
 
 __pycache__/
 *.pyc
+
+# build + measurement artefacts
+__pycache__/
+*.pyc
+scripts/motion/out/
+*.bak
+/*.png
