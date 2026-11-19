@@ -244,9 +244,29 @@ pub(crate) fn rasterize_cached(
     (m, cov.into())
 }
 
+/// Clock ink token (r1d finding 11): the reference pill clock core
+/// measures (188, 214, 255) #BCD6FF on 25 stills — one cool-neutral
+/// ramp shared with the panel text ("Lock" (201,207,233), uptime
+/// (112,112,120)), strongest on the primary text. Fixed UI colour,
+/// proven: it reads the same under a blue-sky scene (white point
+/// 236,242,254) and a warm indoor scene (228,239,215). The blue
+/// channel CLIPS at 255 in the source, so the true token may be
+/// slightly brighter — #BCD6FF is a lower bound.
+pub const CLOCK_INK: [u8; 3] = [188, 214, 255];
+
+/// r1d finding 13: letter tracking as a fraction of text px.
+/// Inter at wght 675 / opsz 24 measures w/cap 3.446 vs reference
+/// 3.600; +0.0357 x cap height closes it. Cap height is ~0.77 em
+/// at this face, so the per-glyph tracking is +0.0275 x text px.
+/// Applied identically in the layout (width) and blit (pen) loops
+/// — both must match or the centring drifts. Between glyphs only
+/// (no tracking after the last glyph), so the reported width stays
+/// the true ink width.
+pub const TRACKING_PER_PX: f32 = 0.0275;
+
 /// Centre `text` in the canvas at `px` size, Quicksand via fontdue.
 /// Same layout/blit algorithm as main.rs `draw()` (baseline centred on
-/// the line box, glyphs composited white with max()). The black capsule
+/// the line box, glyphs composited with max()). The black capsule
 /// must already be drawn.
 pub fn draw_text_centred(
     canvas: &mut [u8],
@@ -262,11 +282,16 @@ pub fn draw_text_centred(
     let (wf, hf) = (w as f32, h as f32);
     // Layout: total advance width + line metrics (duplicated from main.rs
     // on purpose — this module must stay drop-in with no cross-refs).
+    let n = text.chars().count();
+    let tracking = TRACKING_PER_PX * px;
     let mut glyphs: Vec<(fontdue::Metrics, std::sync::Arc<[u8]>)> = Vec::new();
     let mut width = 0.0f32;
-    for ch in text.chars() {
+    for (i, ch) in text.chars().enumerate() {
         let (m, cov) = rasterize_cached(font, ch, px);
         width += m.advance_width;
+        if i + 1 < n {
+            width += tracking;
+        }
         glyphs.push((m, cov));
     }
     let lm = match font.horizontal_line_metrics(px) {
@@ -276,7 +301,7 @@ pub fn draw_text_centred(
     let height = lm.ascent - lm.descent;
     let baseline = (hf - height) / 2.0 + lm.ascent;
     let mut pen = (wf - width) / 2.0;
-    for (m, cov) in &glyphs {
+    for (i, (m, cov)) in glyphs.iter().enumerate() {
         let gx0 = (pen + m.xmin as f32).round() as i32;
         let gy0 = (baseline - m.ymin as f32 - m.height as f32).round() as i32;
         for gy in 0..m.height as i32 {
@@ -290,14 +315,26 @@ pub fn draw_text_centred(
                     continue;
                 }
                 let i = (((px_y as u32) * w + px_x as u32) * 4) as usize;
-                let v = (c * 255.0) as u8;
-                canvas[i] = canvas[i].max(v);
-                canvas[i + 1] = canvas[i + 1].max(v);
-                canvas[i + 2] = canvas[i + 2].max(v);
+                // r1d finding 11: scale each channel by the cool-neutral
+                // clock token (core (188,214,255)) instead of writing the
+                // same v to R/G/B — pure white was 66 blue counts too
+                // bright. The per-channel `max()` composite stays (known
+                // separate defect; invisible on the now-pure-black fill).
+                let v = [
+                    (c * CLOCK_INK[0] as f32) as u8,
+                    (c * CLOCK_INK[1] as f32) as u8,
+                    (c * CLOCK_INK[2] as f32) as u8,
+                ];
+                canvas[i] = canvas[i].max(v[0]);
+                canvas[i + 1] = canvas[i + 1].max(v[1]);
+                canvas[i + 2] = canvas[i + 2].max(v[2]);
                 canvas[i + 3] = 255;
             }
         }
         pen += m.advance_width;
+        if i + 1 < n {
+            pen += tracking;
+        }
     }
 }
 

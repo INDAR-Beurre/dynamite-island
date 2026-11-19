@@ -766,6 +766,13 @@ pub struct ControlCenterData {
     pub wifi_radio_on: bool,
     pub focus_on: bool,
     pub bluetooth_on: bool,
+    /// r1c finding 2: false when NO bluetooth adapter state could be
+    /// read at all (`live_bluetooth_on() == None`). The panel used to
+    /// default to `true`, so an unreadable/no adapter rendered
+    /// accent-blue "On" — a lie. `bluetooth_on` alone is false in both
+    /// the "off" and "no adapter" cases, so the two are distinguished
+    /// here and the subtext says "No adapter".
+    pub bluetooth_available: bool,
     pub bt_devices: Vec<BtDevice>,
     /// Audio routes are only enumerated while the Sound submenu is open.
     pub audio_routes: Vec<AudioRoute>,
@@ -797,6 +804,7 @@ impl ControlCenterData {
             wifi_radio_on: true, // video shows connected => radio on
             focus_on: false,
             bluetooth_on: true,
+            bluetooth_available: true,
             bt_devices: Vec::new(),
             audio_routes: Vec::new(),
             audio_default: String::new(),
@@ -882,6 +890,7 @@ impl ControlCenterData {
                 // (e.g. "Until 07:00") instead of the bare state word.
                 if on { "On".to_string() } else { "Off".to_string() }
             }
+            ToggleKey::Bluetooth if !self.bluetooth_available => "No adapter".to_string(),
             _ => {
                 if on { "On".to_string() } else { "Off".to_string() }
             }
@@ -921,6 +930,7 @@ fn cc_seed() -> ControlCenterData {
 fn read_live_snapshot() -> ControlCenterData {
     let now = live_local_hhmm();
     let (wifi_on, wifi_ssid) = live_wifi();
+    let bt = live_bluetooth_on();
     ControlCenterData {
         time_hhmm: now.clone(),
         battery_pct: live_battery_pct(),
@@ -929,7 +939,8 @@ fn read_live_snapshot() -> ControlCenterData {
         wifi_ssid,
         wifi_radio_on: live_radio_wifi_on().unwrap_or(wifi_on),
         focus_on: live_focus_on().unwrap_or(false),
-        bluetooth_on: live_bluetooth_on().unwrap_or(true),
+        bluetooth_on: bt.unwrap_or(false),
+        bluetooth_available: bt.is_some(),
         // Device enumeration is 3 bluetoothctl calls: only pay for it
         // while the submenu is actually visible.
         bt_devices: if cc_bt_submenu_open() {
@@ -2544,8 +2555,12 @@ fn layout_text(font: &Font, text: &str, px: f32) -> TextRow {
         width += m.advance_width;
         glyphs.push((m, cov));
     }
-    let lm = font.horizontal_line_metrics(px).unwrap();
-    TextRow { glyphs, width, ascent: lm.ascent, height: lm.ascent - lm.descent }
+    // Degrade to the em box instead of panicking (r1c finding 9).
+    let (ascent, height) = font
+        .horizontal_line_metrics(px)
+        .map(|lm| (lm.ascent, lm.ascent - lm.descent))
+        .unwrap_or((px, px));
+    TextRow { glyphs, width, ascent, height }
 }
 
 fn text_width(font: &Font, text: &str, px: f32) -> f32 {
@@ -2841,15 +2856,21 @@ fn draw_bt_submenu(
     );
 
     let on = data.bluetooth_on;
+    // No readable adapter: the accent fill would claim "On". Dim the
+    // pill and say so instead. shortcut: the switch stays clickable
+    // (a click sends `bluetoothctl power on`, which simply fails when
+    // there is no adapter); disabling hit-testing would need the input
+    // path to know this flag too.
+    let available = data.bluetooth_available;
     fill_rounded_rect(canvas, w, h, l.bt_power_pill, PILL_R, C_PILL_BG);
     let circle = l.bt_power_circle;
     fill_rounded_rect(
         canvas, w, h, circle, circle.w / 2.0,
-        if on { accent() } else { C_TOGGLE_OFF },
+        if on && available { accent() } else { C_TOGGLE_OFF },
     );
     draw_icon(
         canvas, w, h, icon_font, "bluetooth", 26.0, circle.cx(), circle.cy(),
-        if on { accent_glyph() } else { C_TOGGLE_OFF_GLYPH },
+        if on && available { accent_glyph() } else { C_TOGGLE_OFF_GLYPH },
     );
     let text_x = circle.x + circle.w + 12.0;
     draw_text(
@@ -2857,14 +2878,15 @@ fn draw_bt_submenu(
         C_PRIMARY, false,
     );
     draw_text(
-        canvas, w, h, ui_font, if on { "On" } else { "Off" }, 10.0,
-        text_x, l.bt_power_pill.y + 29.0, C_SECONDARY, false,
+        canvas, w, h, ui_font,
+        if !available { "No adapter" } else if on { "On" } else { "Off" },
+        10.0, text_x, l.bt_power_pill.y + 29.0, C_SECONDARY, false,
     );
     let sw = l.bt_switch;
     fill_rounded_rect(
-        canvas, w, h, sw, 11.0, if on { accent() } else { C_SLIDER_TRACK },
+        canvas, w, h, sw, 11.0, if on && available { accent() } else { C_SLIDER_TRACK },
     );
-    let knob_x = if on { sw.x + sw.w - 19.0 } else { sw.x + 3.0 };
+    let knob_x = if on && available { sw.x + sw.w - 19.0 } else { sw.x + 3.0 };
     fill_rounded_rect(
         canvas, w, h, Rect::new(knob_x, sw.y + 3.0, 16.0, 16.0), 8.0, C_PRIMARY,
     );
@@ -4092,6 +4114,29 @@ mod iter85_tests {
         full.display_level = 1.0;
         full.sound_level = 1.0;
         render("full", &full);
+    }
+
+    /// r1c finding 2: an unreadable adapter must NOT render as "On".
+    /// The old snapshot default was `unwrap_or(true)`, which painted the
+    /// accent-blue "On" state for a machine with no bluetooth at all.
+    #[test]
+    fn bluetooth_unknown_is_not_on() {
+        let mut d = ControlCenterData::video_defaults();
+        d.bluetooth_available = false;
+        d.bluetooth_on = false;
+        let def = ToggleDef {
+            key: ToggleKey::Bluetooth,
+            name: "Bluetooth",
+            icon: "bluetooth",
+            glyph_px: 32.0,
+        };
+        assert_eq!(d.subtext(&def), "No adapter");
+        assert!(!d.toggle(ToggleKey::Bluetooth), "unknown must not read On");
+        // A readable, powered-off adapter still says Off.
+        d.bluetooth_available = true;
+        assert_eq!(d.subtext(&def), "Off");
+        d.bluetooth_on = true;
+        assert_eq!(d.subtext(&def), "On");
     }
 
     /// Off-screen render of the Bluetooth submenu with real fonts.

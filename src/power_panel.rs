@@ -74,28 +74,49 @@ use fontdue::{Font, FontSettings};
 
 // ---------------------------------------------------------------------------
 // Colours / geometry (see module docs)
+// r1d findings 1/4/5: the reference power panel measures 316x118
+// logical (26.596% of a 2560-px-wide screen scaled: 316/1504 = 21.016%
+// of our logical width — aspect 2.678 vs reference 2.677, 0.04% off).
+// Y positions scale by 118/150 = 0.78667: UPTIME_TOP 22 -> 17.3,
+// ROW_CY 78 -> 61.4, LABEL_TOP 107 -> 84.2. Disc geometry from the
+// reference: diameter 54 device px at 2560 = 0.02109 of screen width
+// -> 47.5 device px -> 31.7 logical px -> r = 15.85 (was 21 on the
+// old 42 px discs; r 15.85 keeps the icon:disc ratio, so ICON_PX
+// scales 19 -> 14.3 and CENTRE_ICON_PX 24 -> 18.1). Disc pitch is
+// UNIFORM at 0.153 x panel width (r1d finding 5): 0.153 * 316 = 48.35
+// px centre-to-centre, centres 158 +/- {96.70, 48.35}.
 // ---------------------------------------------------------------------------
-pub const PANEL_W: u32 = 400;
-pub const PANEL_H: u32 = 150;
+pub const PANEL_W: u32 = 316;
+pub const PANEL_H: u32 = 118;
 
 const WHITE: [u8; 3] = [0xFF, 0xFF, 0xFF];
-// Periwinkle (124,150,213) — frame-sampled, see module docs. NOT #3B82F6.
+// r1d finding 4 / brief §11: the reference's cool-neutral text ramp.
+// "Lock" label core reads (201, 207, 233) in the reference (B-R = 32),
+// not pure white; uptime reads (112, 112, 120).
+const LABEL_TEXT: [u8; 3] = [0xC9, 0xCF, 0xE9]; // (201, 207, 233)
 // Dark navy lock glyph on the periwinkle disc (reference pixel, iter8).
 const LOCK_GLYPH: [u8; 3] = [0x31, 0x54, 0x95]; // #315495 (49,84,149)
-const BUTTON_BG: [u8; 3] = [0x1C, 0x1E, 0x22]; // #1C1E22 side buttons
-const SECONDARY_TEXT: [u8; 3] = [0x9A, 0xA0, 0xA6]; // #9AA0A6 uptime line
+// r1d finding 4: reference inactive disc fill (25, 26, 31).
+const BUTTON_BG: [u8; 3] = [0x19, 0x1A, 0x1F]; // (25, 26, 31)
+// Brief §11: reference uptime ink (112, 112, 120).
+const SECONDARY_TEXT: [u8; 3] = [0x70, 0x70, 0x78]; // (112, 112, 120)
 
 const UPTIME_PX: f32 = 11.0;
-const UPTIME_TOP: f32 = 22.0;
+// Fraction of the panel height (22/150 and 107/150, scaled by 118/150).
+const UPTIME_TOP_FRAC: f32 = 0.1466;
 const LABEL_PX: f32 = 12.5;
-const LABEL_TOP: f32 = 107.0;
-const ICON_PX: f32 = 19.0;
-const CENTRE_ICON_PX: f32 = 24.0;
-const BTN_R: f32 = 21.0;
-const CENTRE_R: f32 = 21.0;
-// Single centreline for ALL five discs (panel-relative; 93.3 screen).
-const ROW_CY: f32 = 78.0;
-const BTN_CX: [f32; 5] = [74.0, 134.0, 200.0, 266.0, 326.0];
+const LABEL_TOP_FRAC: f32 = 0.7136;
+const ICON_PX: f32 = 14.3;
+const CENTRE_ICON_PX: f32 = 18.1;
+// r1d §17: disc geometry as FRACTIONS of the panel bbox, measured on the
+// reference capture (538x200 device): diameter 54/538 = 0.1004 of W,
+// constants survive any future width change (the pixel values below at
+// PANEL_W 316: dia 31.73 -> r 15.86; cy 0.5175x118 = 61.07; centred
+// fractions 0.1924/0.3457/0.5/0.6533/0.8058 give the UNIFORM pitch
+// (0.6533 - 0.5) = 0.1533 of W = 48.4 px).
+const DISC_DIAM_FRAC: f32 = 0.1004;
+const DISC_CY_FRAC: f32 = 0.5175;
+const DISC_CX_FRACS: [f32; 5] = [0.1924, 0.3457, 0.5, 0.6533, 0.8058];
 
 // Material Symbols Rounded PUA codepoints (verified on the Surface, see docs).
 const ICON_DARK_MODE: char = '\u{E51C}';
@@ -156,7 +177,18 @@ pub fn uptime_string() -> String {
 // ---------------------------------------------------------------------------
 // Pixel helpers — same style as main.rs: premultiplied Argb8888 canvas,
 // BGRA byte order, src-over onto the (opaque) black panel.
+//
+// r1d §22 (2x panels): `canvas` is w x h DEVICE px and every public
+// function here takes LOGICAL coords; the scale is w/PANEL_W, so the
+// same code renders 1x (w == PANEL_W) or 2x (w == PANEL_W*2) and the
+// anti-aliasing band is one DEVICE px either way. Callers therefore
+// pass the canvas dimensions and logical geometry, nothing else.
 // ---------------------------------------------------------------------------
+fn scale_of(w: u32) -> f32 {
+    w as f32 / PANEL_W as f32
+}
+
+/// Blend one already-device-space pixel.
 fn blend_px(canvas: &mut [u8], w: u32, h: u32, x: i32, y: i32, rgb: [u8; 3], cov: f32) {
     if x < 0 || y < 0 || x >= w as i32 || y >= h as i32 || cov <= 0.0 {
         return;
@@ -171,6 +203,8 @@ fn blend_px(canvas: &mut [u8], w: u32, h: u32, x: i32, y: i32, rgb: [u8; 3], cov
 }
 
 fn fill_circle(canvas: &mut [u8], w: u32, h: u32, cx: f32, cy: f32, r: f32, rgb: [u8; 3]) {
+    let s = scale_of(w);
+    let (cx, cy, r) = (cx * s, cy * s, r * s);
     let x0 = (cx - r - 1.0).floor() as i32;
     let x1 = (cx + r + 1.0).ceil() as i32;
     let y0 = (cy - r - 1.0).floor() as i32;
@@ -186,9 +220,13 @@ fn fill_circle(canvas: &mut [u8], w: u32, h: u32, cx: f32, cy: f32, r: f32, rgb:
 }
 
 fn fill_rect(canvas: &mut [u8], w: u32, h: u32, x0: f32, y0: f32, x1: f32, y1: f32, rgb: [u8; 3]) {
+    let s = scale_of(w);
+    let (x0, y0, x1, y1) = (x0 * s, y0 * s, x1 * s, y1 * s);
     for y in (y0.floor() as i32)..(y1.ceil() as i32) {
         for x in (x0.floor() as i32)..(x1.ceil() as i32) {
-            blend_px(canvas, w, h, x, y, rgb, 1.0);
+            let cov_x = (x1.min(x as f32 + 1.0) - x0.max(x as f32)).clamp(0.0, 1.0);
+            let cov_y = (y1.min(y as f32 + 1.0) - y0.max(y as f32)).clamp(0.0, 1.0);
+            blend_px(canvas, w, h, x, y, rgb, cov_x * cov_y);
         }
     }
 }
@@ -208,6 +246,8 @@ fn ring_segment(
     gap_half: f32,
     rgb: [u8; 3],
 ) {
+    let s = scale_of(w);
+    let (cx, cy, r, thick) = (cx * s, cy * s, r * s, thick * s);
     let x0 = (cx - r - thick).floor() as i32;
     let x1 = (cx + r + thick).ceil() as i32;
     let y0 = (cy - r - thick).floor() as i32;
@@ -240,6 +280,9 @@ fn fill_triangle(
     rgb: [u8; 3],
 ) {
     // Edge-function fill, 1px AA on the boundary via coverage estimate.
+    let s = scale_of(w);
+    let ((ax, ay), (bx, by), (cx, cy)) =
+        ((ax * s, ay * s), (bx * s, by * s), (cx * s, cy * s));
     let x0 = ax.min(bx).min(cx).floor() as i32 - 1;
     let x1 = ax.max(bx).max(cx).ceil() as i32 + 1;
     let y0 = ay.min(by).min(cy).floor() as i32 - 1;
@@ -329,9 +372,10 @@ fn draw_text_centred(
     top_y: f32,
     rgb: [u8; 3],
 ) {
-    let row = layout_text(font, text, px);
-    let baseline = top_y + row.ascent;
-    let mut pen = cx - row.width / 2.0;
+    let s = scale_of(w);
+    let row = layout_text(font, text, px * s);
+    let baseline = top_y * s + row.ascent;
+    let mut pen = cx * s - row.width / 2.0;
     for (m, cov) in &row.glyphs {
         let gx0 = (pen + m.xmin as f32).round() as i32;
         let gy0 = (baseline - m.ymin as f32 - m.height as f32).round() as i32;
@@ -354,12 +398,13 @@ fn draw_icon_glyph(
     cy: f32,
     rgb: [u8; 3],
 ) {
-    let (m, cov) = icon.rasterize(ch, px);
+    let s = scale_of(w);
+    let (m, cov) = icon.rasterize(ch, px * s);
     if m.width == 0 || m.height == 0 {
         return;
     }
-    let gx0 = (cx - m.width as f32 / 2.0).round() as i32;
-    let gy0 = (cy - m.height as f32 / 2.0).round() as i32;
+    let gx0 = (cx * s - m.width as f32 / 2.0).round() as i32;
+    let gy0 = (cy * s - m.height as f32 / 2.0).round() as i32;
     blit_glyph(canvas, w, h, &m, &cov, gx0, gy0, rgb);
 }
 
@@ -369,6 +414,8 @@ fn draw_icon_glyph(
 // on the centre (periwinkle) disc.
 // ---------------------------------------------------------------------------
 fn draw_fallback_icon(canvas: &mut [u8], w: u32, h: u32, idx: usize, cx: f32, cy: f32, bg: [u8; 3]) {
+    // The shape offsets below are logical; `fill_circle`/`fill_rect`/
+    // `fill_triangle` scale their own geometry from `w`.
     match idx {
         // 0 dark_mode: crescent moon (disc minus offset disc in button bg).
         0 => {
@@ -431,8 +478,11 @@ fn draw_fallback_icon(canvas: &mut [u8], w: u32, h: u32, idx: usize, cx: f32, cy
 // ---------------------------------------------------------------------------
 // Public entry point.
 // ---------------------------------------------------------------------------
-/// Draw the power-menu content into `canvas` (400x150, black rounded panel
-/// already filled by the caller). `font` is the UI font (Quicksand);
+/// Draw the power-menu content into `canvas` (logical 316x118, black rounded
+/// panel already filled by the caller). `w`/`h` are the DEVICE size of
+/// `canvas`: pass PANEL_W/PANEL_H for a 1x render, PANEL_W*2/PANEL_H*2 for
+/// a 2x one — layout stays in logical units (see `scale_of`). `font` is the
+/// UI font (Quicksand);
 /// `shared_icon_font` is the Material Symbols font main.rs already loaded
 /// (None => this module loads it lazily from its own OnceLock — same file,
 /// same glyphs, only used when the caller has no font yet);
@@ -445,15 +495,28 @@ pub fn draw_power_panel(
     shared_icon_font: Option<&Font>,
     uptime_text: &str,
 ) {
-    debug_assert_eq!((w, h), (PANEL_W, PANEL_H));
+    debug_assert!(
+        (h as f32 - scale_of(w) * PANEL_H as f32).abs() < 1.5,
+        "power panel canvas {w}x{h} is not a scaled {PANEL_W}x{PANEL_H}"
+    );
 
-    // (a) Uptime line: 11px, #9AA0A6, centred, top y=22 (iter10: was 14).
+    // (a) Uptime line: 11px, (112,112,120), centred, top y=17.3.
     let uptime = if uptime_text.is_empty() {
         uptime_string()
     } else {
         uptime_text.to_string()
     };
-    draw_text_centred(canvas, w, h, font, &uptime, UPTIME_PX, 200.0, UPTIME_TOP, SECONDARY_TEXT);
+    draw_text_centred(
+        canvas,
+        w,
+        h,
+        font,
+        &uptime,
+        UPTIME_PX,
+        PANEL_W as f32 / 2.0,
+        (PANEL_H as f32 * UPTIME_TOP_FRAC),
+        SECONDARY_TEXT,
+    );
 
     // (b) Five circles + icons, left->right:
     //     dark_mode, logout, lock (centre, blue), refresh, power.
@@ -463,9 +526,11 @@ pub fn draw_power_panel(
         Some(f) => Some(f),
         None => icon_font(),
     };
-    for (idx, &cx) in BTN_CX.iter().enumerate() {
+    let (row_cy, btn_r) = disc_geometry(PANEL_W, PANEL_H);
+    for (idx, &cx_f) in DISC_CX_FRACS.iter().enumerate() {
+        let cx = cx_f * PANEL_W as f32;
         let centre = idx == 2;
-        // Single centreline: every disc at ROW_CY (iter10 fix).
+        // Single centreline: every disc at 0.5175xH (r1d §17).
         let (r, fill, icon_px, glyph_rgb) = if centre {
             // iter36 a6b: the centre disc IS the island accent — it
             // follows the current theme live (library palette slot 3;
@@ -479,20 +544,31 @@ pub fn draw_power_panel(
                 / 255.0;
             let glyph = if lum < 0.5 { WHITE } else { LOCK_GLYPH };
             // (fill is [u8; 3] here, like BUTTON_BG — convert.)
-            (CENTRE_R, [accent.0, accent.1, accent.2], CENTRE_ICON_PX, glyph)
+            (btn_r, [accent.0, accent.1, accent.2], CENTRE_ICON_PX, glyph)
         } else {
-            (BTN_R, BUTTON_BG, ICON_PX, WHITE)
+            (btn_r, BUTTON_BG, ICON_PX, WHITE)
         };
-        fill_circle(canvas, w, h, cx, ROW_CY, r, fill);
+        fill_circle(canvas, w, h, cx, row_cy, r, fill);
         match icon {
-            Some(f) => draw_icon_glyph(canvas, w, h, f, ICONS[idx], icon_px, cx, ROW_CY, glyph_rgb),
-            None => draw_fallback_icon(canvas, w, h, idx, cx, ROW_CY, fill),
+            Some(f) => draw_icon_glyph(canvas, w, h, f, ICONS[idx], icon_px, cx, row_cy, glyph_rgb),
+            None => draw_fallback_icon(canvas, w, h, idx, cx, row_cy, fill),
         }
     }
 
-    // (c) "Lock" label under the centre circle: 12.5px Bold, white,
-    //     top y=107 (iter10: was 10px/top 105).
-    draw_text_centred(canvas, w, h, font, "Lock", LABEL_PX, 200.0, LABEL_TOP, WHITE);
+    // (c) "Lock" label under the centre circle: 12.5px Bold,
+    //     cool-neutral (201,207,233) — brief §11 — top y=84.2 (was
+    //     pure white at 107 on the 400x150 panel).
+    draw_text_centred(
+        canvas,
+        w,
+        h,
+        font,
+        "Lock",
+        LABEL_PX,
+        PANEL_W as f32 / 2.0,
+        (PANEL_H as f32 * LABEL_TOP_FRAC),
+        LABEL_TEXT,
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -517,13 +593,24 @@ pub fn draw_power_panel(
 // ---------------------------------------------------------------------------
 
 /// Button centres (panel-local) + hit radius (disc R 21 + 2 slack).
+/// Disc geometry (centre-x list, centre-y, radius) for a panel of
+/// w x h — r1d §17 fraction-derived, so any panel size keeps the
+/// reference layout.
+fn disc_geometry(w: u32, h: u32) -> (f32, f32) {
+    let row_cy = DISC_CY_FRAC * h as f32;
+    let btn_r = 0.5 * DISC_DIAM_FRAC * w as f32;
+    (row_cy, btn_r)
+}
+
 pub fn button_centres() -> [(f32, f32); 5] {
-    BTN_CX.map(|cx| (cx, ROW_CY))
+    let (row_cy, _) = disc_geometry(PANEL_W, PANEL_H);
+    DISC_CX_FRACS.map(|f| (f * PANEL_W as f32, row_cy))
 }
 
 pub fn button_hit(px: f32, py: f32) -> Option<usize> {
+    let (_, btn_r) = disc_geometry(PANEL_W, PANEL_H);
     for (i, &(cx, cy)) in button_centres().iter().enumerate() {
-        if (px - cx).abs() <= BTN_R + 2.0 && (py - cy).abs() <= BTN_R + 2.0 {
+        if (px - cx).abs() <= btn_r + 2.0 && (py - cy).abs() <= btn_r + 2.0 {
             return Some(i);
         }
     }

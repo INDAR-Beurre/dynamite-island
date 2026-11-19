@@ -104,7 +104,7 @@ pub const MAX_LABEL_CHARS: usize = 90;
 
 pub const C_PRIMARY: (u8, u8, u8) = (255, 255, 255);
 pub const C_SECONDARY: (u8, u8, u8) = (192, 196, 201); // #C0C4C9
-pub const C_HIGHLIGHT: (u8, u8, u8) = (5, 22, 60); // #05163C, selected row - muted periwinkle tint at the old lift's lightness (anchor #7CA2F5), iter96
+pub const C_HIGHLIGHT: (u8, u8, u8) = (25, 26, 31); // #191A1F, selected row - r1d: reference selection is neutral dark, not navy
 /// Scroll thumb (iter39 a10): subtle dark grey, same as the Launcher.
 pub const C_SCROLLBAR: (u8, u8, u8) = (64, 66, 70); // #404246
 /// Empty-state / placeholder tile colours (music-panel family).

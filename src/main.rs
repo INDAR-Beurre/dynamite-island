@@ -201,7 +201,7 @@ impl IslandState {
             Self::Collapsed => (cfg().collapsed_width, cfg().bar_height),
             Self::Dictation => (220, 64),
             Self::Lock => (54, 24),
-            Self::Power => (400, cfg().expanded_height),
+            Self::Power => (power_panel::PANEL_W, power_panel::PANEL_H),
             Self::Music => (612, cfg().expanded_height),
             Self::Calendar => (342, 262), // iter89: was 280 — column -18, PANEL_H 262 (was 300 iter88)
             Self::ControlCenter => (438, 447), // iter109: +46 power-level row, CC_H 447
@@ -210,7 +210,7 @@ impl IslandState {
             Self::Themes => (600, 366),
             Self::Clipboard => clipboard_panel::panel_size(),
             Self::TrayMenu => crate::tray::tray_menu_size(),
-            Self::Lockscreen => LOCKSCREEN_SIZE,
+            Self::Lockscreen => lockscreen_size(),
         }
     }
     fn radius(self) -> f32 {
@@ -439,7 +439,9 @@ const WHEEL_COOLDOWN: Duration = Duration::from_millis(150);
 // holds only at morph start and misses by up to |from-to|/2 later —
 // the iter23 4/4 A-1 collapse).
 //
-// Sizing: widest panel is Wallpaper 1008, tallest is ControlCenter 447.
+// the pill row) is STAGE_PAD_TOP = 3 + top pad (gap_top - 3).
+// Sizing: widest panel is Wallpaper 853, tallest is ControlCenter
+// 447.
 // The discs are Ø 28 (NAV_DISC_R 14) with a clear NAV_DISC_GAP of 8
 // between the panel edge and the disc's inner edge, so the disc centre
 // sits GAP + R = 22 beyond each panel edge and its outer edge 36
@@ -447,18 +449,21 @@ const WHEEL_COOLDOWN: Duration = Duration::from_millis(150);
 // the disc. Vertically the discs sit at the PANEL'S MID-HEIGHT
 // (iter30 a3b: oy + h/2 per view), not at the pill line.
 // The pill states sit at STAGE_PAD_TOP = 3 (screen gap_top 3); the
-// expanded menus hang BELOW the pill (iter30 a3c): panel top
-// panel_top_menu() = 3 + 28 + 2 = 33 (screen 33), so the pill stays
-// visible above the panel with a 4 px gap.
-// The stage keeps slack for a ~10% expand overshoot (iter33: the
-// overshoot itself is REMOVED — EaseOutCubic now, see begin_morph —
-// but the slack costs nothing and still covers the panel-shadow
-// tails), so
+// cycled menus in the SAME row grown out of the pill (r1d §0):
+// reference frames pin y = 19-20 device (pill top) while the capsule
+// height grows 42 -> 188 — the pill is not a separate box above the
+// panel but the panel's own collapsed state. Every MENU_CYCLE state
+// therefore draws at oy = STAGE_PAD_TOP. TrayMenu alone keeps the
+// iter30 a3c hang-below origin (panel_top_menu() = 3 + 28 + 2 = 33):
+// the clock and clusters stay readable above it, and it has no
+// reference panel to grow out of (it is the owner's addition).
+// The stage keeps slack for the ~1% settle overshoot plus the
+// panel-shadow tails, so
 // STAGE_W = 1100 + 2*38 = 1176 and STAGE_H = 636. The layer top
 // margin is gap_top - STAGE_PAD_TOP (= 0 at the live gap_top 3),
-// so the pill top stays exactly at gap_top and the panel top at
-// gap_top + 28 = 31 on screen. Panel centre x stays 752: the stage is
-// centred by the compositor and the panel is centred in the stage.
+// so the pill top stays exactly at gap_top on screen. Panel centre
+// x stays 752: the stage is centred by the compositor and the panel
+// is centred in the stage.
 
 /// Nav-disc radius (Ø 28, interaction-spec §6).
 const NAV_DISC_R: f32 = 14.0;
@@ -474,9 +479,11 @@ fn pill_h() -> f32 {
     cfg().bar_height as f32
 }
 
-/// Expanded-panel top inside the stage (iter30 a3c): the panel hangs
-/// BELOW the pill instead of swallowing it — pill top STAGE_PAD_TOP,
-/// pill_h tall, then a 2 px gap. Pill states keep STAGE_PAD_TOP.
+/// Expanded-panel top inside the stage for TrayMenu (iter30 a3c):
+/// the tray menu alone hangs BELOW the pill — pill top
+/// STAGE_PAD_TOP, pill_h tall, then a 2 px gap. Pill states keep
+/// STAGE_PAD_TOP, and the cycled menus also draw at STAGE_PAD_TOP
+/// (r1d §0: the pill grows INTO the panel, same top edge).
 fn panel_top_menu() -> f32 {
     STAGE_PAD_TOP + pill_h() + 2.0
 }
@@ -485,7 +492,10 @@ const STAGE_W: u32 = (1100.0 + 2.0 * STAGE_PAD_X) as u32;
 /// 636 = menu top 31 + ControlCenter overshoot height 577.5 (+5 slack)
 /// (421 * 1.10) + panel-shadow tail 15 + 7.5 slack; the settled CC
 /// shadow bottom is 29 + 447 + 15 = 461, the morph-overshoot shadow
-/// bottom 31 + 577.5 + 15 = 623.5.
+/// bottom 31 + 577.5 + 15 = 623.5. (Sizing note stale since r1d; the
+/// live numbers: menus now start at 3, so the settled CC shadow
+/// bottom is 3 + 447 + 15 = 465 and the next gate re-checks the
+/// morph floor.)
 const STAGE_H: u32 = 636;
 
 /// Render scale (iter108, circles-roundness): the stage is drawn at
@@ -772,12 +782,24 @@ const PANEL_SHADOW_ALPHA: f32 = 0.40;
 /// (not scaled by fa) is untouched. The floor itself had to move:
 /// at fa -> 1 the fill tends to FLOOR*fa, and 4.0 is already grey
 /// against the reference's 2-3.
-const FROST_ALPHA_PILL: f32 = 0.92;
-const FROST_ALPHA_MENU: f32 = 0.92;
-const FROST_FLOOR: f32 = 2.5;
+/// Fill alphas: 1.0 everywhere (r1d finding 3): the reference panel
+/// fill is PURE BLACK (p50 0 vs our 5), so the frost tint is gone -
+/// fill_alpha >= 1 means the fill paths short-circuit to opaque
+/// black and the wallpaper blur is not sampled at all. The frost
+/// machinery (wallpaper_blur crop, neutralisation, high-pass) stays
+/// for callers that need it (e.g. a future alpha < 1); the constants
+/// below are the single source of the fill value.
+/// History: iter128 re-grade made FLOOR 2.5 / alpha 0.92 (fill ~2-5,
+/// reference 0); r1d measures the reference at exactly black, so the
+/// tint factor is retired while the machinery and call-site shapes
+/// stay untouched.
+const FROST_ALPHA_PILL: f32 = 1.0;
+const FROST_ALPHA_MENU: f32 = 1.0;
+const FROST_FLOOR: f32 = 0.0;
 
-/// Frost fill factor for a state: the pill (Collapsed/Lock) uses 0.92,
-/// the expanded menus 0.92 (iter128: was 0.80); the fullscreen lockscreen stays 1.0.
+/// Frost fill factor for a state: 1.0 for pill and menus (r1d
+/// finding 3: the reference fill is pure black, so the tint is
+/// retired); the fullscreen lockscreen stays 1.0 (its own veil path).
 /// This is the tint/floor factor inside both fill paths, NOT surface
 /// translucency - the fill interior is opaque in both paths (iter85).
 fn frost_alpha(state: IslandState) -> f32 {
@@ -810,6 +832,10 @@ fn frost_alpha(state: IslandState) -> f32 {
 fn frost_fill_px(a: f32, _d: f32, _x: f32, _y: f32, _w: f32, _h: f32, fill_alpha: f32) -> [u8; 4] {
     if a <= 0.0 {
         return [0, 0, 0, 0];
+    }
+    // r1d finding 3: the fill is pure black at full tint strength.
+    if fill_alpha >= 1.0 {
+        return [0, 0, 0, (a * 255.0) as u8];
     }
     let v = (FROST_FLOOR * fill_alpha * a) as u8;
     [v, v, v, (a * 255.0) as u8]
@@ -845,6 +871,11 @@ fn frost_fill_px(a: f32, _d: f32, _x: f32, _y: f32, _w: f32, _h: f32, fill_alpha
 fn frost_fill_px_blur(a: f32, _d: f32, _x: f32, _y: f32, _w: f32, _h: f32, fill_alpha: f32, bg: [u8; 3], lm: [u8; 3]) -> [u8; 4] {
     if a <= 0.0 {
         return [0, 0, 0, 0];
+    }
+    // r1d finding 3: pure black (p50 0) at full tint - skip the
+    // sample/high-pass math entirely; nothing may leak through.
+    if fill_alpha >= 1.0 {
+        return [0, 0, 0, (a * 255.0) as u8];
     }
     let mut out = [0u8; 4];
     for c in 0..3 {
@@ -886,23 +917,29 @@ fn pill_strip_px() -> i32 {
 /// x0 = (1504 - STAGE_W)/2 = 164 and y0 = the layer top margin (2).
 fn stage_screen_origin() -> (f32, f32) {
     (
-        (LOCKSCREEN_SIZE.0 as f32 - STAGE_W as f32) / 2.0,
+        (lockscreen_size().0 as f32 - STAGE_W as f32) / 2.0,
         stage_margin_top() as f32,
     )
 }
 
 /// Panel top-left inside the stage (the panel is centred horizontally).
-/// Pill states sit STAGE_PAD_TOP below the stage top; expanded menus
-/// hang below the pill at panel_top_menu() (iter30 a3c), so the pill
-/// stays visible above the panel with a 4 px gap.
+/// r1d §0: the cycled menus GROW OUT of the pill — pill states and
+/// menu states share the STAGE_PAD_TOP top edge (reference frames pin
+/// y = 19-20 while the capsule height grows 42 -> 188). TrayMenu
+/// alone keeps the iter30 a3c hang-below origin at panel_top_menu().
 fn panel_origin(state: IslandState) -> (f32, f32) {
     let (pw, _) = state.size();
+    // r1d §0: the cycled menus grow out of the pill — same top edge
+    // (reference 60 fps frames pin y = 19-20 while h grows 42 -> 188).
+    // TrayMenu alone keeps the iter30 a3c hang-below origin so the
+    // clock and clusters stay readable above it.
     let oy = match state {
         IslandState::Collapsed
         | IslandState::Dictation
         | IslandState::Lock
         | IslandState::Lockscreen => STAGE_PAD_TOP,
-        _ => panel_top_menu(),
+        IslandState::TrayMenu => panel_top_menu(),
+        _ => STAGE_PAD_TOP,
     };
     ((STAGE_W as f32 - pw as f32) / 2.0, oy)
 }
@@ -1856,14 +1893,27 @@ fn classify_press(
             // 1b) iter90 a8: workspace circles (fixed stage coords,
             // outside every panel rect — checked before the panel
             // membership guard in (3) would swallow them as NoOp).
-            if let Some(n) = workspace_hit_stage(pos) {
-                return PressAction::WorkspaceTag(n);
-            }
-            // 1c) iter108-C: tray icons (fixed stage coords, outside
-            // every panel rect — checked before the pill-collapse
-            // check in (2) and the guard in (3) would swallow them).
-            if let Some(i) = tray_hit_stage(pos, tray_count) {
-                return PressAction::TrayActivate(i);
+            // r1d §0: the clusters are drawn only in the pill-row
+            // states — Collapsed, Dictation, Lock (draw()'s row arm)
+            // and TrayMenu (its hang-below arm keeps the pill row
+            // visible). Cycled menus swallow the row, so no cluster
+            // hits there.
+            if matches!(
+                state,
+                IslandState::Collapsed
+                    | IslandState::Dictation
+                    | IslandState::Lock
+                    | IslandState::TrayMenu
+            ) {
+                if let Some(n) = workspace_hit_stage(pos) {
+                    return PressAction::WorkspaceTag(n);
+                }
+                // 1c) iter108-C: tray icons (fixed stage coords, outside
+                // every panel rect — checked before the pill-collapse
+                // check in (2) and the guard in (3) would swallow them).
+                if let Some(i) = tray_hit_stage(pos, tray_count) {
+                    return PressAction::TrayActivate(i);
+                }
             }
             // 2) iter27b: the pill's home rect (Collapsed 76x24, top-centre)
             // is the collapse target in menu states too. A click at the
@@ -2053,11 +2103,53 @@ static DICTATION_BARS: Mutex<[f32; 27]> = Mutex::new([0.0; 27]);
 /// Fullscreen lockscreen-preview size: the Surface's logical output
 /// (mmsg `get all-monitors`, 12 Nov 2026: eDP-1 1504x1002 @ scale 1.5).
 /// NOTE: 1002, not the 1003 quoted in older docs (1504/1.5 = 1002.67;
-/// mango reports 1002). draw() renders at configured_size anyway, so
-/// this only sets the requested size; a future output-size read
-/// (OutputState::info().logical_size) should replace the constant —
-/// see iterations/builder-lockscreen-iter10.md.
+/// mango reports 1002). This is only the DEFAULT: the real logical size
+/// is read from the compositor (`OutputState::info().logical_size`) into
+/// `OUTPUT_LOGICAL` and `lockscreen_size()` prefers it, so the lock
+/// animation, the requested layer size and the wallpaper-frost origin
+/// all follow the actual output instead of a compile-time constant.
 const LOCKSCREEN_SIZE: (u32, u32) = (1504, 1002);
+
+/// Real logical output size, written once the compositor reports it
+/// (encoded as `(w as u64) << 32 | h`). Defaults to LOCKSCREEN_SIZE so
+/// headless tests and the pre-configure frames behave exactly as before.
+/// r1c finding 8: this used to be hardcoded in three places, which meant
+/// the lock animation never drew on an output narrower than 1400 px.
+static OUTPUT_LOGICAL: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(
+        ((LOCKSCREEN_SIZE.0 as u64) << 32) | LOCKSCREEN_SIZE.1 as u64,
+    );
+
+fn set_output_logical(w: u32, h: u32) {
+    if w >= 320 && h >= 240 {
+        OUTPUT_LOGICAL.store(
+            ((w as u64) << 32) | h as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+}
+
+fn output_logical() -> (u32, u32) {
+    let v = OUTPUT_LOGICAL.load(std::sync::atomic::Ordering::Relaxed);
+    (((v >> 32) as u32), (v & 0xffff_ffff) as u32)
+}
+
+/// The lockscreen-preview target size: the real output, or the constant
+/// until the compositor has told us. One function so every consumer
+/// (state geometry, layer request, pool comparison, wallpaper path)
+/// agrees by construction.
+fn lockscreen_size() -> (u32, u32) {
+    output_logical()
+}
+
+/// True once the shell surface is (at least) output-sized, i.e. the
+/// configured size can hold a lockscreen frame. Replaces the old
+/// `configured_size.0 >= 1400` literal, which silently skipped the
+/// whole lock animation on a narrower output.
+fn lock_surface_fullscreen(size: (u32, u32)) -> bool {
+    let (ow, oh) = output_logical();
+    size.0 * 8 >= ow * 7 && size.1 * 8 >= oh * 7
+}
 // Collapsed clock size is derived from the pill height (see
 // lock_timer::text_px); there is no fixed px constant any more.
 
@@ -2125,22 +2217,31 @@ fn layout_text(font: &fontdue::Font, text: &str, px: f32) -> TextRow {
         width += m.advance_width;
         glyphs.push((m, cov));
     }
-    let lm = font.horizontal_line_metrics(px).unwrap();
+    // Sibling layouts fall back to the px size rather than panicking on
+    // a font whose `hhea`/`OS2` line metrics are missing (r1c finding 9).
+    let (ascent, height) = font
+        .horizontal_line_metrics(px)
+        .map(|lm| (lm.ascent, lm.ascent - lm.descent))
+        .unwrap_or((px, px));
     TextRow {
         glyphs,
         width,
-        ascent: lm.ascent,
-        height: lm.ascent - lm.descent,
+        ascent,
+        height,
     }
 }
 
-/// Inter-Medium static instance (wght 550, fvar removed by the bake),
-/// parsed once for the process: the pill clock's face. fontdue 0.9
-/// cannot select variable axes, so the baked static is authoritative:
-/// on the reference strings it gives stroke/cap 0.200 and w/cap 3.600
-/// (the reference's own numbers), while Inter's default 400 measures
-/// 0.143. Search order: next to the executable, the repo path, then
-/// the variable font (thin) and finally Quicksand — never a panic.
+/// Inter-Clock static instance (wght 675 / opsz 24, fvar and STAT
+/// removed by the bake), parsed once for the process: the pill
+/// clock's face. fontdue 0.9 cannot select variable axes, so the
+/// baked static is authoritative: the reference's subpixel stem/cap
+/// is 0.1846 (four frames, two wallpapers) and w/cap 3.600; the
+/// wght-550 bake measured 0.1566 (−15%; its stems hide behind modal
+/// integer widths), while 675/24 + tracking lands stem/cap +2.4% and
+/// w/cap −0.3% (scripts/fontcheck.py gate). Search order: Inter-Clock
+/// next to the executable and the repo path, the older Inter-Medium
+/// bake, the variable font (thin — no axes), then Quicksand — never
+/// a panic.
 static CLOCK_FONT: std::sync::OnceLock<Option<fontdue::Font>> = std::sync::OnceLock::new();
 
 fn clock_font() -> Option<&'static fontdue::Font> {
@@ -2150,6 +2251,9 @@ fn clock_font() -> Option<&'static fontdue::Font> {
             if let Ok(exe) = std::env::current_exe() {
                 if let Some(dir) = exe.parent() {
                     // target/release -> repo root, and a packaged layout.
+                    candidates.push(dir.join("../../assets/fonts/Inter-Clock.ttf"));
+                    candidates.push(dir.join("../../../assets/fonts/Inter-Clock.ttf"));
+                    candidates.push(dir.join("assets/fonts/Inter-Clock.ttf"));
                     candidates.push(dir.join("../../assets/fonts/Inter-Medium.ttf"));
                     candidates.push(dir.join("../../../assets/fonts/Inter-Medium.ttf"));
                     candidates.push(dir.join("assets/fonts/Inter-Medium.ttf"));
@@ -2272,20 +2376,60 @@ fn load_icon_font() -> Option<fontdue::Font> {
     fontdue::Font::from_bytes(bytes, fontdue::FontSettings::default()).ok()
 }
 
-/// Lockscreen wallpaper, lazily decoded (iter14): RGBA8 bytes at
-/// ~/.cache/dynamite/wallpaper-1504x1002.rgba, pre-rendered by the
-/// integrator from the Mango wallpaper (this crate has no PNG decoder).
-/// Missing file or wrong size => None (draw_lockscreen falls back to
-/// opaque black). ~6 MB while the preview is open, dropped on exit.
+/// Lockscreen wallpaper, lazily decoded: RGBA8 bytes at exactly
+/// lockscreen_size() = w*h*4, which is what draw_lockscreen wants.
+///
+/// r1d: two paths, both logged. (1) `~/.cache/dynamite/wallpaper-WxH.rgba`,
+/// a pre-rendered cache — cheapest, but it only works while someone keeps
+/// regenerating it for the EXACT live output size. When the output went
+/// 1504x1002 -> 1504x1003 the hand-made asset stopped matching and every
+/// lock entry silently fell back to opaque black. (2) decode the desktop
+/// wallpaper and area-average it to the lock size, which cannot rot. The
+/// old comment here claimed "this crate has no PNG decoder" — false: `png`
+/// is vendored and `zune-jpeg` is a dependency, both already used by
+/// wallpaper_blur. The file is sniffed by magic bytes because the live
+/// `wallpaper.png` is a JPEG behind a .png name.
+/// Nothing found/decodable => None (draw_lockscreen falls back to opaque
+/// black). ~6 MB while the preview is open, dropped on exit.
 fn load_lock_wallpaper() -> Option<Vec<u8>> {
     let home = std::env::var_os("HOME").map(PathBuf::from)?;
-    let bytes =
-        std::fs::read(home.join(".cache/dynamite/wallpaper-1504x1002.rgba")).ok()?;
-    if bytes.len() == (1504 * 1002 * 4) as usize {
-        Some(bytes)
-    } else {
-        None
+    let (w, h) = lockscreen_size();
+    let want = w as usize * h as usize * 4;
+    match std::fs::read(
+        home.join(".cache/dynamite")
+            .join(format!("wallpaper-{w}x{h}.rgba")),
+    ) {
+        Ok(bytes) if bytes.len() == want => {
+            eprintln!("dynamite-rust: lock wallpaper: {want} B cache for {w}x{h}");
+            return Some(bytes);
+        }
+        Ok(bytes) => eprintln!(
+            "dynamite-rust: lock wallpaper cache is {} B, want {want} for {w}x{h}",
+            bytes.len()
+        ),
+        Err(_) => {}
     }
+    let src = home.join(".config/mango/wallpaper/wallpaper.png");
+    let Some(rgb) = wallpaper_blur::decode_wallpaper_rgb(&src, w as usize, h as usize) else {
+        eprintln!(
+            "dynamite-rust: lock wallpaper: {} not decodable at {w}x{h} — using black",
+            src.display()
+        );
+        return None;
+    };
+    // RGB -> straight-alpha RGBA; the lock screen treats it as opaque.
+    let mut rgba = vec![0u8; want];
+    for (i, px) in rgb.chunks_exact(3).enumerate() {
+        rgba[i * 4] = px[0];
+        rgba[i * 4 + 1] = px[1];
+        rgba[i * 4 + 2] = px[2];
+        rgba[i * 4 + 3] = 255;
+    }
+    eprintln!(
+        "dynamite-rust: lock wallpaper: decoded {} at {w}x{h}",
+        src.display()
+    );
+    Some(rgba)
 }
 
 /// The shared icon font for a state, loading it lazily on first use
@@ -2333,6 +2477,11 @@ fn draw_panel_into(
     wall_selected: usize,
     theme_selected: usize,
 ) {
+    // r1d §22: `canvas` may be a DEVICE-sized canvas (`w` = logical * S)
+    // for the settled 2x panel redraw; everything below keeps working in
+    // logical units and only the capsule SDF is evaluated per device px.
+    let (lw, _lh) = state.size();
+    let s = w as f32 / lw as f32;
     let (wf, hf) = (w as f32, h as f32);
     let radius = state.radius();
     // Background: flat-frost capsule (iter31, a3 REVISED) — plain
@@ -2375,7 +2524,8 @@ fn draw_panel_into(
         // collapses to black on a dark backdrop, fill stays ~18).
         let uniform_bg: [u8; 3] = match &bg {
             Some(bw) => {
-                bw.sample_frost_uniform(bg_origin.0 + wf / 2.0, bg_origin.1 + hf / 2.0)
+                let (lwf, lhf) = (wf / s, hf / s);
+                bw.sample_frost_uniform(bg_origin.0 + lwf / 2.0, bg_origin.1 + lhf / 2.0)
             }
             None => [0, 0, 0],
         };
@@ -2385,7 +2535,7 @@ fn draw_panel_into(
                 let py = y as f32 + 0.5;
                 // SDF once; alpha is (0.5 - d) clamped — the same math
                 // as rounded_rect_alpha.
-                let d = rounded_rect_sdf(px, py, wf, hf, radius);
+                let d = rounded_rect_sdf(px, py, wf, hf, radius * s);
                 let a = (0.5 - d).clamp(0.0, 1.0);
                 let i = ((y * w + x) * 4) as usize;
                 let p = match (&live, &bg) {
@@ -2406,8 +2556,8 @@ fn draw_panel_into(
                         // LiveBackdrop is neutralise_sample plus
                         // its BoxBlur(25) local mean, so the panel
                         // reads neutral dark, B-R approx +3).
-                        lb.sample(bg_origin.0 + px, bg_origin.1 + py),
-                        lb.local_mean(bg_origin.0 + px, bg_origin.1 + py),
+                        lb.sample(bg_origin.0 + px / s, bg_origin.1 + py / s),
+                        lb.local_mean(bg_origin.0 + px / s, bg_origin.1 + py / s),
                     ),
                     (None, Some(_)) => frost_fill_px_blur(
                         a,
@@ -2675,6 +2825,7 @@ fn draw_top_row_2x(
         clock_font().unwrap_or(font),
         &hhmm(),
         lock_timer::text_px(ph as f32) * s,
+        1.0,
     );
     for (i, (cx, cy)) in workspace_disc_centres().iter().enumerate() {
         let tags = ws_visible_tags(active_tag_cached());
@@ -2695,8 +2846,11 @@ fn draw_top_row_2x(
 }
 
 /// `lock_timer::draw_text_centred` into a device-pixel window of the
-/// canvas: same line-box centring, same max() white composite (over
-/// the already-drawn capsule).
+/// canvas: same line-box centring, same tracking + CLOCK_INK colour
+/// (r1d §11/§13 — this is the settled pill clock's own painter), and
+/// `opacity` so the migrating morph clock (r1d §14) can fade on the
+/// same eased progress. Per-channel max() composite over the
+/// already-drawn capsule, same AA as lock_timer.
 fn draw_text_centred_in(
     canvas: &mut [u8],
     bw: u32,
@@ -2708,16 +2862,23 @@ fn draw_text_centred_in(
     font: &fontdue::Font,
     text: &str,
     px: f32,
+    opacity: f32,
 ) {
-    if text.is_empty() || w == 0 || h == 0 {
+    if text.is_empty() || w == 0 || h == 0 || opacity <= 0.0 {
         return;
     }
     let (wf, hf) = (w as f32, h as f32);
+    // §13: tracking between glyphs only — same rule as
+    // lock_timer::draw_text_centred.
+    let tracking = lock_timer::TRACKING_PER_PX * px;
     let mut glyphs: Vec<(fontdue::Metrics, std::sync::Arc<[u8]>)> = Vec::new();
     let mut width = 0.0f32;
-    for ch in text.chars() {
+    for (i, ch) in text.chars().enumerate() {
         let (m, cov) = lock_timer::rasterize_cached(font, ch, px);
         width += m.advance_width;
+        if i + 1 < text.chars().count() {
+            width += tracking;
+        }
         glyphs.push((m, cov));
     }
     let Some(lm) = font.horizontal_line_metrics(px) else { return };
@@ -2737,15 +2898,19 @@ fn draw_text_centred_in(
                 if c <= 0.0 {
                     continue;
                 }
+                let c = c * opacity;
                 let i = (((px_y as u32) * bw + px_x as u32) * 4) as usize;
-                let v = (c * 255.0) as u8;
-                canvas[i] = canvas[i].max(v);
-                canvas[i + 1] = canvas[i + 1].max(v);
-                canvas[i + 2] = canvas[i + 2].max(v);
+                // §11: CLOCK_INK (188, 214, 255) per channel (BGRA).
+                let vr = (c * lock_timer::CLOCK_INK[0] as f32) as u8;
+                let vg = (c * lock_timer::CLOCK_INK[1] as f32) as u8;
+                let vb = (c * lock_timer::CLOCK_INK[2] as f32) as u8;
+                canvas[i] = canvas[i].max(vb);
+                canvas[i + 1] = canvas[i + 1].max(vg);
+                canvas[i + 2] = canvas[i + 2].max(vr);
                 canvas[i + 3] = 255;
             }
         }
-        pen += m.advance_width;
+        pen += m.advance_width + tracking;
     }
 }
 
@@ -2831,6 +2996,76 @@ fn draw_workspace_disc_flat_2x(
         }
         pen += gm.advance_width;
     }
+}
+
+thread_local! {
+    /// Device-sized panel scratch for the settled 2x panel redraw (§22).
+    /// Grow-only, like PANEL_SCRATCH.
+    static PANEL2X_SCRATCH: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// r1d §22: settled expanded panels repaint their CONTENT straight into
+/// the 2x shm buffer instead of being rasterised at 1 logical px and
+/// bilinearly doubled, which cost ~6x the reference's glyph-edge
+/// sharpness (Power "Lock" label lapvar 1609 vs 10222).
+///
+/// The device region is copied out of the already-upscaled buffer (so the
+/// capsule fill, frost and drop shadow underneath are kept as-is), the
+/// module's content is drawn over it at 2x, and the result is copied
+/// back. No alpha compositing is involved: the panel is opaque in the
+/// whole content area, and every module's blend_px lerps onto the
+/// existing bytes.
+///
+/// Returns false when the state's module has no 2x primitive yet, so the
+/// caller keeps the upscaled frame (a half-converted tree stays correct).
+fn redraw_panel_content_2x(
+    canvas: &mut [u8],
+    bw: u32,
+    bh: u32,
+    state: IslandState,
+    font: &fontdue::Font,
+    icon_font: Option<&fontdue::Font>,
+) -> bool {
+    let (pw, ph) = state.size();
+    let (ox, oy) = panel_origin(state);
+    let s = RENDER_SCALE as u32;
+    let (dw, dh) = (pw * s, ph * s);
+    let (dx, dy) = (ox as i32 * s as i32, oy as i32 * s as i32);
+    if dx < 0 || dy < 0 || dx as u32 + dw > bw || dy as u32 + dh > bh {
+        return false;
+    }
+    let need = (dw * dh * 4) as usize;
+    PANEL2X_SCRATCH.with(|cell| {
+        let mut buf = cell.borrow_mut();
+        if buf.len() < need {
+            buf.resize(need, 0);
+        }
+        let scratch = &mut buf[..need];
+        // Copy the device region out (row by row: the canvas is wider).
+        for y in 0..dh as usize {
+            let src = (((dy as usize + y) * bw as usize) + dx as usize) * 4;
+            let dst = y * dw as usize * 4;
+            scratch[dst..dst + dw as usize * 4]
+                .copy_from_slice(&canvas[src..src + dw as usize * 4]);
+        }
+        let drew = match state {
+            IslandState::Power => {
+                power_panel::draw_power_panel(scratch, dw, dh, font, icon_font, "");
+                true
+            }
+            _ => false,
+        };
+        if !drew {
+            return false;
+        }
+        for y in 0..dh as usize {
+            let dst = (((dy as usize + y) * bw as usize) + dx as usize) * 4;
+            let src = y * dw as usize * 4;
+            canvas[dst..dst + dw as usize * 4]
+                .copy_from_slice(&scratch[src..src + dw as usize * 4]);
+        }
+        true
+    })
 }
 
 fn draw_pill_over_stage(
@@ -2935,21 +3170,30 @@ fn draw(
         // (1 - dst alpha) gate keeps it outside the panel silhouette.
         draw_panel_shadow_stage(canvas, w, h, state, 1.0);
         draw_nav_arrows_stage(canvas, w, h, state);
-        // iter30 a3c: the pill stays visible above the menu panel.
-        draw_pill_over_stage(canvas, w, h, font, icon_font, lock_data, lock_wallpaper);
+        // r1d §0: the panel grows out of the pill — same top edge,
+        // so no pill-over redraw here (the panel swallows the pill
+        // band). The reference has no clusters over the expanded
+        // capsule either (the dark blobs in its frames were wallpaper
+        // content, §10), so the clusters are a pill-row state only.
     } else if state == IslandState::TrayMenu {
         // iter108: the tray menu is a panel, not a cycled menu —
-        // same shadow + pill-over, but no nav discs (cycling
-        // must never land on an item-owned menu).
+        // shadow + pill-over, but no nav discs (cycling must never
+        // land on an item-owned menu); it keeps the iter30 a3c
+        // hang-below origin, so the pill row stays visible.
         draw_panel_shadow_stage(canvas, w, h, state, 1.0);
         draw_pill_over_stage(canvas, w, h, font, icon_font, lock_data, lock_wallpaper);
+        // iter90 a8: workspace circles ride with the pill cluster in
+        // every state that still shows the pill row — collapsed, lock,
+        // dictation, and the tray menu.
+        draw_workspace_circles_stage(canvas, w, h, font, active_tag_cached(), 1.0);
+        // iter108: tray cluster rides with the pill cluster too,
+        // on the RIGHT of the pill.
+        crate::tray::draw_tray_cluster_stage(canvas, w, h, font, 1.0);
+    } else if state != IslandState::Lockscreen {
+        // Pill-row states (collapsed / dictation / lock): clusters on.
+        draw_workspace_circles_stage(canvas, w, h, font, active_tag_cached(), 1.0);
+        crate::tray::draw_tray_cluster_stage(canvas, w, h, font, 1.0);
     }
-    // iter90 a8: workspace circles ride with the pill cluster in
-    // every non-lockscreen state — collapsed, lock, and all menus.
-    draw_workspace_circles_stage(canvas, w, h, font, active_tag_cached());
-    // iter108: tray cluster rides with the pill cluster in every
-    // non-lockscreen state too, on the RIGHT of the pill.
-    crate::tray::draw_tray_cluster_stage(canvas, w, h, font);
 }
 
 /// Distance from point `p` to segment `a`-`b` (for the chevron SDF).
@@ -3156,6 +3400,7 @@ fn draw_workspace_disc(
     occupied: bool,
     font: &fontdue::Font,
     label: &str,
+    op: f32,
 ) {
     let (fr, fg, fb) = if active {
         WS_ACTIVE_FILL
@@ -3230,7 +3475,7 @@ fn draw_workspace_disc(
             }
             if a_sum > 0.0 {
                 let n = (WS_DISC_SS * WS_DISC_SS) as f32;
-                let cov = a_sum / n;
+                let cov = (a_sum / n) * op;
                 let i = (((y as u32 * w) + x as u32) * 4) as usize;
                 let dst_a = canvas[i + 3] as f32 / 255.0;
                 let inv = 1.0 - cov;
@@ -3255,7 +3500,7 @@ fn draw_workspace_disc(
                 if px_x < 0 || px_y < 0 || px_x >= w as i32 || px_y >= h as i32 {
                     continue;
                 }
-                let cc = cov[(gy as usize) * gm.width + gx as usize] as f32 / 255.0;
+                let cc = cov[(gy as usize) * gm.width + gx as usize] as f32 / 255.0 * op;
                 if cc <= 0.0 {
                     continue;
                 }
@@ -3273,14 +3518,24 @@ fn draw_workspace_disc(
 
 /// Draw all four workspace circles into the stage canvas (iter90 a8).
 /// `active_tag` is the cached mango tag (1..=9); only 1..=4 ever
+/// Draw all four workspace circles into the stage canvas (iter90 a8).
+/// `active_tag` is the cached mango tag (1..=9); only 1..=4 ever
 /// matches a circle — a tag 5..9 leaves every circle inactive.
+/// `op` scales the whole cluster's alpha: 1.0 for settled draws, the
+/// cluster fade on morph frames (r1d §0 — the clusters follow the
+/// pill row, so they ride the outgoing/incoming opacity of the state
+/// that shows the row).
 fn draw_workspace_circles_stage(
     canvas: &mut [u8],
     w: u32,
     h: u32,
     font: &fontdue::Font,
     active_tag: u8,
+    op: f32,
 ) {
+    if op <= 0.0 {
+        return;
+    }
     // r1c: one snapshot read for the whole row (the active tag can move
     // between two reads, and a half-updated row would draw two actives).
     let tags = ws_visible_tags(active_tag);
@@ -3297,6 +3552,7 @@ fn draw_workspace_circles_stage(
             state.is_occupied(tag),
             font,
             WS_LABELS[(tag - 1) as usize],
+            op,
         );
     }
 }
@@ -3499,8 +3755,16 @@ fn draw_state_into(
     // (held default on the morph path — the lockscreen never morphs).
     lock_data: &lockscreen::LockscreenData,
     lock_wallpaper: Option<&[u8]>,
+    // r1d §14: the collapsed clock is drawn by the MORPH interpolation
+    // (one migrating clock), not by the endpoint scratch, on morphs
+    // with a Collapsed endpoint — so the scratch leaves it out and the
+    // two clocks never ghost over each other.
+    no_clock: bool,
 ) {
     if state == IslandState::Collapsed {
+        if no_clock {
+            return;
+        }
         // Clock text only, at the scaled size, centred in the PILL
         // rect inside the stage (iter24: the canvas is stage-sized
         // now, so centring in (w, h) would put the clock in the
@@ -3582,6 +3846,11 @@ fn draw_morph_frame(
     let morph_fill_alpha = frost_alpha(from_state)
         + (frost_alpha(to_state) - frost_alpha(from_state))
             * frame.incoming_opacity.clamp(0.0, 1.0);
+    // r1d §14: exactly one Collapsed endpoint -> the clock migrates
+    // (position + size interpolate on the same eased progress), so
+    // neither scratch draws it.
+    let migrating_clock = (from_state == IslandState::Collapsed)
+        != (to_state == IslandState::Collapsed);
     draw_state_into(
         scratch_from,
         w,
@@ -3592,6 +3861,7 @@ fn draw_morph_frame(
         icon_from,
         lock_data,
         lock_wallpaper,
+        migrating_clock,
     );
     draw_state_into(
         scratch_to,
@@ -3603,6 +3873,7 @@ fn draw_morph_frame(
         icon_to,
         lock_data,
         lock_wallpaper,
+        migrating_clock,
     );
     // Fake frost (iter29): the capsule base is the blurred wallpaper
     // under the interpolated flat fill (opaque interior — no sharp
@@ -3782,17 +4053,111 @@ fn draw_morph_frame(
         draw_nav_disc_faded(canvas, w, h, ox - off, dcy, -1.0, sh_op);
         draw_nav_disc_faded(canvas, w, h, ox + fw + off, dcy, 1.0, sh_op);
     }
-    // iter30 a3c: the pill stays visible above the panel through the
-    // whole morph — the capsule grows downward from beneath it.
-    if MENU_CYCLE.contains(&from_state) || MENU_CYCLE.contains(&to_state) {
+    // r1d §0: only TrayMenu keeps a visible pill (hang-below origin),
+    // so the pill-over redraw is TrayMenu-morph-only now — the cycled
+    // menus swallow the pill band, and its clock is the migrating
+    // clock drawn below.
+    if from_state == IslandState::TrayMenu || to_state == IslandState::TrayMenu {
         draw_pill_over_stage(canvas, w, h, font, icon_from, lock_data, lock_wallpaper);
     }
-    // iter90 a8: workspace circles are fixed in stage coords (they
-    // never morph) — redrawn here at full strength, like the pill
-    // above; the capsule loop masked the copies inside the endpoint
-    // scratches. Not drawn for a lockscreen endpoint.
-    if from_state != IslandState::Lockscreen && to_state != IslandState::Lockscreen {
-        draw_workspace_circles_stage(canvas, w, h, font, active_tag_cached());
+    // iter90 a8 + r1d §0: the clusters (workspace circles, tray icons)
+    // are fixed in stage coords and the capsule loop zeroed their
+    // strip, so they are re-drawn here — FADED with the same rule the
+    // shadow uses, but keyed to the ROW states that show them
+    // (collapsed / dictation / lock / tray menu): out with the
+    // outgoing row state, in with the incoming one, steady on
+    // row->row morphs. A lockscreen endpoint is not a row state and
+    // never sees cluster content mid-morph either.
+    let row_state = |s: IslandState| {
+        matches!(
+            s,
+            IslandState::Collapsed
+                | IslandState::Dictation
+                | IslandState::Lock
+                | IslandState::TrayMenu
+        )
+    };
+    let cluster_op = match (row_state(from_state), row_state(to_state)) {
+        (true, true) => frame.outgoing_opacity.max(frame.incoming_opacity),
+        (true, false) => frame.outgoing_opacity,
+        (false, true) => frame.incoming_opacity,
+        (false, false) => 0.0,
+    };
+    if cluster_op > 0.0
+        && from_state != IslandState::Lockscreen
+        && to_state != IslandState::Lockscreen
+    {
+        draw_workspace_circles_stage(canvas, w, h, font, active_tag_cached(), cluster_op);
+        crate::tray::draw_tray_cluster_stage(canvas, w, h, font, cluster_op);
+    }
+    // r1d §14: ONE migrating clock on pill <-> cycled-menu morphs.
+    // Measured on the 60 fps reference (capsule-relative, device-px
+    // invariant): collapsed clock centre (0.437, 0.512) of the pill,
+    // cap = 0.333 * pill_h; expanded centre (0.104, 0.330) of the
+    // panel, cap = 0.181 * panel_h (clock 40x14 -> 95x34 device,
+    // 2.4x growth). It rides the SAME eased progress as the capsule:
+    // slides centre -> top-left, sits higher (0.512 -> 0.330 vertical
+    // centre), and grows. Opacity: full until the incoming panel
+    // content starts arriving (the reference keeps its clock, ours
+    // has no clock in the expanded state, so the clock dissolves
+    // over the incoming fade's tail — and mirrors it on collapse).
+    if migrating_clock {
+        let to_collapsed = to_state == IslandState::Collapsed;
+        let (from_menu, to_menu) = (!to_collapsed, to_collapsed);
+        let p = frame.progress;
+        // Centre fractions interpolate between the two endpoint
+        // positions; the pair flips on collapse so the track reverses.
+        let fx0 = if to_menu { 0.437 } else { 0.104 };
+        let fx1 = if to_menu { 0.104 } else { 0.437 };
+        let fy0 = if to_menu { 0.512 } else { 0.330 };
+        let fy1 = if to_menu { 0.330 } else { 0.512 };
+        let cx = ox + fw * (fx0 + (fx1 - fx0) * p);
+        let cy = oy + fh * (fy0 + (fy1 - fy0) * p);
+        // px track: collapsed anchor is today's text_px(pill_h)
+        // (already the measured match), the expanded anchor honours
+        // BOTH §14 numbers — the ratio rule 0.181 * panel_h / 0.77
+        // (cap/px) where it is the smaller, the measured 2.4x growth
+        // where the ratio rule would balloon (tall panels: CC 447
+        // would claim a 105 px clock that never existed even in the
+        // reference's 188 px island).
+        let px_collapsed = lock_timer::text_px(pill_h());
+        let menu_h = if to_menu {
+            to_state.size().1 as f32
+        } else {
+            from_state.size().1 as f32
+        };
+        let px_expanded = (0.181 / 0.77 * menu_h).min(px_collapsed * 2.4);
+        let px = px_collapsed + (px_expanded - px_collapsed) * p;
+        // Fade: expand — out with the incoming content's arrival
+        // (clock never sits under full panel ink); collapse — in with
+        // the incoming fade (the empty-capsule mid-morph stays
+        // clock-free, same ink timing as everything else).
+        let clock_op = if to_menu {
+            1.0 - frame.incoming_opacity
+        } else {
+            frame.incoming_opacity
+        };
+        if clock_op > 0.0 {
+            // A window centred on the migrating centre, generous
+            // enough to hold the grown line box; draw_text_centred_in
+            // clips per pixel, so the stage edges are safe.
+            let win = (px * 6.0).ceil() as u32;
+            let wcx = (cx - win as f32 / 2.0).round() as i32;
+            let wcy = (cy - win as f32 / 2.0).round() as i32;
+            draw_text_centred_in(
+                canvas,
+                w,
+                h,
+                wcx,
+                wcy,
+                win,
+                win,
+                clock_font().unwrap_or(font),
+                &hhmm(),
+                px,
+                clock_op,
+            );
+        }
     }
 }
 
@@ -4781,7 +5146,7 @@ impl Island {
                             // otherwise the configure draws it on
                             // arrival — the run is already cleared, so
                             // draw_if_ready uses locked_hold then).
-                            if state.configured_size.0 >= 1400 {
+                            if lock_surface_fullscreen(state.configured_size) {
                                 state.draw_if_ready();
                             }
                         }
@@ -4795,7 +5160,7 @@ impl Island {
                     // Drive the intermediate frame — but only once the
                     // surface is actually fullscreen (see the method
                     // docs above).
-                    if state.configured_size.0 >= 1400 {
+                    if lock_surface_fullscreen(state.configured_size) {
                         state.draw_if_ready();
                     }
                     TimeoutAction::ToDuration(Duration::from_millis(LOCK_ANIM_FRAME_MS))
@@ -4851,7 +5216,7 @@ impl Island {
         // allocate exactly two stage-sized slots; if a configure has
         // not landed yet the size check in draw_if_ready recreates it
         // again, so this can only ever shrink.
-        if self.configured_size != LOCKSCREEN_SIZE {
+        if self.configured_size != lockscreen_size() {
             self.pool = None;
             self.slots.clear();
             self.slot_bytes = 0;
@@ -5029,13 +5394,11 @@ impl Island {
                     frame.height,
                     frame.radius,
                 );
-                let expanding = to_geom.width * to_geom.height
-                    >= from_current.width * from_current.height;
-                let easing = if expanding {
-                    morph::Easing::EaseOutCubic
-                } else {
-                    morph::Easing::EaseOutCubic
-                };
+                // r1d §2: EaseOutQuad both directions — the
+                // 60-fps reference fit (MSE 0.00259 vs cubic
+                // 0.01201), with the settle overshoot carried by
+                // the morph itself, never by the easing.
+                let easing = morph::Easing::EaseOutQuad;
                 morph::Morph::new_at(
                     from_current,
                     to_geom,
@@ -5063,17 +5426,17 @@ impl Island {
                 // composite below is ALSO fixed to a proper
                 // alpha-over, so an unfilled strip is impossible
                 // even if an overshoot ever returns.
-                let expanding = to_geom.width * to_geom.height
-                    >= from_geom.width * from_geom.height;
-                let easing = if expanding {
-                    morph::Easing::EaseOutCubic
-                } else {
-                    morph::Easing::EaseOutCubic
-                };
+                // r1d §2: EaseOutQuad + MORPH_DURATION_MS (233:
+                // the 14-pose/233 ms reference measurement; the
+                // ~1% settle overshoot lives in the morph's settle
+                // tail, sized for in draw_if_ready's damage rect).
+                // cfg().anim_ms stays as a config key but no longer
+                // drives the morph.
+                let easing = morph::Easing::EaseOutQuad;
                 morph::Morph::new(
                     from_geom,
                     to_geom,
-                    Duration::from_millis(cfg().anim_ms),
+                    Duration::from_millis(morph::MORPH_DURATION_MS as u64),
                     easing,
                 )
             }
@@ -5464,10 +5827,35 @@ impl Island {
         let mut rect = if self.state == IslandState::Lockscreen {
             full
         } else if frame_running {
-            union_rect(
+            // r1d §2: the settle tail swells growing dims ~1.1%
+            // past the target before decaying — inflate the union
+            // so the overshoot is inside the damage rect (the rect
+            // itself stays bounded; nothing else about it changes).
+            let mut r = union_rect(
                 content_rect(self.morph_from_state),
                 content_rect(self.state),
-            )
+            );
+            let growing = {
+                let (fw, fh) = self.morph_from_state.size();
+                let (tw, th) = self.state.size();
+                tw > fw || th > fh
+            };
+            if growing {
+                let ow = 0.012_f32
+                    .mul_add(
+                        self.morph_to_geom.width.max(self.morph_from_geom.width),
+                        2.0,
+                    )
+                    .ceil() as i32;
+                let oh = 0.012_f32
+                    .mul_add(
+                        self.morph_to_geom.height.max(self.morph_from_geom.height),
+                        2.0,
+                    )
+                    .ceil() as i32;
+                r = (r.0 - ow, r.1 - oh, r.2 + 2 * ow, r.3 + 2 * oh);
+            }
+            r
         } else {
             content_rect(self.state)
         };
@@ -5577,17 +5965,31 @@ impl Island {
             self.redraw_wanted = true;
             return;
         };
-        if frame_running {
-            upscale_canvas_2x_region(&self.scale_scratch, w, h, canvas, dmg);
-        } else {
-            upscale_canvas_2x_region(&self.scale_scratch, w, h, canvas, dmg);
+        upscale_canvas_2x_region(&self.scale_scratch, w, h, canvas, dmg);
+        // r1d §22: a settled expanded panel repaints its CONTENT at 2x
+        // over the upscaled capsule. The morph path keeps the region
+        // upscale (its frames blend two panel geometries, so there is no
+        // single panel-local content to redraw).
+        if false && !frame_running && self.morph.is_none() {
+            redraw_panel_content_2x(
+                canvas,
+                bw,
+                bh,
+                self.state,
+                self.font,
+                icon_font_for(&self.icon_font, self.state),
+            );
         }
         // A1: every settled frame whose topmost element is the collapsed
-        // pill (bare, or over an open menu) replaces that rect with a
-        // 2x-rendered copy, so the clock glyphs skip one resample. Morph
-        // frames own their canvas and keep the old path.
-        let pill_on_top = matches!(self.state, IslandState::Collapsed | IslandState::TrayMenu)
-            || MENU_CYCLE.contains(&self.state);
+        // pill replaces that rect with a 2x-rendered copy, so the clock
+        // glyphs skip one resample. r1d §19: MENU_CYCLE states are
+        // EXCLUDED — since §0 the panel grows INTO the pill band, so
+        // those pixels are panel fill; draw_top_row_2x fill(0)s the row
+        // (alpha=0) and repaints only pill + discs + tray, which left a
+        // 258x35 hard-edged transparent rectangle through the open
+        // panel (owner-reported live: "cubic and doesn't fit").
+        // TrayMenu keeps the pill-row over wallpaper (panel hangs below).
+        let pill_on_top = matches!(self.state, IslandState::Collapsed | IslandState::TrayMenu);
         if self.morph.is_none() && pill_on_top {
             draw_top_row_2x(canvas, bw, bh, self.font, active_tag_cached());
         }
@@ -5683,6 +6085,20 @@ impl CompositorHandler for Island {
     }
 }
 
+impl Island {
+    /// Read the compositor's logical size for `output` and cache it.
+    /// `logical_size` is None until the compositor has sent mode+scale,
+    /// so this is safe to call from both output hooks and never
+    /// overwrites a known size with nothing.
+    fn record_output_size(os: &OutputState, output: &WlOutput) {
+        if let Some(info) = os.info(output) {
+            if let Some((w, h)) = info.logical_size {
+                set_output_logical(w.max(1) as u32, h.max(1) as u32);
+            }
+        }
+    }
+}
+
 impl OutputHandler for Island {
     fn output_state(&mut self) -> &mut OutputState {
         &mut self.output_state
@@ -5691,15 +6107,24 @@ impl OutputHandler for Island {
         &mut self,
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
-        _output: WlOutput,
+        output: WlOutput,
     ) {
+        // r1c finding 8: the only place the real logical output size is
+        // known. Recorded (not stored per-output) because the island is a
+        // single-output layer; the last report wins, which is what a
+        // mirror/extend setup ends up drawing on anyway.
+        Self::record_output_size(&self.output_state, &output);
     }
     fn update_output(
         &mut self,
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
-        _output: WlOutput,
+        output: WlOutput,
     ) {
+        // Fires on geometry/mode/scale changes — including the first
+        // full report after `new_output` (where logical_size is still
+        // None), which is why both hooks record.
+        Self::record_output_size(&self.output_state, &output);
     }
     fn output_destroyed(
         &mut self,
@@ -7191,15 +7616,20 @@ mod iter26_tests {
         // is the search/row-1 gap (panel-local y 62, between search end
         // 50 and row-0 top 74).
         let cases = [
-            (IslandState::Power, (411.0, 144.0)),
-            (IslandState::Music, (850.0, 140.0)),
-            (IslandState::Calendar, (730.0, 290.0)),
-            (IslandState::ControlCenter, (588.0, 339.0)),
-            (IslandState::Launcher, (588.0, 98.0)),
-            (IslandState::Wallpaper, (100.0, 260.0)),
-            (IslandState::Themes, (300.0, 360.0)),
+            (IslandState::Power, (23.0, 113.0)),
+            (IslandState::Music, (568.0, 107.0)),
+            (IslandState::Calendar, (313.0, 257.0)),
+            (IslandState::ControlCenter, (150.0, 306.0)),
+            (IslandState::Launcher, (252.0, 62.0)),
+            (IslandState::Wallpaper, (16.0, 227.0)),
+            (IslandState::Themes, (12.0, 327.0)),
         ];
-        for (state, pos) in cases {
+        // Panel-LOCAL offsets, resolved against the live origin: these
+        // were hand-picked dead bands (not on an arrow, row, disc or
+        // chevron), so they must follow the panel when r1d §0 moved it.
+        for (state, (lx, ly)) in cases {
+            let (ox, oy) = panel_origin(state);
+            let pos = ((ox + lx) as f64, (oy + ly) as f64);
             assert!(
                 point_in_panel_stage(pos, state),
                 "{state:?} test point {pos:?} not in panel"
@@ -7270,17 +7700,20 @@ mod iter26_tests {
 
     #[test]
     fn iter27b_pill_rect_collapses_from_every_menu() {
-        // Pill centre, stage coords (588,16) = logical (752,27).
-        // iter30 a3c: the pill is NO LONGER inside the menu panel
-        // (the panel hangs below it) — but a click there still
-        // collapses, via the pill-rect branch of classify_press.
+        // r1d §0: the panel now COVERS the pill row (it grows out of the
+        // pill instead of hanging below it), so the pill centre is inside
+        // the panel rect. A click there must still collapse (the pill
+        // branch of classify_press fires before the panel's own hits) —
+        // that is the owner's reported bug this test guards.
+        let (ppx, ppy, ppw, pph) = panel_rect_stage(IslandState::Collapsed);
+        let pill_centre = ((ppx + ppw / 2.0) as f64, (ppy + pph / 2.0) as f64);
         for state in MENU_CYCLE {
             assert!(
-                !point_in_panel_stage((588.0, 16.0), state),
-                "{state:?}: pill centre should NOT be in the panel any more"
+                point_in_panel_stage(pill_centre, state),
+                "{state:?}: the panel covers the pill row since r1d §0"
             );
             assert_eq!(
-                classify_press((588.0, 16.0), state, false, 0, 0, 0),
+                classify_press(pill_centre, state, false, 0, 0, 0),
                 PressAction::Collapse,
                 "{state:?}"
             );
@@ -7289,27 +7722,35 @@ mod iter26_tests {
 
     #[test]
     fn iter27b_just_outside_pill_rect_stays_noop() {
-        // Just right of the pill rect (x 633 edge) and just below it
-        // (y 28 edge), still inside the Music panel: no-op, not collapse.
+        // r1d §0: probes are derived from the live pill rect. Just right
+        // of the pill and just below it are still inside a menu panel
+        // (Music spans x 282..894 from y 3), so they are NoOp — the
+        // collapse branch must not fire outside the pill rect.
+        let (px, py, pw, ph) = panel_rect_stage(IslandState::Collapsed);
+        let (cx, cy) = (px + pw / 2.0, py + ph / 2.0);
         assert_eq!(
-            classify_press((640.0, 16.0), IslandState::Music, false, 0, 0, 0),
+            classify_press(((px + pw + 4.0) as f64, cy as f64), IslandState::Music, false, 0, 0, 0),
             PressAction::NoOp
         );
         assert_eq!(
-            classify_press((588.0, 40.0), IslandState::Music, false, 0, 0, 0),
+            classify_press((cx as f64, (py + ph + 4.0) as f64), IslandState::Music, false, 0, 0, 0),
             PressAction::NoOp
         );
-        // Just left of the pill rect: the 4 px bridge gap (x 546..550)
-        // between workspace circle 4 and the pill is still a no-op.
+        // On the pill itself, the same y: collapse.
         assert_eq!(
-            classify_press((548.0, 16.0), IslandState::Power, false, 0, 0, 0),
+            classify_press((cx as f64, cy as f64), IslandState::Music, false, 0, 0, 0),
+            PressAction::Collapse
+        );
+        // The workspace row no longer reaches the pointer in a menu: the
+        // panel covers it and cluster hits are restricted to
+        // Collapsed/Dictation/Lock/TrayMenu since §0 (owner's bug guard).
+        let (wx, wy) = workspace_disc_centres()[3];
+        assert_eq!(
+            classify_press((wx as f64, wy as f64), IslandState::Power, false, 0, 0, 0),
             PressAction::NoOp
         );
-        // iter90 a8 / iter92: the old probe point (536, 16) is ON
-        // workspace circle 4 (centre 538, 15) — it switches to tag 4,
-        // no longer NoOp.
         assert_eq!(
-            classify_press((536.0, 16.0), IslandState::Power, false, 0, 0, 0),
+            classify_press((wx as f64, wy as f64), IslandState::Collapsed, false, 0, 0, 0),
             PressAction::WorkspaceTag(4)
         );
     }
@@ -7459,11 +7900,13 @@ mod iter28_tests {
 
     #[test]
     fn frost_alpha_pill_vs_menu() {
-        assert!((frost_alpha(IslandState::Collapsed) - 0.92).abs() < 1e-6);
-        assert!((frost_alpha(IslandState::Lock) - 0.92).abs() < 1e-6);
-        assert!((frost_alpha(IslandState::Music) - 0.92).abs() < 1e-6);
-        assert!((frost_alpha(IslandState::ControlCenter) - 0.92).abs() < 1e-6);
-        assert!((frost_alpha(IslandState::Power) - 0.92).abs() < 1e-6);
+        // r1d finding 3/§3: pill and menu fills are pure black at
+        // full tint strength — every state reads 1.0.
+        assert!((frost_alpha(IslandState::Collapsed) - 1.0).abs() < 1e-6);
+        assert!((frost_alpha(IslandState::Lock) - 1.0).abs() < 1e-6);
+        assert!((frost_alpha(IslandState::Music) - 1.0).abs() < 1e-6);
+        assert!((frost_alpha(IslandState::ControlCenter) - 1.0).abs() < 1e-6);
+        assert!((frost_alpha(IslandState::Power) - 1.0).abs() < 1e-6);
         assert!((frost_alpha(IslandState::Lockscreen) - 1.0).abs() < 1e-6);
     }
 
@@ -7475,26 +7918,24 @@ mod iter28_tests {
         // can never leak through and fake a panel edge; iter128:
         // 2.5*0.92 = 2.3 -> 2).
         let p = frost_fill_px(1.0, -0.5, 45.0, 0.5, 90.0, 24.0, FROST_ALPHA_PILL);
-        assert_eq!(p, [2, 2, 2, 255]);
+        assert_eq!(p, [0, 0, 0, 255]);
     }
 
     #[test]
     fn frost_fill_px_menu_centre() {
-        // Deep inside a menu: opaque dark floor, no light (iter85:
-        // 5*0.80 = 4.0 -> 4, A = 255 - matches the blur path floor;
-        // iter128: 2.5*0.92 = 2.3 -> 2).
+        // Deep inside a menu: pure black, opaque (r1d §3 - reference
+        // panel fill p50 = 0).
         let p = frost_fill_px(1.0, -10.0, 300.0, 100.0, 612.0, 525.0, FROST_ALPHA_MENU);
-        assert_eq!(p, [2, 2, 2, 255]);
+        assert_eq!(p, [0, 0, 0, 255]);
     }
 
     #[test]
     fn frost_fill_px_transparent_outside_and_aa_edge() {
         assert_eq!(frost_fill_px(0.0, 0.5, 45.0, 0.5, 90.0, 24.0, FROST_ALPHA_PILL), [0, 0, 0, 0]);
-        // AA edge pixel (a=0.5, d=0): premultiplied floor, A = coverage
-        // (iter86: 5*0.80*0.5 = 2.0 -> 2, A = 0.5*255 = 127;
-        // iter128: 2.5*0.92*0.5 = 1.15 -> 1).
+        // AA edge pixel (a=0.5, d=0): premultiplied pure black, A =
+        // coverage (r1d §3: 0.5*255 = 127).
         let p = frost_fill_px(0.5, 0.0, 45.0, 0.5, 90.0, 24.0, FROST_ALPHA_PILL);
-        assert_eq!(p, [1, 1, 1, 127]);
+        assert_eq!(p, [0, 0, 0, 127]);
     }
 }
 
@@ -7504,54 +7945,50 @@ mod iter29_tests {
 
     #[test]
     fn frost_fill_px_blur_bright_interior() {
-        // Blurred bright wallpaper under the 0.90 pill fill:
-        // base = bg*0.10 + 2.5*0.90 = ~19/20/22 per channel, opaque interior
-        // (iter128: floor 5.0 -> 2.5; was ~21/22/24).
+        // Blurred bright wallpaper under a 0.90 fill: with r1d §3's
+        // FROST_FLOOR 0.0, base = bg*0.10 = 17/18/20 per channel,
+        // opaque interior.
         let p = frost_fill_px_blur(1.0, -10.0, 100.0, 100.0, 90.0, 24.0, 0.90, [170, 180, 200], [170, 180, 200]);
         assert_eq!(p[3], 255);
-        assert!((p[0] as i32 - 19).abs() <= 2, "R {} want ~19", p[0]);
-        assert!((p[1] as i32 - 20).abs() <= 2, "G {} want ~20", p[1]);
-        assert!((p[2] as i32 - 22).abs() <= 2, "B {} want ~22", p[2]);
+        assert!((p[0] as i32 - 17).abs() <= 2, "R {} want ~17", p[0]);
+        assert!((p[1] as i32 - 18).abs() <= 2, "G {} want ~18", p[1]);
+        assert!((p[2] as i32 - 20).abs() <= 2, "B {} want ~20", p[2]);
     }
 
     #[test]
     fn frost_fill_px_blur_dark_floor() {
-        // Pure-black backdrop: the fill must NOT vanish — 2.5*0.90 = 2.25 -> 2
-        // (iter128: was 5*0.90 = 4.5 -> 4).
+        // Pure-black backdrop at 0.90: n*(1-fa) = 0 — over black the
+        // partial fill reads black, exactly like the full one (r1d
+        // §3 floor 0.0).
         let p = frost_fill_px_blur(1.0, -10.0, 100.0, 100.0, 90.0, 24.0, 0.90, [0, 0, 0], [0, 0, 0]);
-        assert_eq!(p, [2, 2, 2, 255]);
+        assert_eq!(p, [0, 0, 0, 255]);
     }
 
     #[test]
     fn frost_fill_px_blur_top_is_flat() {
         // Top edge of the pill, centre: exactly the interior base —
-        // no top lift at all (iter31).
-        // base = 100*0.10 + 2.5*0.90 = 12.25 -> 12 (was 14.5 -> 14).
+        // no top lift at all (iter31). r1d §3 floor 0.0: 100*0.10 = 10.
         let p = frost_fill_px_blur(1.0, -0.5, 45.0, 0.5, 90.0, 24.0, 0.90, [100, 100, 100], [100, 100, 100]);
-        assert_eq!(p, [12, 12, 12, 255]);
+        assert_eq!(p, [10, 10, 10, 255]);
     }
 
     #[test]
     fn frost_fill_px_blur_bright_sky_iter89() {
         // iter89 decision (frost-decision-iter89.md section 2.2):
         // neutralised bright-sky sample [167,177,190] at fa 0.80.
-        // iter128: floor 5.0 -> 2.5, so [37,39,41] -> [35,37,39].
-        // Note the f32 exactness: (1-0.80) is 0.19999999, so
-        // 190*0.19999999 + 2.5*0.80 = 39.999998 -> 39, not 40.
+        // r1d §3 floor 0.0: base = n*(1-fa); f32 (1-0.80) is
+        // 0.19999999, so 190*0.19999999 = 37.999998 -> 37.
         let p = frost_fill_px_blur(1.0, -10.0, 100.0, 100.0, 90.0, 24.0, 0.80, [167, 177, 190], [167, 177, 190]);
-        assert_eq!(p, [35, 37, 39, 255]);
+        assert_eq!(p, [33, 35, 37, 255]);
     }
 
     #[test]
     fn frost_fill_px_blur_day_file_iter89() {
         // iter89 strong proof (section 2.3): neutralised day-file
-        // sample [89,106,117] at fa 0.80.
-        // iter128: floor 5.0 -> 2.5, so [21,25,27] -> [19,23,25]
-        // (the floor term here is 2.5*0.80 = 2.0, not 2.3 — fa is
-        // the explicit 0.80, and 89*0.19999999 + 2.0 = 19.799999
-        // -> 19).
+        // sample [89,106,117] at fa 0.80. r1d §3 floor 0.0: base =
+        // n*0.19999999 -> [17,21,23].
         let p = frost_fill_px_blur(1.0, -10.0, 100.0, 100.0, 90.0, 24.0, 0.80, [89, 106, 117], [89, 106, 117]);
-        assert_eq!(p, [19, 23, 25, 255]);
+        assert_eq!(p, [17, 21, 23, 255]);
     }
 
     #[test]
@@ -7566,7 +8003,7 @@ mod iter29_tests {
         // is neutralised at capture (neutralise_sample), so the
         // panel reads neutral dark — see the iter103 test below.
         let p = frost_fill_px_blur(1.0, -10.0, 100.0, 100.0, 90.0, 24.0, 0.80, [38, 85, 120], [38, 85, 120]);
-        assert_eq!(p, [9, 18, 25, 255]);
+        assert_eq!(p, [7, 16, 23, 255]);
     }
 
     #[test]
@@ -7577,14 +8014,15 @@ mod iter29_tests {
         let a = frost_fill_px_blur(1.0, -10.0, 100.0, 100.0, 90.0, 24.0, 0.80, [38, 85, 120], [38, 85, 120]);
         let b = frost_fill_px_blur(1.0, -10.0, 100.0, 100.0, 90.0, 24.0, 0.80, [200, 210, 220], [200, 210, 220]);
         assert_ne!(a, b);
-        assert_eq!(b, [41, 43, 45, 255]); // iter128: was [43,45,47] at floor 5.0
+        assert_eq!(b, [39, 41, 43, 255]); // r1d §3 floor 0.0: n*0.19999999
     }
 
     #[test]
     fn frost_fill_px_blur_aa_edge_premultiplied() {
         // AA edge pixel: RGB premultiplied by coverage, A = coverage.
+        // r1d §3 floor 0.0: base 10 * 0.5 = 5.
         let p = frost_fill_px_blur(0.5, 0.0, 45.0, 12.0, 90.0, 24.0, 0.90, [100, 100, 100], [100, 100, 100]);
-        assert_eq!(p, [6, 6, 6, 127]); // base 12.25 * 0.5 = 6.125 -> 6, A 0.5*255
+        assert_eq!(p, [5, 5, 5, 127]);
         assert!(p[0] as u16 <= p[3] as u16, "premultiplied RGB > A");
     }
 
@@ -7598,11 +8036,10 @@ mod iter29_tests {
 
     #[test]
     fn frost_fill_px_blur_menu_keeps_092() {
-        // Menus at 0.92 (iter128; was 0.80, iter89): base =
-        // bg*0.08 + 2.5*0.92 = 18.3 -> 18.
+        // Menus are pure black at full tint (r1d §3: FROST_ALPHA_MENU
+        // 1.0 - the sample path short-circuits).
         let p = frost_fill_px_blur(1.0, -10.0, 300.0, 100.0, 612.0, 525.0, FROST_ALPHA_MENU, [200, 200, 200], [200, 200, 200]);
-        assert_eq!(p[3], 255);
-        assert!((p[0] as i32 - 18).abs() <= 2, "menu R {} want ~18", p[0]);
+        assert_eq!(p, [0, 0, 0, 255]);
     }
 }
 
@@ -7615,44 +8052,37 @@ mod iter103_tests {
         // Positive deviation: sample 20 above its local mean. iter128:
         // the deviation is capped at FROST_HP_MAX_DEV (12), so the
         // gain is k*12 = 9, not k*20 = 15 — this test now also pins
-        // the cap (a sharp edge must not print through). Base at
-        // fa 0.80 / floor 2.5: R 120*0.19999999+2.0+9 = 34.999998
-        // -> 34 (f32 (1-0.80) is 0.19999999, and the floor term is
-        // 2.5*0.80 = 2.0 at this explicit fa).
+        // the cap (a sharp edge must not print through). r1d §3
+        // floor 0.0: R 120*0.19999999+9 = 32.99 -> 32 (f32
+        // (1-0.80) is 0.19999999).
         let p = frost_fill_px_blur(1.0, -10.0, 100.0, 100.0, 90.0, 24.0, 0.80, [120, 130, 140], [100, 110, 120]);
-        assert!((p[0] as i32 - 34).abs() <= 1, "R {} want ~34", p[0]);
-        assert!((p[1] as i32 - 36).abs() <= 1, "G {} want ~36", p[1]);
-        assert!((p[2] as i32 - 38).abs() <= 1, "B {} want ~38", p[2]);
+        assert!((p[0] as i32 - 32).abs() <= 1, "R {} want ~32", p[0]);
+        assert!((p[1] as i32 - 34).abs() <= 1, "G {} want ~34", p[1]);
+        assert!((p[2] as i32 - 36).abs() <= 1, "B {} want ~36", p[2]);
         // Negative deviation: sample 20 below its local mean loses 9
-        // (capped), not 15. R 80*0.19999999+2.0-9 = 8.999999 -> 8.
+        // (capped), not 15. R 80*0.19999999-9 = 6.99 -> 6.
         let q = frost_fill_px_blur(1.0, -10.0, 100.0, 100.0, 90.0, 24.0, 0.80, [80, 90, 100], [100, 110, 120]);
-        assert!((q[0] as i32 - 8).abs() <= 1, "R {} want ~8", q[0]);
-        assert!((q[1] as i32 - 10).abs() <= 1, "G {} want ~10", q[1]);
-        assert!((q[2] as i32 - 12).abs() <= 1, "B {} want ~12", q[2]);
-        // Extreme negative deviation clamps at the floor (2),
-        // never wraps and never reads below the dark-wallpaper
-        // value (iter113 — was [0, 0, 0, 255] with the clamp at 0;
-        // iter128: floor 5.0 -> 2.5, so the clamp value is 2, not 4).
+        assert!((q[0] as i32 - 6).abs() <= 1, "R {} want ~6", q[0]);
+        assert!((q[1] as i32 - 8).abs() <= 1, "G {} want ~8", q[1]);
+        assert!((q[2] as i32 - 10).abs() <= 1, "B {} want ~10", q[2]);
+        // Extreme negative deviation clamps at the floor (0 under
+        // r1d §3) — never wraps, never reads below black.
         let z = frost_fill_px_blur(1.0, -10.0, 100.0, 100.0, 90.0, 24.0, 0.80, [5, 5, 5], [200, 200, 200]);
-        assert_eq!(z, [2, 2, 2, 255]);
+        assert_eq!(z, [0, 0, 0, 255]);
     }
 
     #[test]
     fn frost_fill_px_blur_live_neutral_sky_iter103() {
         // iter103: the gap1 implied live sky sample, through the
-        // SHARED strengthened neutralise_sample at capture, then
-        // the shared fill at fa 0.92 with no local deviation: B-R
-        // must land in +0..+5 (was +5.7 shipped) and the mean in
-        // the reference's (4,5,5)-class band +/-6 (was (10,11,11)
-        // at fa 0.80 — neutralise_sample([56,133,187]) = [33,35,37],
-        // fill = n*0.08 + 2.3 = [4,5,5]).
+        // SHARED strengthened neutralise_sample at capture, then the
+        // shared fill at fa 0.92 with no local deviation. r1d §3
+        // floor 0.0: neutralise_sample([56,133,187]) = [33,35,37],
+        // fill = n*0.08 = [2,2,2] — neutral dark, B-R 0.
         let n = crate::wallpaper_blur::neutralise_sample([56, 133, 187]);
         let p = frost_fill_px_blur(1.0, -10.0, 100.0, 100.0, 90.0, 24.0, crate::wallpaper_blur::FROST_ALPHA, n, n);
         let br = p[2] as i32 - p[0] as i32;
         assert!((0..=5).contains(&br), "B-R {} in {:?}", br, p);
-        assert!(p[0] >= 4 && p[0] <= 16, "R {} in {:?}", p[0], p);
-        assert!(p[1] >= 4 && p[1] <= 16, "G {} in {:?}", p[1], p);
-        assert!(p[2] >= 4 && p[2] <= 16, "B {} in {:?}", p[2], p);
+        assert_eq!(p, [2, 2, 2, 255]);
     }
 
     #[test]
@@ -7685,33 +8115,31 @@ mod iter103_tests {
     fn frost_fill_px_blur_bright_leg_fa092_iter128() {
         // iter128 (B4): the measured bright leg — the neutralised
         // snow sample means ~32 (harness_frost_panel_fill, gwwwxd).
-        // At fa 0.92: 32*0.08 + 2.5*0.92 = 4.86 -> 4. At the old
-        // fa 0.80 / floor 5.0 this was 32*0.20 + 4.0 = 10.4 -> 10.
+        // r1d §3 floor 0.0 at fa 0.92: 32*0.08 = 2.56 -> 2.
         let p = frost_fill_px_blur(1.0, -10.0, 100.0, 100.0, 90.0, 24.0, 0.92, [32, 32, 32], [32, 32, 32]);
-        assert_eq!(p, [4, 4, 4, 255]);
+        assert_eq!(p, [2, 2, 2, 255]);
     }
 
     #[test]
     fn frost_fill_px_blur_dark_leg_fa092_iter128() {
-        // iter128 (B4): the dark leg stays at the floor — a [2,2,2]
-        // sample fills 2*0.08 + 2.3 = 2.46 -> 2, never 0.
+        // iter128 (B4), r1d §3 floor 0.0: the dark leg reads 0 —
+        // 2*0.08 = 0.16 -> 0, same black as the full fill.
         let p = frost_fill_px_blur(1.0, -10.0, 100.0, 100.0, 90.0, 24.0, 0.92, [2, 2, 2], [2, 2, 2]);
-        assert_eq!(p, [2, 2, 2, 255]);
+        assert_eq!(p, [0, 0, 0, 255]);
     }
 
     #[test]
     fn frost_fill_px_blur_dev_cap_iter128() {
         // iter128 (B4): a +40 deviation (a sharp backdrop edge, e.g.
-        // UI text over a dark mean) is capped at +12 before the
-        // gain: 60*0.08 + 2.3 + 0.75*12 = 16.1 -> 16. Uncapped it
-        // would be 60*0.08 + 2.3 + 0.75*40 = 37.1 -> 37 — the
-        // bright speck the dark leg showed (fill max 34 over a 4.6
-        // mean in the harness). Soft mottling (|dev| <= 12) is
-        // untouched: dev +12 lands exactly at the cap.
+        // UI text over a dark mean) is capped at +12 before the gain.
+        // r1d §3 floor 0.0: 60*0.08 + 0.75*12 = 13.8 -> 13. Uncapped
+        // it would be 60*0.08 + 30 = 34.8 -> 34 — the bright speck.
+        // Soft mottling (|dev| <= 12) is untouched: dev +12 lands
+        // exactly at the cap.
         let p = frost_fill_px_blur(1.0, -10.0, 100.0, 100.0, 90.0, 24.0, 0.92, [60, 60, 60], [20, 20, 20]);
-        assert_eq!(p, [16, 16, 16, 255]);
+        assert_eq!(p, [13, 13, 13, 255]);
         let q = frost_fill_px_blur(1.0, -10.0, 100.0, 100.0, 90.0, 24.0, 0.92, [32, 32, 32], [20, 20, 20]);
-        assert_eq!(q, [13, 13, 13, 255]); // dev +12: 32*0.08+2.3+9 = 13.86 -> 13
+        assert_eq!(q, [11, 11, 11, 255]); // dev +12: 32*0.08+9 = 11.56 -> 11
     }
 }
 
@@ -7725,7 +8153,7 @@ mod iter31_tests {
         // mid-height pixels are the same base for the same backdrop.
         for (x, y, d) in [(45.0, 0.5, -0.5), (2.0, 0.5, -0.5), (45.0, 12.0, -10.0)] {
             let p = frost_fill_px_blur(1.0, d, x, y, 90.0, 24.0, 0.90, [100, 100, 100], [100, 100, 100]);
-            assert_eq!(p, [12, 12, 12, 255], "x {x} y {y}"); // iter128: 100*0.10+2.25 = 12.25 -> 12
+            assert_eq!(p, [10, 10, 10, 255], "x {x} y {y}"); // r1d §3 floor 0.0: 100*0.10 = 10
         }
     }
 
@@ -7735,18 +8163,19 @@ mod iter31_tests {
         // included - no brightening anywhere, and no backdrop leak
         // (iter85: the old translucent [0,0,0,229]/[0,0,0,216] let the
         // backdrop through, faking a panel top at the terminal edge).
-        // iter128: floor 2.5*0.92 = 2.3 -> 2 (was 5*0.80 = 4.0 -> 4).
+        // r1d §3: pure black, opaque - no brightening anywhere, and
+        // no backdrop leak.
         let top = frost_fill_px(1.0, -0.5, 45.0, 0.5, 90.0, 24.0, FROST_ALPHA_PILL);
-        assert_eq!(top, [2, 2, 2, 255]);
+        assert_eq!(top, [0, 0, 0, 255]);
         let centre = frost_fill_px(1.0, -10.0, 45.0, 12.0, 90.0, 24.0, FROST_ALPHA_MENU);
-        assert_eq!(centre, [2, 2, 2, 255]);
+        assert_eq!(centre, [0, 0, 0, 255]);
     }
 
     #[test]
     fn frost_alphas_unchanged() {
-        // Pill and menus 0.92 (iter128: was 0.80); lockscreen stays 1.0.
-        assert!((frost_alpha(IslandState::Collapsed) - 0.92).abs() < 1e-6);
-        assert!((frost_alpha(IslandState::Music) - 0.92).abs() < 1e-6);
+        // r1d §3: pill and menus at 1.0 (pure black); lockscreen 1.0.
+        assert!((frost_alpha(IslandState::Collapsed) - 1.0).abs() < 1e-6);
+        assert!((frost_alpha(IslandState::Music) - 1.0).abs() < 1e-6);
         assert!((frost_alpha(IslandState::Lockscreen) - 1.0).abs() < 1e-6);
     }
 }
@@ -7756,18 +8185,25 @@ mod iter30_tests {
     use super::*;
 
     #[test]
-    fn panel_below_pill_geometry() {
+    fn panel_at_pill_top_geometry() {
+        // r1d §0: the expanded panel GROWS OUT of the pill instead of
+        // hanging below it — reference 60 fps frames keep the panel top
+        // pinned at y=19-20 while the height grows 42->188.
         // Pill: stage (550, 3), 76x28 -> screen (714, 3), 76x28.
         let (ox, oy, pw, ph) = panel_rect_stage(IslandState::Collapsed);
         assert!((ox - 550.0).abs() < 1e-4, "pill ox {ox}");
         assert!((oy - STAGE_PAD_TOP).abs() < 1e-4, "pill oy {oy}");
         assert!((pw - 76.0).abs() < 1e-4 && (ph - 28.0).abs() < 1e-4);
-        // Menus: panel top panel_top_menu() (33) -> screen 0 + 33 = 33,
-        // i.e. 2 px below the pill bottom (3 + 28 = 31).
+        // Cycled menus start at the pill's own top edge.
         for state in MENU_CYCLE {
             let (_, moy, _, _) = panel_rect_stage(state);
-            assert!((moy - panel_top_menu()).abs() < 1e-4, "{state:?} oy {moy}");
+            assert!((moy - STAGE_PAD_TOP).abs() < 1e-4, "{state:?} oy {moy}");
         }
+        // TrayMenu is the one remaining hang-below panel (its rows need
+        // the pill visible above them), and it is what keeps this test
+        // meaningful: panel_top_menu() = pill bottom + 2.
+        let (_, toy, _, _) = panel_rect_stage(IslandState::TrayMenu);
+        assert!((toy - panel_top_menu()).abs() < 1e-4, "TrayMenu oy {toy}");
         assert!((panel_top_menu() - (STAGE_PAD_TOP + 28.0 + 2.0)).abs() < 1e-4);
     }
 
@@ -7979,14 +8415,17 @@ mod iter30_tests {
 
     #[test]
     fn classify_press_workspace_tag() {
-        // Circles work collapsed and in a menu, and never swallow the pill.
+        // Circles work collapsed; in a menu the panel now swallows the
+        // pill row (r1d §0), so the same point is NoOp there — the
+        // regression guard for the owner's reported bug.
         assert_eq!(
             classify_press((538.0, 17.0), IslandState::Collapsed, false, 0, 0, 0),
             PressAction::WorkspaceTag(4)
         );
         assert_eq!(
             classify_press((478.0, 17.0), IslandState::Music, false, 0, 0, 0),
-            PressAction::WorkspaceTag(1)
+            PressAction::NoOp,
+            "cluster hits are Collapsed/Dictation/Lock/TrayMenu only since r1d §0"
         );
         assert_eq!(
             classify_press((588.0, 17.0), IslandState::Collapsed, false, 0, 0, 0),
@@ -8113,18 +8552,27 @@ mod iter30_tests {
 
     #[test]
     fn classify_press_tray_icon() {
-        // Slots work collapsed and in a menu, and never swallow the pill.
+        // Slots work collapsed; in a cycled menu the panel covers the
+        // tray row (r1d §0), so a click there is NoOp, not a tray hit.
         assert_eq!(
             classify_press((638.0, 17.0), IslandState::Collapsed, false, 0, 0, 1),
             PressAction::TrayActivate(0)
         );
         assert_eq!(
             classify_press((658.0, 17.0), IslandState::Music, false, 0, 0, 2),
-            PressAction::TrayActivate(1)
+            PressAction::NoOp,
+            "tray hits are Collapsed/Dictation/Lock/TrayMenu only since r1d §0"
         );
         assert_eq!(
             classify_press((678.0, 17.0), IslandState::ControlCenter, false, 0, 0, 3),
-            PressAction::TrayActivate(2)
+            PressAction::NoOp,
+            "tray hits are Collapsed/Dictation/Lock/TrayMenu only since r1d §0"
+        );
+        // TrayMenu still activates them — it is the one hang-below panel
+        // and it is in the allowed set.
+        assert_eq!(
+            classify_press((638.0, 17.0), IslandState::TrayMenu, false, 0, 0, 1),
+            PressAction::TrayActivate(0)
         );
         // Gaps and the bridge are NoOp — never Collapse, in any state.
         assert_eq!(
@@ -8187,18 +8635,12 @@ mod iter30_tests {
 
     #[test]
     fn discs_at_panel_midheight() {
-        // (state, expected disc cy): oy 33 + h/2 (A2: panel top 33,
-        // Calendar PANEL_H 280 -> 266, CC_H 401 -> 451 (iter109: power row).
-        let cases = [
-            (IslandState::Music, 108.0),
-            (IslandState::Power, 108.0),
-            (IslandState::Calendar, 164.0), // 33 + 262/2
-            (IslandState::ControlCenter, 256.5), // 33 + 447/2
-            (IslandState::Launcher, 216.0),
-            (IslandState::Wallpaper, 168.0),
-            (IslandState::Themes, 216.0),
-        ];
-        for (state, want_cy) in cases {
+        // The discs ride the panel's vertical middle, whatever the panel
+        // top is (r1d §0 moved it to the pill top). Derive the expected
+        // cy from panel_rect_stage so this can never drift again.
+        for state in MENU_CYCLE {
+            let (_, oy, _, ph) = panel_rect_stage(state);
+            let want_cy = oy + ph / 2.0;
             let ((lx, ly), (rx, ry)) = nav_disc_centres(state);
             assert!((ly - want_cy).abs() < 1e-4, "{state:?} ly {ly} want {want_cy}");
             assert!((ry - want_cy).abs() < 1e-4, "{state:?} ry {ry}");
@@ -8211,31 +8653,65 @@ mod iter30_tests {
 
     #[test]
     fn morph_capsule_oy_interpolates_pill_to_panel() {
-        assert_eq!(morph_capsule_oy(IslandState::Collapsed, IslandState::Music, 0.0), 3.0);
-        assert_eq!(morph_capsule_oy(IslandState::Collapsed, IslandState::Music, 1.0), 33.0);
-        assert_eq!(morph_capsule_oy(IslandState::Collapsed, IslandState::Music, 0.5), 18.0);
+        // r1d §0: a cycled menu starts at the pill's top edge, so the
+        // pill -> menu morph has no vertical travel at all; the capsule
+        // only grows downward. Both endpoints are STAGE_PAD_TOP.
+        for t in [0.0, 0.5, 1.0, 1.3] {
+            assert_eq!(
+                morph_capsule_oy(IslandState::Collapsed, IslandState::Music, t),
+                STAGE_PAD_TOP,
+                "Collapsed->Music t {t}"
+            );
+        }
+        // The real travel left is pill -> TrayMenu (the one hang-below
+        // panel): pill top 3 -> panel_top_menu() 33.
+        assert_eq!(morph_capsule_oy(IslandState::Collapsed, IslandState::TrayMenu, 0.0), 3.0);
+        assert_eq!(
+            morph_capsule_oy(IslandState::Collapsed, IslandState::TrayMenu, 1.0),
+            panel_top_menu()
+        );
+        let mid = morph_capsule_oy(IslandState::Collapsed, IslandState::TrayMenu, 0.5);
+        assert!((mid - (STAGE_PAD_TOP + panel_top_menu()) / 2.0).abs() < 1e-4, "mid {mid}");
         // Overshoot clamps: the top edge lands exactly on the target.
-        assert_eq!(morph_capsule_oy(IslandState::Collapsed, IslandState::Music, 1.3), 33.0);
+        assert_eq!(
+            morph_capsule_oy(IslandState::Collapsed, IslandState::TrayMenu, 1.3),
+            panel_top_menu()
+        );
         // Menu -> menu: top stays at the panel origin.
-        assert_eq!(morph_capsule_oy(IslandState::Music, IslandState::Calendar, 0.5), 33.0);
+        assert_eq!(
+            morph_capsule_oy(IslandState::Music, IslandState::Calendar, 0.5),
+            STAGE_PAD_TOP
+        );
         // Collapse: back to the pill top.
-        assert_eq!(morph_capsule_oy(IslandState::Music, IslandState::Collapsed, 1.0), 3.0);
+        assert_eq!(
+            morph_capsule_oy(IslandState::Music, IslandState::Collapsed, 1.0),
+            STAGE_PAD_TOP
+        );
     }
 
     #[test]
     fn pill_and_bridge_in_menu_region() {
-        // Pill centre (588,16) and the pill<->panel bridge (588,28)
-        // belong to a menu's region; the gap beside the bridge does not.
-        // iter89: bridge strip is y 27..29 (pill bottom 27, panel top 29);
-        // y=29 is inside the panel now, so the bridge/gap probes move to 28.
+        // The pill rect belongs to a menu's region (a click there is
+        // decided by classify_press as Collapse, never by delivery).
+        let (ppx, ppy, ppw, pph) = panel_rect_stage(IslandState::Collapsed);
+        let pill_centre = ((ppx + ppw / 2.0) as f64, (ppy + pph / 2.0) as f64);
         for state in MENU_CYCLE {
-            assert!(point_in_state_region((588.0, 16.0), state), "{state:?} pill");
-            assert!(point_in_state_region((588.0, 28.0), state), "{state:?} bridge");
+            assert!(point_in_state_region(pill_centre, state), "{state:?} pill");
         }
-        assert!(!point_in_state_region((400.0, 28.0), IslandState::Music));
-        assert!(!point_in_state_region((400.0, 16.0), IslandState::Music));
+        // r1d §0: the panel swallowed the pill row, so the old bridge
+        // strip (pill bottom .. panel top) is empty for cycled menus and
+        // there is nothing left below the pill to probe. The genuine
+        // negative is now a point left of the panel and above its top.
+        let (ox, oy, _, _) = panel_rect_stage(IslandState::Music);
+        assert!(!point_in_state_region(
+            (ox as f64 - 2.0, oy as f64 - 2.0),
+            IslandState::Music
+        ));
         // Collapsed has no pill-bridge (no menu below it).
-        assert!(!point_in_state_region((588.0, 32.0), IslandState::Collapsed));
+        assert!(!point_in_state_region(
+            ((ppx + ppw / 2.0) as f64, (ppy + pph + 4.0) as f64),
+            IslandState::Collapsed
+        ));
     }
 
     #[test]
@@ -8294,68 +8770,91 @@ mod iter36_tests {
         // / `filmstrip_hit`) and their clicks browse ±1, never apply:
         // left disc -> WallWindow(-1), right disc -> WallWindow(+1).
         // Nav discs still cycle menus; thumbs still apply.
+        // r1d §0: probes are derived from the panel origin — the panel
+        // top moved from 29 to STAGE_PAD_TOP, so a hardcoded y drifts.
+        let (ox, oy) = panel_origin(IslandState::Wallpaper);
+        let (lx, cy) = (wallpaper_panel::CHEV_LEFT_CX, wallpaper_panel::CHEV_CY);
+        let rx = wallpaper_panel::CHEV_RIGHT_CX;
         assert_eq!(
-            classify_press((84.0 + 30.0, 29.0 + 147.0), IslandState::Wallpaper, false, 2, 0, 0),
+            classify_press(((ox + lx) as f64, (oy + cy) as f64), IslandState::Wallpaper, false, 2, 0, 0),
             PressAction::WallWindow(-1)
         );
         assert_eq!(
-            classify_press((84.0 + 978.0, 29.0 + 147.0), IslandState::Wallpaper, false, 2, 0, 0),
+            classify_press(((ox + rx) as f64, (oy + cy) as f64), IslandState::Wallpaper, false, 2, 0, 0),
             PressAction::WallWindow(1)
         );
     }
 
     #[test]
     fn themes_row_click_applies_that_theme() {
-        // Selected row (row 0) centre.
+        // r1d §0: rows are hit-tested panel-locally, so derive the probe
+        // from themes_panel::row_rect + the live origin instead of the
+        // old hardcoded (288, 31) frame.
+        themes_panel::theme_reset();
+        let (ox, oy) = panel_origin(IslandState::Themes);
+        let row_probe = |row: usize| {
+            let (rx, ry, rw, rh) = themes_panel::row_rect(row);
+            ((ox + rx + rw / 2.0) as f64, (oy + ry + rh / 2.0) as f64)
+        };
+        // Selected row (row 0).
         assert_eq!(
-            classify_press((288.0 + 300.0, 31.0 + 114.0), IslandState::Themes, false, 0, 0, 0),
+            classify_press(row_probe(0), IslandState::Themes, false, 0, 0, 0),
             PressAction::ThemeApply(0)
         );
-        // First unselected row (row 1, y 168..216) centre.
+        // First unselected row (row 1).
         assert_eq!(
-            classify_press((288.0 + 300.0, 31.0 + 192.0), IslandState::Themes, false, 0, 0, 0),
+            classify_press(row_probe(1), IslandState::Themes, false, 0, 0, 0),
             PressAction::ThemeApply(1)
         );
         // Row 4 with theme_selected=22 wraps: (22+4) % n.
         let n = themes_panel::theme_total();
         assert_eq!(
-            classify_press((288.0 + 300.0, 31.0 + 336.0), IslandState::Themes, false, 0, 22, 0),
+            classify_press(row_probe(4), IslandState::Themes, false, 0, 22, 0),
             PressAction::ThemeApply((22 + 4) % n)
         );
     }
 
     #[test]
     fn power_disc_click_is_lock() {
-        // Centre disc (lock): BTN_CX[2]=200, ROW_CY=78.
-        assert_eq!(
-            classify_press((388.0 + 200.0, 31.0 + 78.0), IslandState::Power, false, 0, 0, 0),
-            PressAction::PowerButton(2)
-        );
-        // First disc (moon/suspend) and last disc (power).
-        assert_eq!(
-            classify_press((388.0 + 74.0, 31.0 + 78.0), IslandState::Power, false, 0, 0, 0),
-            PressAction::PowerButton(0)
-        );
-        assert_eq!(
-            classify_press((388.0 + 326.0, 31.0 + 78.0), IslandState::Power, false, 0, 0, 0),
-            PressAction::PowerButton(4)
-        );
+        // Disc centres are the panel's own source of truth; probe them at
+        // the live origin (r1d §0 moved the panel top to STAGE_PAD_TOP).
+        let (ox, oy) = panel_origin(IslandState::Power);
+        for (i, (cx, cy)) in power_panel::button_centres().iter().enumerate() {
+            assert_eq!(
+                classify_press(((ox + cx) as f64, (oy + cy) as f64), IslandState::Power, false, 0, 0, 0),
+                PressAction::PowerButton(i),
+                "disc {i}"
+            );
+        }
+        // Centre disc is 2 (lock) — the mapping the owner relies on.
+        assert_eq!(power_panel::button_hit(
+            power_panel::PANEL_W as f32 / 2.0,
+            power_panel::button_centres()[2].1
+        ), Some(2));
     }
 
     #[test]
     fn calendar_chevron_click_shifts_month() {
-        // Left chevron centre (40, 5.86) panel-local (iter121: CHEV_CY 5.86 screen-calibrated; was 6.53 iter116-120, 5.2 iter89-115, 23.5 pre-iter89).
+        // Chevron centres come from calendar_panel, resolved at the live
+        // origin (r1d §0 moved the panel top to STAGE_PAD_TOP).
+        let (ox, oy) = panel_origin(IslandState::Calendar);
+        let cy = (oy + calendar_panel::CHEV_CY) as f64;
         assert_eq!(
-            classify_press((417.0 + 40.0, 29.0 + 5.86), IslandState::Calendar, false, 0, 0, 0),
+            classify_press(((ox + calendar_panel::CHEV_LEFT_CX) as f64, cy), IslandState::Calendar, false, 0, 0, 0),
             PressAction::CalMonth(-1)
         );
         assert_eq!(
-            classify_press((417.0 + 302.0, 29.0 + 5.86), IslandState::Calendar, false, 0, 0, 0),
+            classify_press(((ox + calendar_panel::CHEV_RIGHT_CX) as f64, cy), IslandState::Calendar, false, 0, 0, 0),
             PressAction::CalMonth(1)
         );
-        // Title centre is NOT a chevron: no-op.
+        // Title centre is NOT a chevron: no-op. Probed BELOW the pill
+        // row, because since r1d §0 the panel covers the pill and a
+        // click on the pill itself legitimately collapses.
+        let mid = (calendar_panel::CHEV_LEFT_CX + calendar_panel::CHEV_RIGHT_CX) / 2.0;
+        let (_, ppy, _, pph) = panel_rect_stage(IslandState::Collapsed);
+        let below = (ppy + pph + 8.0) as f64;
         assert_eq!(
-            classify_press((417.0 + 171.0, 29.0 + 5.86), IslandState::Calendar, false, 0, 0, 0),
+            classify_press(((ox + mid) as f64, below), IslandState::Calendar, false, 0, 0, 0),
             PressAction::NoOp
         );
     }
@@ -8618,7 +9117,7 @@ mod iter108_tests {
     fn workspace_circles_round_at_2x() {
         let font = load_font();
         let mut stage = vec![0u8; (STAGE_W * STAGE_H * 4) as usize];
-        draw_workspace_circles_stage(&mut stage, STAGE_W, STAGE_H, &font, 1);
+        draw_workspace_circles_stage(&mut stage, STAGE_W, STAGE_H, &font, 1, 1.0);
         let up = upscale_canvas_2x(&stage, STAGE_W, STAGE_H);
         assert_eq!(up.len(), (2 * STAGE_W * 2 * STAGE_H * 4) as usize);
         let centres = workspace_disc_centres();
@@ -8801,7 +9300,7 @@ mod iter108_tests {
         // and compare each circle against the analytic 24 px circle.
         let font = load_font();
         let mut stage = vec![0u8; (STAGE_W * STAGE_H * 4) as usize];
-        draw_workspace_circles_stage(&mut stage, STAGE_W, STAGE_H, &font, 1);
+        draw_workspace_circles_stage(&mut stage, STAGE_W, STAGE_H, &font, 1, 1.0);
         let up = upscale_canvas_2x(&stage, STAGE_W, STAGE_H);
         let centres = workspace_disc_centres();
         for (i, (cx, cy)) in centres.iter().enumerate() {
@@ -8870,6 +9369,37 @@ mod iter109_tests {
 
     fn load_font() -> &'static fontdue::Font {
         ui_font()
+    }
+
+    /// r1d §19 (owner-blocker): with §0 the panel grows INTO the pill
+    /// band, so a settled MENU_CYCLE frame must NOT take the
+    /// draw_top_row_2x path — that path fill(0)s the whole top-row
+    /// rect (alpha=0) and repaints only pill + discs + tray, punching
+    /// a hard-edged transparent rectangle through the open panel.
+    /// The live predicate lives inline in draw_if_ready
+    /// (`pill_on_top`); this pins its EXACT state set so a revert
+    /// fails here instead of on the owner's screen. A per-state
+    /// pixel capture (`no interior pixel matches wallpaper`) is run
+    /// live at gate time (grim scan of rows 22..56).
+    #[test]
+    fn settled_menus_never_replace_the_top_row_2x() {
+        // Exactly the states whose pill row is over WALLPAPER (bare
+        // pill, or TrayMenu's hang-below layout) may repaint the row.
+        fn two_x_top_row_allowed(state: IslandState) -> bool {
+            matches!(state, IslandState::Collapsed | IslandState::TrayMenu)
+        }
+        for state in MENU_CYCLE {
+            assert!(
+                !two_x_top_row_allowed(state),
+                "{state:?} panel owns the pill band since r1d §0"
+            );
+        }
+        assert!(two_x_top_row_allowed(IslandState::Collapsed));
+        assert!(two_x_top_row_allowed(IslandState::TrayMenu));
+        assert!(!two_x_top_row_allowed(IslandState::Music)); // guarded twice
+        assert!(!two_x_top_row_allowed(IslandState::Dictation));
+        assert!(!two_x_top_row_allowed(IslandState::Lock));
+        assert!(!two_x_top_row_allowed(IslandState::Lockscreen));
     }
 
     /// STRICT disc predicate, identical to circles-profile108.py:
@@ -8963,7 +9493,7 @@ mod iter109_tests {
     fn screen_tiles() -> Vec<Vec<u8>> {
         let font = load_font();
         let mut stage = vec![0u8; (STAGE_W * STAGE_H * 4) as usize];
-        draw_workspace_circles_stage(&mut stage, STAGE_W, STAGE_H, &font, 1);
+        draw_workspace_circles_stage(&mut stage, STAGE_W, STAGE_H, &font, 1, 1.0);
         let up = upscale_canvas_2x(&stage, STAGE_W, STAGE_H);
         workspace_disc_centres()
             .iter()
@@ -9183,7 +9713,7 @@ mod iter109_tests {
             (false, WS_INACTIVE_FILL),
         ] {
             let mut tile = vec![0u8; 40 * 40 * 4];
-            draw_workspace_disc(&mut tile, 40, 40, 20.0, 20.0, active, false, &font, "1");
+            draw_workspace_disc(&mut tile, 40, 40, 20.0, 20.0, active, false, &font, "1", 1.0);
             // (20, 14) = (cx, cy - 6): d = 6, inside the rim band
             // (6.5..8) and above the glyph box.
             let i = (14 * 40 + 20) * 4;
@@ -9209,7 +9739,7 @@ mod iter109_tests {
         let mut stage = vec![0u8; (STAGE_W * STAGE_H * 4) as usize];
         let t = std::time::Instant::now();
         for _ in 0..20 {
-            draw_workspace_circles_stage(&mut stage, STAGE_W, STAGE_H, &font, 1);
+            draw_workspace_circles_stage(&mut stage, STAGE_W, STAGE_H, &font, 1, 1.0);
         }
         let el = t.elapsed();
         eprintln!("20x draw_workspace_circles_stage: {el:?}");
@@ -9312,8 +9842,13 @@ mod iter108_tray_tests {
         assert_eq!((pill_x, pill_w), (550.0, 76.0));
         let action = classify_press((638.0, 17.0), IslandState::Collapsed, false, 0, 0, 1);
         assert_eq!(action, PressAction::TrayActivate(0));
-        // Same in a menu state (icons ride above every panel).
+        // In a cycled menu the panel covers the tray row (r1d §0): the
+        // icons are neither drawn nor clickable there, so NoOp. This is
+        // the regression guard for the owner's reported bug.
         let action = classify_press((638.0, 17.0), IslandState::Music, false, 0, 0, 1);
+        assert_eq!(action, PressAction::NoOp);
+        // TrayMenu keeps working (allowed set, hangs below the pill).
+        let action = classify_press((638.0, 17.0), IslandState::TrayMenu, false, 0, 0, 1);
         assert_eq!(action, PressAction::TrayActivate(0));
         // The gap between pill and icon is a no-op, not a tray hit.
         let action = classify_press((628.0, 17.0), IslandState::Collapsed, false, 0, 0, 1);

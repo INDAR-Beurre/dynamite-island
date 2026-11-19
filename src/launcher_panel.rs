@@ -175,8 +175,18 @@ pub const ROW_COUNT: usize = 6;
 pub const C_PANEL: (u8, u8, u8) = (0, 0, 0);
 pub const C_PRIMARY: (u8, u8, u8) = (255, 255, 255);
 pub const C_SECONDARY: (u8, u8, u8) = (154, 160, 166); // #9AA0A6
-pub const C_HIGHLIGHT: (u8, u8, u8) = (5, 22, 60); // #05163C, selected row - muted periwinkle tint at the old lift's lightness (anchor #7CA2F5), iter96
+pub const C_HIGHLIGHT: (u8, u8, u8) = (25, 26, 31); // #191A1F, selected row - r1d: reference selection is neutral dark, not navy
 pub const C_SCROLLBAR: (u8, u8, u8) = (64, 66, 70); // #404246, scroll thumb (iter39 a10)
+/// r1d: measured reference accent (121,161,245) — the 3 px bar on the
+/// selected row's left inner edge.
+pub const C_ACCENT: (u8, u8, u8) = (121, 161, 245);
+/// r1d: 1 px search-row divider #1F2127 and the 2 px caret before an
+/// empty placeholder.
+pub const C_DIVIDER: (u8, u8, u8) = (31, 33, 39);
+const CARET_W: f32 = 2.0;
+const CARET_H: f32 = 14.0;
+const SEL_BAR_W: f32 = 3.0;
+const SEL_BAR_H: f32 = 24.0;
 /// QS search-box background — SUPERSEDED, kept for the record only.
 /// The video's search line is flat on black; this colour is never drawn.
 #[allow(dead_code)]
@@ -1188,6 +1198,16 @@ pub fn draw_launcher_panel_with_data(
     // as plain white text when one is set. ---
     draw_magnifier(canvas, w, h, l.magnifier_centre.0, l.magnifier_centre.1, C_SECONDARY);
     if data.query.trim().is_empty() {
+        // r1d: 2 px caret before the empty placeholder (the iter-launcher
+        // "no caret" note referred to the grey field box, which stays gone).
+        fill_rounded_rect(
+            canvas,
+            w,
+            h,
+            Rect::new(SEARCH_TEXT_X - CARET_W - 4.0, SEARCH_TEXT_TOP, CARET_W, CARET_H),
+            0.5,
+            C_PRIMARY,
+        );
         draw_text(
             canvas, w, h, font, "Search...", 13.0,
             SEARCH_TEXT_X, SEARCH_TEXT_TOP, C_SECONDARY, false,
@@ -1199,6 +1219,15 @@ pub fn draw_launcher_panel_with_data(
             SEARCH_TEXT_X, SEARCH_TEXT_TOP, C_PRIMARY, false,
         );
     }
+    // r1d: 1 px divider on the search row's bottom edge.
+    fill_rounded_rect(
+        canvas,
+        w,
+        h,
+        Rect::new(ROW_X, SEARCH_Y + SEARCH_H, ROW_W, 1.0),
+        0.0,
+        C_DIVIDER,
+    );
 
     // --- App rows: sorted, drawn window of at most 6 (the full
     // filtered list scrolls via live_move_selection / wheel — iter86);
@@ -1218,7 +1247,22 @@ pub fn draw_launcher_panel_with_data(
         // the drawn window starts at `offset`, so the visible slot
         // of the selected row is `selected - offset`.
         if i + data.offset == data.selected {
-            fill_rounded_rect(canvas, w, h, selection_highlight_rect(rect), ROW_R, C_HIGHLIGHT);
+            let clip = selection_highlight_rect(rect);
+            fill_rounded_rect(canvas, w, h, clip, ROW_R, C_HIGHLIGHT);
+            // r1d: 3 px accent bar on the highlight's left inner edge.
+            fill_rounded_rect(
+                canvas,
+                w,
+                h,
+                Rect::new(
+                    clip.x + 2.0,
+                    clip.y + (clip.h - SEL_BAR_H) / 2.0,
+                    SEL_BAR_W,
+                    SEL_BAR_H,
+                ),
+                1.5,
+                C_ACCENT,
+            );
         }
         draw_app_icon(canvas, w, h, font, icon_font, app, slot.cx(), slot.cy());
         // Name (13 px bold) + comment (10 px secondary), truncated so

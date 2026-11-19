@@ -27,13 +27,15 @@ use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::{OnceLock, RwLock};
 
-/// Fixed island accent — periwinkle #7CA2F5 (124, 162, 245).
+/// Fixed island accent — periwinkle (121, 161, 245) #79A1F5.
 /// NOT derived from any theme palette: theme palette slot 3 is
 /// arbitrary per theme (everblush green #8CCF7E, violet-tide slate
 /// #2E4580) and must never drive the island again. This is both the
 /// fallback and the live accent (see [`ISLAND_ACCENT`]) — keep the two
 /// equal: ONE accent value, not one per theme.
-pub const DEFAULT_ACCENT: (u8, u8, u8) = (124, 162, 245);
+/// r1d finding 4: the reference's active power disc reads
+/// (121, 161, 245); the old (124, 162, 245) was 3/1/0 too bright.
+pub const DEFAULT_ACCENT: (u8, u8, u8) = (121, 161, 245);
 
 /// Alias for the fixed island accent — the single source of truth for
 /// the live accent colour. [`accent_for_theme`] returns this for every
@@ -644,9 +646,10 @@ mod tests {
     fn accent_is_fixed_periwinkle_for_any_theme() {
         // iter96: the island accent is decoupled from theme palettes —
         // everblush slot 3 is mint green #8CCF7E and must never surface.
-        assert_eq!(accent_for_theme("everblush"), (124, 162, 245));
-        assert_eq!(accent_for_theme("anime"), (124, 162, 245));
-        assert_eq!(accent_for_theme("nonexistent"), (124, 162, 245));
+        // r1d: re-measured from the reference at (121,161,245) = #79A1F5.
+        assert_eq!(accent_for_theme("everblush"), (121, 161, 245));
+        assert_eq!(accent_for_theme("anime"), (121, 161, 245));
+        assert_eq!(accent_for_theme("nonexistent"), (121, 161, 245));
         assert_eq!(ISLAND_ACCENT, DEFAULT_ACCENT);
     }
 

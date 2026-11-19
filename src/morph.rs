@@ -7,11 +7,17 @@
 //!
 //! # Design (see `iterations/morph-design-iter9.md` for the full write-up)
 //!
-//! One morph = 160 ms interpolation between two geometries
+//! One morph = 233 ms interpolation between two geometries
 //! `(width, height, corner_radius)` plus a staggered two-phase content
-//! cross-fade. The same machine drives expand and collapse in every state
-//! (`island_expand` with `from`/`to` swapped — collapse uses the same
-//! ease-out cubic, NOT a time-reversed easing).
+//! cross-fade, followed (on growing dimensions) by a ~150 ms settle
+//! overshoot that decays quadratically back to the target (r1d §2:
+//! reference peak 825x188 settling to 816x186, i.e. +1.1% width /
+//! +1.08% height decaying over ~9 frames of the 60 fps measurement;
+//! `docs/reference-motion-60fps.md` fits easeOutQuad the best of all
+//! candidate curves, MSE 0.00259 vs 0.01201 cubic). The same machine
+//! drives expand and collapse in every state (`island_expand` with
+//! `from`/`to` swapped — collapse is the same ease-out quad, NOT a
+//! time-reversed easing).
 //! CORRECTION (iter10 integrator): an earlier draft of this header
 //! claimed collapse is the EXACT TIME-REVERSE of expand (geometry and
 //! both opacities). That identity cannot hold with role-based fade
@@ -37,6 +43,11 @@
 //!   the measured settle at ~200 ms, inside the 130-230 ms reference
 //!   band, with headroom for the 16 ms timer chain + draw/commit.
 //! - Size: 90x24 -> target, continuously, on an eased curve (NOT linear).
+//!   r1d §2: eased curve is EaseOutQuad; after the 233 ms growth the
+//!   panel overshoots to `to * (1 + OVERSHOOT)` and decays back over
+//!   SETTLE_MS on dimensions that GREW. Shrinking dimensions never
+//!   exceed their endpoints (reference shows no undershoot), so the
+//!   ease-out-back/spring paths stay unwired.
 //! - Corner radius: 12 -> 20, same eased progress.
 //! - Top edge pinned at the 15 px gap; centre x stays 752 (the layer is
 //!   TOP-anchored and horizontally unanchored, so the compositor re-centres
@@ -81,8 +92,25 @@
 
 use std::time::{Duration, Instant};
 
-/// Default island morph duration: 160 ms, expand AND collapse, all states.
-pub const MORPH_DURATION_MS: u64 = 160;
+/// Default island morph duration: 233 ms growth, expand AND collapse, all
+/// states (r1d §2: the reference's 14 measured poses span 233 ms of
+/// growth at 60 fps; the live config's 160 ms produced only 2-3 poses —
+/// the motion reads as a jump-cut, which the owner calls "laggy").
+pub const MORPH_DURATION_MS: u64 = 233;
+
+/// Settle tail after the growth phase, on dimensions that GREW: the panel
+/// peaks at `to * (1 + OVERSHOOT)` at raw progress 1.0 and decays back to
+/// the target over this window (r1d §2: peak frame decays over ~9 frames =
+/// ~150 ms of the 60 fps measurement). Quadratic decay — no invented
+/// oscillator; the reference shows ONE overshoot and a smooth landing.
+pub const SETTLE_MS: u64 = 150;
+/// Width overshoot as a fraction of the target width. Measured:
+/// peak 825 device px -> rest 816 device px in the reference capture
+/// (825/816 - 1 = 0.01103; brief §2 rounds to ~1.1%).
+pub const W_OVERSHOOT: f32 = 0.0110;
+/// Height overshoot as a fraction of the target height. Measured:
+/// peak 188 -> rest 186 device px (188/186 - 1 = 0.01075).
+pub const H_OVERSHOOT: f32 = 0.0108;
 /// Raw time progress at which the outgoing content has fully faded out
 /// (first ~56 ms of the 160 ms morph). Raw basis: the burst
 /// measurements pinned this wall-clock timing (see S-1 tests below).
@@ -116,10 +144,14 @@ pub const INCOMING_SCALE_START: f32 = 0.80;
 /// Easing curve applied to the raw 0..1 time progress.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Easing {
+    /// `1 - (1 - p)^2`. Fast start, gentle landing, no overshoot (the
+    /// settle overshoot is a separate phase owned by `Morph`, not the
+    /// easing, so this curve stays monotone). **Default** (r1d §2):
+    /// best MSE fit to the 14 pose widths from the 60 fps reference
+    /// capture — 0.00259 vs 0.01201 for the old ease-out cubic.
+    EaseOutQuad,
     /// `1 - (1 - p)^3`. Fast start, gentle landing, no overshoot.
-    /// **Default.** Chosen because no video frame shows the panel ever
-    /// exceeding its target size, and a monotonic curve keeps the
-    /// layer-surface `set_size`/`configure` handshake simple.
+    /// Retired as default in r1d §2 (worse MSE fit than quad).
     EaseOutCubic,
     /// Cubic-bezier with control overshoot (c1 = 1.70158): settles ~10%
     /// past the target, then back. The "springy iOS Dynamic Island" feel.
@@ -139,12 +171,14 @@ pub enum Easing {
 
 impl Easing {
     /// Apply the curve to raw progress `p` (0..1). Output is ~0..1 for
-    /// EaseOutCubic/Linear, overshoots slightly past 1 for EaseOutBack and
-    /// Spring. Callers must not assume `<= 1.0` except for EaseOutCubic.
+    /// the monotone curves, overshoots slightly past 1 for EaseOutBack
+    /// and Spring. Callers must not assume `<= 1.0` except for the
+    /// monotone curves (EaseOutQuad, EaseOutCubic, Linear).
     pub fn apply(self, p: f32) -> f32 {
         let p = p.clamp(0.0, 1.0);
         match self {
             Easing::Linear => p,
+            Easing::EaseOutQuad => 1.0 - (1.0 - p).powi(2),
             Easing::EaseOutCubic => 1.0 - (1.0 - p).powi(3),
             Easing::EaseOutBack => {
                 // c1 = 1.70158, c3 = c1 + 1.
@@ -276,9 +310,10 @@ pub struct Morph {
 }
 
 impl Morph {
-    /// General constructor. `duration` is normally 160 ms; pass anything
-    /// else only for tests or for the lockscreen's own (separate, faster)
-    /// timings — never pass 160 ms for lock code (design doc §5).
+    /// General constructor. `duration` is normally 233 ms (the growth
+    /// phase); pass anything else only for tests or for the lockscreen's
+    /// own (separate, faster) timings — never pass for lock code
+    /// (design doc §5).
     pub fn new(from: Geometry, to: Geometry, duration: Duration, easing: Easing) -> Self {
         Self {
             from,
@@ -290,14 +325,14 @@ impl Morph {
     }
 
     /// Island expand: collapsed (or any state) -> target state geometry.
-    /// 160 ms, ease-out cubic. `to` is the target state's
-    /// `(size, radius)` from `IslandState`.
+    /// 233 ms, ease-out quad, then the settle tail on growing dims.
+    /// `to` is the target state's `(size, radius)` from `IslandState`.
     pub fn island_expand(from: Geometry, to: Geometry) -> Self {
         Self::new(
             from,
             to,
             Duration::from_millis(MORPH_DURATION_MS),
-            Easing::EaseOutCubic,
+            Easing::EaseOutQuad,
         )
     }
 
@@ -358,56 +393,131 @@ impl Morph {
         (elapsed.as_secs_f32() / self.duration.as_secs_f32()).clamp(0.0, 1.0)
     }
 
-    /// True once the morph's time is up.
+    /// True once the morph's growth AND settle tail are over. Morphs whose
+    /// target only shrinks (or stays equal — pill -> pill retargets) have
+    /// no settle and finish at `duration`; morphs with a growing dimension
+    /// hold the overshoot for SETTLE_MS past `duration` and finish then.
     pub fn is_done(&self, now: Instant) -> bool {
-        self.raw_progress(now) >= 1.0
+        self.raw_progress(now) >= 1.0 && self.settle_t(now) >= 1.0
+    }
+
+    /// Settle time progress at `now`: 0 during growth (and for its first
+    /// instant), then 0..1 across the SETTLE_MS tail, 1 (topped out) after.
+    /// Morphs with no growing dimension report 1.0 the moment growth ends.
+    fn settle_t(&self, now: Instant) -> f32 {
+        let elapsed = now.duration_since(self.start);
+        if elapsed < self.duration {
+            return 0.0;
+        }
+        let grows = self.to.width > self.from.width || self.to.height > self.from.height;
+        if !grows {
+            return 1.0;
+        }
+        let tail = elapsed - self.duration;
+        (tail.as_secs_f32() / (SETTLE_MS as f32 / 1000.0)).clamp(0.0, 1.0)
+    }
+
+    /// Overshoot envelope in [0, 1]: 0 during growth, 1 at the moment the
+    /// growth tops out (raw progress 1.0 — the reference peak frame),
+    /// decaying quadratically to 0 at the end of SETTLE_MS. (1 - s)^2:
+    /// fast initial decay, gentle landing — one overshoot and a smooth
+    /// touchdown, never a spring.
+    fn overshoot_at(&self, s: f32) -> f32 {
+        if self.to.width <= self.from.width && self.to.height <= self.from.height {
+            return 0.0;
+        }
+        (1.0 - s.clamp(0.0, 1.0)) * (1.0 - s.clamp(0.0, 1.0))
     }
 
     /// The full frame at `now`: interpolated geometry + both content
     /// opacities/scales. Pure function of `now` — calling it twice with
     /// the same instant returns the same frame.
     pub fn frame_at(&self, now: Instant) -> MorphFrame {
-        self.frame_for_raw(self.raw_progress(now))
+        let raw = self.raw_progress(now);
+        let settle_t = if raw >= 1.0 {
+            self.settle_t(now)
+        } else {
+            0.0
+        };
+        let growing = self.to.width > self.from.width || self.to.height > self.from.height;
+        let done = raw >= 1.0 && (!growing || settle_t >= 1.0);
+        // Envelope only wakes AT the growth end (raw >= 1); during
+        // growth the ease-out quad itself never exceeds the target.
+        let over = if raw >= 1.0 {
+            self.overshoot_at(settle_t)
+        } else {
+            0.0
+        };
+        self.frame_with(raw, over, done)
     }
 
-    /// The full frame at raw time progress `raw` (0..1), without
-    /// needing an Instant. `frame_at(now)` is
-    /// `frame_for_raw(self.raw_progress(now))`.
+    /// The full frame at raw time progress `raw` (0..1) with NO settle
+    /// tail — the historic contract used by unit tests and by callers
+    /// that drive the morph on raw progress. Growth geometry here is
+    /// identical to `frame_at` below raw 1.0; at raw 1.0 (no settle in
+    /// the raw domain) `done` is true when no dimension grows.
     pub fn frame_for_raw(&self, raw: f32) -> MorphFrame {
         let raw = raw.clamp(0.0, 1.0);
+        let growing = self.to.width > self.from.width || self.to.height > self.from.height;
+        // Raw domain has no settle: the envelope stays 0 even at raw
+        // 1.0 (the growth-only endpoint), and done is only true for
+        // morphs with no growing dimension.
+        self.frame_with(raw, 0.0, raw >= 1.0 && !growing)
+    }
+
+    /// Shared frame computation: eased growth + settle overshoot + fade
+    /// windows. `over` is the pre-computed overshoot envelope (0 during
+    /// growth and for the whole raw-only domain; the settle decay for
+    /// growing dims after raw 1.0, via `frame_at`). `done` is decided by
+    /// the caller (settle-aware from `frame_at`, raw-only from
+    /// `frame_for_raw`).
+    fn frame_with(&self, raw: f32, over: f32, done: bool) -> MorphFrame {
+        let raw = raw.clamp(0.0, 1.0);
         let p = self.easing.apply(raw);
-        let geom = self.from.lerp(self.to, p);
+        let mut geom = self.from.lerp(self.to, p);
+        // r1d §2: after growth, growing dims swell past the target by the
+        // measured overshoot factors and decay back over SETTLE_MS.
+        if over > 0.0 {
+            if self.to.width > self.from.width {
+                geom.width = self.to.width * (1.0 + W_OVERSHOOT * over);
+            }
+            if self.to.height > self.from.height {
+                geom.height = self.to.height * (1.0 + H_OVERSHOOT * over);
+            }
+        }
         // Outgoing: 1 -> 0 over RAW time 0..OUTGOING_FADE_END (unchanged
         // — the burst measurements pinned this wall-clock timing).
         let out_t = smoothstep(0.0, OUTGOING_FADE_END, raw);
         // Incoming: 0 -> 1 over EASED progress INCOMING_FADE_START..1.0
         // (iter18 S1 fix, iter33 start 0.5 -> 0.8): the fade starts
-        // when the shell is 80% grown (~66 ms), so content is never
-        // sliced by the capsule edge. Keying to eased progress is the
-        // point — it IS the shell-width progress. The old raw [0.625, 1]
-        // window held content until the shell was ~99% grown (frame 2
-        // empty slab); the 0.5 window sliced it at 120 ms.
+        // when the shell is 80% grown, so content is never sliced by
+        // the capsule edge. Keying to eased progress is the point —
+        // it IS the shell-width progress. On the quad curve the window
+        // opens at raw ~0.55 (~129 ms of 233) — the reference content
+        // itself only appears in the last ~30% of the growth poses.
         let in_t = smoothstep(INCOMING_FADE_START, 1.0, p);
+        // During the settle tail progress is eased-pinned at 1.0, so
+        // in_t is 1.0 and out_t is 0.0: settled content stays fully
+        // opaque while the geometry envelope decays.
         MorphFrame {
             width: geom.width,
             height: geom.height,
             radius: geom.radius,
             progress: p,
             raw_progress: raw,
-            outgoing_opacity: 1.0 - out_t,
             outgoing_scale: 1.0 + (OUTGOING_SCALE_END - 1.0) * out_t,
+            outgoing_opacity: 1.0 - out_t,
             incoming_opacity: in_t,
             incoming_scale: INCOMING_SCALE_START + (1.0 - INCOMING_SCALE_START) * in_t,
-            done: raw >= 1.0,
+            done,
         }
     }
 
     /// Invert the easing: given eased progress `p`, return the raw time
-    /// progress that produces it. Exact for Linear and EaseOutCubic
-    /// (p = 1 - (1 - raw)^3  =>  raw = 1 - (1 - p)^(1/3)); for
-    /// EaseOutBack / Spring (overshooting curves, never used for the
-    /// island) returns None and the caller must fall back to
-    /// wall-clock. Used by the integrator (S-1, v0.7) to draw the
+    /// progress that produces it. Exact for Linear, EaseOutQuad and
+    /// EaseOutCubic; for EaseOutBack / Spring (overshooting curves,
+    /// never used for the island) returns None and the caller must fall
+    /// back to wall-clock. Used by the integrator (S-1, v0.7) to draw the
     /// morph frame matching the PRESENTED geometry: the configure for
     /// a requested size can lag the timer by tens of ms, and
     /// frame_at(now) then draws a later frame's (already-faded)
@@ -416,6 +526,8 @@ impl Morph {
         let p = p.clamp(0.0, 1.0);
         match self.easing {
             Easing::Linear => Some(p),
+            // p = 1 - (1-raw)^2  =>  raw = 1 - sqrt(1 - p). Exact.
+            Easing::EaseOutQuad => Some(1.0 - (1.0 - p).sqrt()),
             Easing::EaseOutCubic => Some(1.0 - (1.0 - p).cbrt()),
             _ => None,
         }
@@ -448,7 +560,7 @@ mod tests {
             from,
             to,
             Duration::from_millis(MORPH_DURATION_MS),
-            Easing::EaseOutCubic,
+            Easing::EaseOutQuad,
             start,
         );
         (m, start)
@@ -466,25 +578,40 @@ mod tests {
         assert_eq!(f0.outgoing_opacity, 1.0);
         assert_eq!(f0.incoming_opacity, 0.0);
         assert!(!f0.done);
-        let f1 = m.frame_at(at(start, 160));
-        assert_eq!((f1.width, f1.height, f1.radius), (342.0, 300.0, 20.0));
+        // r1d §2: growth tops out at the overshoot envelope peak, not at
+        // the target — measured reference peak 825x188 vs rest 816x186
+        // (+1.1% / +1.08%). W_OVERSHOOT x 342 = 3.76 px past the target.
+        let f1 = m.frame_at(at(start, MORPH_DURATION_MS));
+        let approx = |got: f32, want: f32| (got - want).abs() < 0.02;
+        assert!(approx(f1.width, 342.0 * (1.0 + W_OVERSHOOT)), "w {}", f1.width);
+        assert!(approx(f1.height, 300.0 * (1.0 + H_OVERSHOOT)), "h {}", f1.height);
         assert_eq!(f1.outgoing_opacity, 0.0);
         assert_eq!(f1.incoming_opacity, 1.0);
         assert_eq!(f1.incoming_scale, 1.0);
-        assert!(f1.done);
-        // Past the end clamps to the settled state, never beyond it.
-        let f2 = m.frame_at(at(start, 900));
+        assert!(!f1.done, "settle tail must hold done=false at growth end");
+        // Settle ends 150 ms later: exact target geometry, done.
+        let f2 = m.frame_at(at(start, MORPH_DURATION_MS + SETTLE_MS));
         assert_eq!((f2.width, f2.height, f2.radius), (342.0, 300.0, 20.0));
         assert!(f2.done);
+        // Well past the end clamps to the settled state.
+        let f3 = m.frame_at(at(start, 900));
+        assert_eq!((f3.width, f3.height, f3.radius), (342.0, 300.0, 20.0));
+        assert!(f3.done);
+        // The overshoot decays monotonically over the tail (no spring).
+        let mut prev = f32::MAX;
+        for ms in (MORPH_DURATION_MS..=MORPH_DURATION_MS + SETTLE_MS).step_by(10) {
+            let w = m.frame_at(at(start, ms)).width;
+            assert!(w <= prev + f32::EPSILON, "settle not monotone at {ms} ms");
+            prev = w;
+        }
+        assert!(prev >= 342.0, "settle must land at the target, not below");
     }
 
     #[test]
     fn nothing_pops_in_at_t0() {
         // Incoming content is exactly 0 at t=0 and stays 0 until the
-        // shell is 80% grown (eased progress 0.8, ~66 ms — iter33;
-        // was 0.5/~82 ms in iter18, which sliced the content at
-        // 120 ms). It is faintly visible by ~80 ms and past halfway
-        // by ~100 ms: the content grows WITH the shell, inside it.
+        // shell is 80% grown (eased progress 0.8 — iter33; on the quad
+        // curve that is raw 0.5528 = ~129 ms of the 233 ms growth).
         let (m, start) = morph_at(Geometry::collapsed(), Geometry::new(342.0, 300.0, 20.0));
         for ms in [0, 10, 25, 40, 50, 60, 66] {
             assert_eq!(
@@ -493,10 +620,28 @@ mod tests {
                 "incoming opacity must be 0 at {ms} ms"
             );
         }
-        // ~80 ms: ~0.32; ~100 ms: ~0.83 — clearly ramping.
+        // r1d §2 recheck on the quad curve: incoming stays 0 well past
+        // 66 ms now — eased 0.8 is reached at raw 1-sqrt(0.2)=0.5528
+        // (~129 ms of 233). Content appears in the last ~44% of the
+        // growth, matching the reference poses (content ink only shows
+        // in the final ~30% of the growth frames).
+        for ms in [80, 100, 120] {
+            assert_eq!(
+                m.frame_at(at(start, ms)).incoming_opacity,
+                0.0,
+                "incoming must be 0 at {ms} ms (fade starts ~129 ms)"
+            );
+        }
         let approx = |got: f32, want: f32| (got - want).abs() < 0.01;
-        assert!(approx(m.frame_at(at(start, 80)).incoming_opacity, 0.316));
-        assert!(approx(m.frame_at(at(start, 100)).incoming_opacity, 0.828));
+        let expect_at = |ms: u64, want: f32| {
+            let got = m.frame_at(at(start, ms)).incoming_opacity;
+            assert!(approx(got, want), "{ms} ms: {got} != {want}");
+        };
+        // smoothstep(0.8, 1, p): quad p(140 ms) = 0.8409 -> 0.108;
+        // p(160) = 0.9015 -> 0.512; p(200) = 0.9796 -> 0.972.
+        expect_at(140, 0.108);
+        expect_at(160, 0.512);
+        expect_at(200, 0.972);
     }
 
     #[test]
@@ -510,39 +655,45 @@ mod tests {
         // now, not black, so it reads as the island growing, not an
         // empty slab (and the old 0.5 start sliced "55"/"vember 13").
         let (m, start) = morph_at(Geometry::collapsed(), Geometry::new(342.0, 300.0, 20.0));
-        let mid = m.frame_at(at(start, 80));
+        // Outgoing fade window is RAW-based: 0..OUTGOING_FADE_END of
+        // the 233 ms growth = fully out at ~81.5 ms.
+        let mid = m.frame_at(at(start, 90));
         assert_eq!(mid.outgoing_opacity, 0.0);
-        let approx = |got: f32, want: f32| (got - want).abs() < 0.01;
-        assert!(approx(mid.incoming_opacity, 0.316));
-        assert!(mid.width > 300.0 && mid.width < 320.0, "width {}", mid.width);
-        // At 56 ms the outgoing fade has just ended and the incoming
-        // has not started yet (bare frost capsule, ~10 ms).
-        let f56 = m.frame_at(at(start, 56));
-        assert_eq!(f56.outgoing_opacity, 0.0);
-        assert_eq!(f56.incoming_opacity, 0.0);
-        // At 48 ms the outgoing clock is faint; the incoming content
-        // is still 0 — nothing is ever drawn half-sliced.
-        let f48 = m.frame_at(at(start, 48));
-        assert!(f48.outgoing_opacity > 0.0 && f48.outgoing_opacity < 0.1);
-        assert_eq!(f48.incoming_opacity, 0.0);
-        // By 100 ms the incoming content is past 0.8.
-        let f100 = m.frame_at(at(start, 100));
-        assert!(approx(f100.incoming_opacity, 0.828));
+        // Eased width at 90 ms (raw 0.386) = 90 + 252 * 0.6128 ~ 244.
+        assert!(mid.width > 240.0 && mid.width < 250.0, "width {}", mid.width);
+        // The incoming content has not started yet anywhere in the
+        // outgoing window — content is never sliced by the edge.
+        assert_eq!(mid.incoming_opacity, 0.0);
+        // Past the outgoing window (90 ms) with the incoming still
+        // closed (to ~129 ms): bare frost capsule, no content at all.
+        let f110 = m.frame_at(at(start, 110));
+        assert_eq!(f110.outgoing_opacity, 0.0);
+        assert_eq!(f110.incoming_opacity, 0.0);
+        // At 70 ms of 233 the outgoing clock is nearly gone (raw 0.30,
+        // smoothstep to 0.945 -> opacity ~0.055) and the incoming
+        // content is still 0 — nothing is ever drawn half-sliced.
+        let f70 = m.frame_at(at(start, 70));
+        assert!(f70.outgoing_opacity > 0.0 && f70.outgoing_opacity < 0.1);
+        assert_eq!(f70.incoming_opacity, 0.0);
+        // By the growth end the incoming content is fully in.
+        let f1 = m.frame_at(at(start, MORPH_DURATION_MS));
+        assert_eq!(f1.outgoing_opacity, 0.0);
+        assert_eq!(f1.incoming_opacity, 1.0);
     }
 
     #[test]
     fn mid_morph_grown_and_content_visible() {
-        // iter18 S1 fix, iter33 fade start 0.5 -> 0.8 — REPLACES
-        // mid_morph_is_grown_but_near_empty. At ~80 ms the panel is
-        // ~87% grown and the incoming content is at ~0.32 opacity:
+        // iter18 S1 fix, iter33 fade start 0.5 -> 0.8, r1d §2 retimed on
+        // the quad curve: at 160 ms of the 233 ms growth the panel is
+        // 90% of its width grown and the incoming content is at ~0.51 —
         // grown WITH content, inside the capsule, not near-empty and
-        // never sliced. Past 0.8 by ~100 ms.
+        // never sliced. Fully opaque by the growth end.
         let (m, start) = morph_at(Geometry::collapsed(), Geometry::new(342.0, 300.0, 20.0));
-        let mid = m.frame_at(at(start, 80));
+        let mid = m.frame_at(at(start, 160));
         assert!(mid.width > 300.0, "width {} should be near 342", mid.width);
         assert!(mid.incoming_opacity > 0.3, "incoming {}", mid.incoming_opacity);
         assert_eq!(mid.outgoing_opacity, 0.0);
-        let late = m.frame_at(at(start, 100));
+        let late = m.frame_at(at(start, 200));
         assert!(late.incoming_opacity > 0.8, "incoming {}", late.incoming_opacity);
     }
 
@@ -551,20 +702,29 @@ mod tests {
         // The iter18 contract, iter33 start 0.5 -> 0.8, pinned on the
         // wallpaper geometry (90 -> 1008, the critic-pickers-iter16 S1
         // case): the fade starts at exactly 80% shell width and ramps
-        // with it. 80% width (~824) is reached at ~66 ms; frame 2
-        // (~80 ms, width ~893-907) shows content at ~0.32 — inside
-        // the capsule, never sliced by its edge.
+        // with it. r1d §2 retimed on the quad curve: eased 0.5 at
+        // raw 0.2929 (~68 ms), eased 0.8 (fade opens) at raw 0.5528
+        // (~129 ms).
         let (m, start) = morph_at(Geometry::collapsed(), Geometry::new(1008.0, 270.0, 20.0));
-        let approx = |got: f32, want: f32| (got - want).abs() < 0.01;
-        let f32 = m.frame_at(at(start, 32));
-        assert!(f32.width < 549.0, "width {} not yet half-grown", f32.width);
-        assert_eq!(f32.incoming_opacity, 0.0);
-        let f40 = m.frame_at(at(start, 40));
-        assert!(f40.width > 549.0, "width {} past half-grown", f40.width);
-        assert_eq!(f40.incoming_opacity, 0.0);
+        let approx = |got: f32, want: f32| (got - want).abs() < 0.5;
+        // Half-grown (~68 ms): width = 90 + 918 * 0.4985 ~ 547.7, no
+        // content yet (eased below the 0.8 key).
+        let f68 = m.frame_at(at(start, 68));
+        assert!(approx(f68.width, 547.7), "width {} should be half-grown", f68.width);
+        assert_eq!(f68.incoming_opacity, 0.0);
+        // 129 ms: eased p = 1-(1-0.5536)^2 ~ 0.8008 — just at the key;
+        // smoothstep gives ~5e-5 (f32 rounds to 0.0). The fade opens
+        // EXACTLY when the shell passes 80% grown.
+        let f129 = m.frame_at(at(start, 129));
+        assert!(f129.incoming_opacity < 0.01, "fade opens at 80% of the growth");
+        // 140 ms: eased 0.8407 -> smoothstep ~0.107 — content is
+        // flowing in, width 862 > 80% of 1008.
+        let f140 = m.frame_at(at(start, 140));
+        assert!(f140.incoming_opacity > 0.0, "fade must be open past 80% grown");
+        assert!(f140.width > 824.0, "width {}", f140.width);
+        // 80 ms: eased 1-(1-0.343)^2 = 0.568 -> 90 + 918*0.568 ~ 612.
         let f80 = m.frame_at(at(start, 80));
-        assert!(approx(f80.incoming_opacity, 0.316));
-        assert!(f80.width > 890.0, "width {}", f80.width);
+        assert!(approx(f80.width, 611.8), "width {}", f80.width);
     }
 
     #[test]
@@ -572,7 +732,7 @@ mod tests {
         // The fade never goes backwards: no flicker mid-morph.
         let (m, start) = morph_at(Geometry::collapsed(), Geometry::new(342.0, 300.0, 20.0));
         let mut prev = 0.0f32;
-        for ms in (0..=160).step_by(10) {
+        for ms in (0..=(MORPH_DURATION_MS + SETTLE_MS)).step_by(10) {
             let v = m.frame_at(at(start, ms)).incoming_opacity;
             assert!(v >= prev - f32::EPSILON, "incoming dipped at {ms} ms");
             prev = v;
@@ -582,9 +742,10 @@ mod tests {
 
     #[test]
     fn width_is_monotonic_on_default_easing() {
+        // Growth phase only (the settle tail DECAYS back by design).
         let (m, start) = morph_at(Geometry::collapsed(), Geometry::new(342.0, 300.0, 20.0));
         let mut prev = 0.0f32;
-        for ms in (0..=160).step_by(10) {
+        for ms in (0..=MORPH_DURATION_MS).step_by(10) {
             let w = m.frame_at(at(start, ms)).width;
             assert!(w >= prev - f32::EPSILON, "width went backwards at {ms} ms");
             prev = w;
@@ -609,22 +770,23 @@ mod tests {
         assert_eq!(f0.outgoing_opacity, 1.0);
         assert_eq!(f0.incoming_opacity, 0.0);
         assert!(!f0.done);
-        let mid = col.frame_at(at(start, 80));
+        let mid = col.frame_at(at(start, 160));
         assert!(mid.width < 342.0 && mid.width > 90.0, "width {}", mid.width);
         assert_eq!(mid.outgoing_opacity, 0.0);
-        // iter18, iter33 fade start 0.5 -> 0.8: the incoming clock
-        // fades in WITH the shrinking shell (same eased-basis window,
-        // roles swapped) — ~0.32 at 80 ms, ~0.83 at 100 ms, ~1.0 by
-        // 160 ms. No sliced content in either direction.
+        // r1d §2, quad basis: the incoming clock fades in WITH the
+        // shrinking shell — ~0.51 at 160 ms, fully in at the 233 ms end
+        // (eased window opens at raw 0.5528 on this curve too). No
+        // sliced content in either direction.
         let approx = |got: f32, want: f32| (got - want).abs() < 0.01;
-        assert!(approx(mid.incoming_opacity, 0.316));
-        let f1 = col.frame_at(at(start, 160));
+        assert!(approx(mid.incoming_opacity, 0.512));
+        // Shrinking dims never overshoot: done lands at the growth end.
+        let f1 = col.frame_at(at(start, MORPH_DURATION_MS));
         assert_eq!((f1.width, f1.height, f1.radius), (90.0, 24.0, 12.0));
         assert_eq!(f1.outgoing_opacity, 0.0);
         assert_eq!(f1.incoming_opacity, 1.0);
-        assert!(f1.done);
+        assert!(f1.done, "shrink morph must be done at growth end");
         let mut prev = f32::MAX;
-        for ms in (0..=160).step_by(10) {
+        for ms in (0..=MORPH_DURATION_MS).step_by(10) {
             let w = col.frame_at(at(start, ms)).width;
             assert!(w <= prev + f32::EPSILON, "width grew at {ms} ms");
             prev = w;
@@ -639,6 +801,10 @@ mod tests {
         assert!(mid.width < 90.0 && mid.width > 54.0);
         assert_eq!(mid.height, 24.0);
         assert_eq!(mid.radius, 12.0);
+        // Both dims shrink (w) / stay equal (h, r): no settle overshoot,
+        // done exactly at the growth end.
+        assert!(m.frame_at(at(start, MORPH_DURATION_MS)).done);
+        assert_eq!(m.frame_at(at(start, MORPH_DURATION_MS)).width, 54.0);
     }
 
     #[test]
@@ -649,10 +815,21 @@ mod tests {
             Geometry::new(400.0, 150.0, 20.0),
             Geometry::new(342.0, 300.0, 20.0),
         );
-        let mid = m.frame_at(at(start, 80));
+        let mid = m.frame_at(at(start, 120));
         assert!(mid.width < 400.0 && mid.width > 342.0);
         assert!(mid.height > 150.0 && mid.height < 300.0);
         assert_eq!(mid.radius, 20.0);
+        // r1d §2: width shrinks (no settle), height grows -> the settle
+        // tail swells HEIGHT only; done waits for the tail.
+        let top = m.frame_at(at(start, MORPH_DURATION_MS));
+        assert!(top.height > 300.0, "height {} must be at overshoot peak", top.height);
+        let approx = |got: f32, want: f32| (got - want).abs() < 0.02;
+        assert!(approx(top.height, 300.0 * (1.0 + H_OVERSHOOT)));
+        assert_eq!(top.width, 342.0, "shrinking dim must NOT overshoot");
+        assert!(!top.done);
+        let done = m.frame_at(at(start, MORPH_DURATION_MS + SETTLE_MS));
+        assert_eq!((done.width, done.height), (342.0, 300.0));
+        assert!(done.done);
     }
 
     #[test]
@@ -660,7 +837,8 @@ mod tests {
         // A command at 80 ms restarts from the interpolated frame, not
         // from the stale nominal size of the old state.
         let (m, start) = morph_at(Geometry::collapsed(), Geometry::new(342.0, 300.0, 20.0));
-        let now = at(start, 80);
+        // 200 ms of 233 on the quad: eased 0.980 — a near-grown frame.
+        let now = at(start, 200);
         let restarted = m.restart_from_current(now, Geometry::new(400.0, 150.0, 20.0));
         let f0 = restarted.frame_at(now);
         let orig = m.frame_at(now);
@@ -672,23 +850,32 @@ mod tests {
     fn frame_for_raw_matches_frame_at() {
         // frame_at(now) must be exactly frame_for_raw(raw_progress(now)).
         let (m, start) = morph_at(Geometry::collapsed(), Geometry::new(342.0, 300.0, 20.0));
-        for ms in [0, 20, 40, 80, 120, 160, 900] {
+        // During growth the two entry points agree exactly: settle_t is
+        // 0 on both paths, and done is false on both.
+        for ms in [0, 20, 40, 80, 120, 200] {
             let a = m.frame_at(at(start, ms));
-            let b = m.frame_for_raw(ms as f32 / 160.0);
+            let b = m.frame_for_raw(ms as f32 / MORPH_DURATION_MS as f32);
             assert_eq!(a, b, "mismatch at {ms} ms");
         }
+        // frame_for_raw clamps at raw 1.0 and reports the GROWTH-only
+        // endpoint (overshoot envelope only enters via frame_at's
+        // settle clock): geometry = target, done reflects "would be
+        // done if there were no settle" = false for a growing morph.
+        let raw1 = m.frame_for_raw(1.0);
+        assert_eq!((raw1.width, raw1.height, raw1.radius), (342.0, 300.0, 20.0));
+        assert!(m.frame_at(at(start, 900)).done);
     }
 
     #[test]
-    fn raw_for_eased_inverts_ease_out_cubic() {
+    fn raw_for_eased_inverts_ease_out_quad() {
         // S-1 (v0.7): the drawn frame must match the PRESENTED width.
         // Inverting the eased progress recovered from a width must
         // return the raw progress the geometry was requested at.
         let (m, start) = morph_at(Geometry::collapsed(), Geometry::new(342.0, 300.0, 20.0));
-        for ms in [0, 10, 20, 40, 56, 80, 100, 120, 140, 160] {
+        for ms in [0, 10, 20, 40, 56, 80, 100, 120, 140, 200] {
             let f = m.frame_at(at(start, ms));
-            let raw = ms as f32 / 160.0;
-            let back = m.raw_for_eased(f.progress).expect("cubic must invert");
+            let raw = ms as f32 / MORPH_DURATION_MS as f32;
+            let back = m.raw_for_eased(f.progress).expect("quad must invert");
             assert!(
                 (back - raw).abs() < 1e-4,
                 "raw {raw} -> progress {} -> back {back}",
@@ -716,13 +903,18 @@ mod tests {
 
     #[test]
     fn easing_is_not_linear() {
-        // At p=0.25 the panel must already be >25% grown (fast start).
+        // Ease-out = fast start: at any instant the eased fraction is
+        // AHEAD of the raw fraction. At 40 ms of 233 (raw 0.1717) the
+        // quad curve has the panel 31-32% of the way grown.
         let (m, start) = morph_at(Geometry::collapsed(), Geometry::new(342.0, 300.0, 20.0));
         let f = m.frame_at(at(start, 40));
         let grown = (f.width - 90.0) / (342.0 - 90.0);
+        let raw = 40.0 / MORPH_DURATION_MS as f32;
         assert!(
-            grown > 0.5,
-            "ease-out must be well past halfway by 40 ms, got {grown}"
+            grown > raw + 0.10,
+            "ease-out must be well ahead of raw at 40 ms: grown {grown}, raw {raw}"
         );
+        let approx = |got: f32, want: f32| (got - want).abs() < 0.01;
+        assert!(approx(grown, 1.0 - (1.0 - raw) * (1.0 - raw)));
     }
 }

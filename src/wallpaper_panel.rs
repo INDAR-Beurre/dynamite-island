@@ -1219,22 +1219,14 @@ pub fn draw_wallpaper_panel_live(
 mod tests {
     use super::*;
 
-    fn load_test_font() -> Font {
-        let home = std::env::var("HOME").expect("HOME must be set for the panel test");
-        for name in ["Quicksand-Bold.ttf", "Quicksand.ttf"] {
-            let path = format!("{home}/.local/share/fonts/{name}");
-            if let Ok(bytes) = std::fs::read(&path) {
-                if let Ok(f) = Font::from_bytes(bytes, fontdue::FontSettings::default()) {
-                    return f;
-                }
-            }
-        }
-        panic!("no Quicksand font found under ~/.local/share/fonts");
+    fn load_test_font() -> &'static Font {
+        // Vendored asset is embedded: no $HOME dependency, no panic.
+        crate::ui_font()
     }
 
     /// Render the default panel into a fresh buffer. main.rs fills the
     /// black capsule first, so the test pre-fills opaque black too.
-    fn render_default() -> (Vec<u8>, Font) {
+    fn render_default() -> (Vec<u8>, &'static Font) {
         let font = load_test_font();
         let mut canvas = vec![0u8; (PANEL_W * PANEL_H * 4) as usize];
         for px in canvas.chunks_exact_mut(4) {

@@ -987,6 +987,15 @@ fn decode_png_to_logical_interlaced(
     w: usize,
     h: usize,
 ) -> Option<(Vec<u8>, usize, usize)> {
+    let rgb = png_frame_rgb(reader, w, h)?;
+    let logical = downsample_to_logical(&rgb, w, h);
+    Some((logical, LOGICAL_W, LOGICAL_H))
+}
+
+/// One-shot full-frame PNG decode to packed RGB8 (any color type after
+/// `normalize_to_color8`). Shared by the interlace fallback and the
+/// lockscreen's arbitrary-size decode.
+fn png_frame_rgb(reader: &mut png::Reader<File>, w: usize, h: usize) -> Option<Vec<u8>> {
     let frame_bytes = reader.output_buffer_size();
     if frame_bytes == 0 || frame_bytes > MAX_PNG_FRAME_BYTES {
         return None;
@@ -1005,26 +1014,28 @@ fn decode_png_to_logical_interlaced(
         png_row_to_rgb(row, out_ct, w, &mut row_rgb);
         rgb[y * w * 3..(y + 1) * w * 3].copy_from_slice(&row_rgb);
     }
-    // Drop the full frame before the downsample allocates the
-    // logical buffer, so peak stays frame + rgb, never + logical.
-    drop(buf);
-    let logical = downsample_to_logical(&rgb, w, h);
-    Some((logical, LOGICAL_W, LOGICAL_H))
+    Some(rgb)
 }
 
 /// Area-average downsample of an RGB image to logical screen size.
 /// Each logical pixel averages the source rect it covers (weights =
 /// overlap area), so a 1.5x factor stays exact and alias-free.
 fn downsample_to_logical(rgb: &[u8], w: usize, h: usize) -> Vec<u8> {
-    let mut out = vec![0u8; LOGICAL_W * LOGICAL_H * 3];
-    let sx = w as f32 / LOGICAL_W as f32;
-    let sy = h as f32 / LOGICAL_H as f32;
-    for ly in 0..LOGICAL_H {
+    downsample_rgb(rgb, w, h, LOGICAL_W, LOGICAL_H)
+}
+
+/// Area-average an RGB8 image to any `dw x dh`; `downsample_to_logical`
+/// is the `(LOGICAL_W, LOGICAL_H)` case of this.
+fn downsample_rgb(rgb: &[u8], w: usize, h: usize, dw: usize, dh: usize) -> Vec<u8> {
+    let mut out = vec![0u8; dw * dh * 3];
+    let sx = w as f32 / dw as f32;
+    let sy = h as f32 / dh as f32;
+    for ly in 0..dh {
         let y0 = ly as f32 * sy;
         let y1 = (ly + 1) as f32 * sy;
         let sy0 = (y0.floor() as usize).min(h.saturating_sub(1));
         let sy1 = ((y1.ceil() as usize).min(h)).max(sy0 + 1);
-        for lx in 0..LOGICAL_W {
+        for lx in 0..dw {
             let x0 = lx as f32 * sx;
             let x1 = (lx + 1) as f32 * sx;
             let sx0 = (x0.floor() as usize).min(w.saturating_sub(1));
@@ -1049,7 +1060,7 @@ fn downsample_to_logical(rgb: &[u8], w: usize, h: usize) -> Vec<u8> {
                     wsum += wt;
                 }
             }
-            let o = (ly * LOGICAL_W + lx) * 3;
+            let o = (ly * dw + lx) * 3;
             if wsum > 0.0 {
                 out[o] = (acc[0] / wsum).round() as u8;
                 out[o + 1] = (acc[1] / wsum).round() as u8;
@@ -1058,6 +1069,54 @@ fn downsample_to_logical(rgb: &[u8], w: usize, h: usize) -> Vec<u8> {
         }
     }
     out
+}
+
+/// Decode a wallpaper (either format, sniffed) and area-average it to
+/// exactly `dw x dh` RGB8.
+///
+/// r1d: added for the lockscreen, which needs the LIVE output size
+/// (1504x1003) while `LOGICAL_W/LOGICAL_H` are a fixed 1504x1002 — the
+/// mismatch that made every lock entry fall back to opaque black. Both
+/// decoders are the ones this module already uses, so the lock screen
+/// no longer depends on a hand-made `.rgba` per output size.
+pub fn decode_wallpaper_rgb(path: &Path, dw: usize, dh: usize) -> Option<Vec<u8>> {
+    if dw == 0 || dh == 0 {
+        return None;
+    }
+    let (rgb, w, h) = match file_format(path)? {
+        ImgFormat::Jpeg => {
+            let bytes = std::fs::read(path).ok()?;
+            let mut dec = zune_jpeg::JpegDecoder::new(std::io::Cursor::new(bytes));
+            dec.decode_headers().ok()?;
+            let info = dec.info()?;
+            let (w, h) = (info.width as usize, info.height as usize);
+            if w == 0 || h == 0 || w.checked_mul(h)? > MAX_JPEG_PIXELS {
+                return None;
+            }
+            let rgb = dec.decode().ok()?;
+            if rgb.len() != w * h * 3 {
+                return None;
+            }
+            (rgb, w, h)
+        }
+        ImgFormat::Png => {
+            let file = File::open(path).ok()?;
+            let mut decoder = png::Decoder::new(file);
+            decoder.set_transformations(png::Transformations::normalize_to_color8());
+            let mut reader = decoder.read_info().ok()?;
+            let (w, h) = {
+                let info = reader.info();
+                (info.width as usize, info.height as usize)
+            };
+            if w == 0 || h == 0 || w.checked_mul(h)? > MAX_WALLPAPER_PIXELS {
+                return None;
+            }
+            // One-shot: the frame is held whole, then dropped before
+            // the downsample allocates. Runs once per lock entry.
+            (png_frame_rgb(&mut reader, w, h)?, w, h)
+        }
+    };
+    Some(downsample_rgb(&rgb, w, h, dw, dh))
 }
 
 /// Reusable blur scratch (iter85): one logical-size buffer shared by
@@ -1307,6 +1366,37 @@ mod tests {
         assert_eq!(bw.sample(-5.0, -5.0), [9, 9, 9]);
         assert_eq!(bw.sample(99999.0, 99999.0), [9, 9, 9]);
         assert_eq!(bw.sample(0.4, 0.4), [9, 9, 9]);
+    }
+
+    #[test]
+    fn decode_wallpaper_rgb_to_arbitrary_size() {
+        // r1d guard: the lockscreen needs the LIVE output size, not
+        // LOGICAL_W x LOGICAL_H. 4x3 solid (40,60,200) PNG decoded to
+        // 2x5 must come out 2*5*3 bytes of the same colour, or the lock
+        // wallpaper silently goes black again.
+        use std::io::Cursor;
+        let mut encoded = Vec::new();
+        {
+            let mut enc = png::Encoder::new(Cursor::new(&mut encoded), 4, 3);
+            enc.set_color(png::ColorType::Rgb);
+            enc.set_depth(png::BitDepth::Eight);
+            let mut w = enc.write_header().unwrap();
+            let rows: Vec<u8> = (0..12).flat_map(|_| [40u8, 60, 200]).collect();
+            w.write_image_data(&rows).unwrap();
+            w.finish().unwrap();
+        }
+        let path = std::env::temp_dir().join("iter-r1e-lock-wp.png");
+        std::fs::write(&path, &encoded).unwrap();
+        let rgb = decode_wallpaper_rgb(&path, 2, 5).expect("decode to 2x5");
+        assert_eq!(rgb.len(), 2 * 5 * 3);
+        assert_eq!(&rgb[0..3], &[40, 60, 200]);
+        assert_eq!(&rgb[rgb.len() - 3..], &[40, 60, 200]);
+        // A non-image file must be refused rather than misread.
+        let junk = std::env::temp_dir().join("iter-r1e-lock-wp.junk");
+        std::fs::write(&junk, b"not an image at all").unwrap();
+        assert!(decode_wallpaper_rgb(&junk, 2, 5).is_none());
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&junk);
     }
 
     #[test]

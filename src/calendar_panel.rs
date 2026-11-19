@@ -795,7 +795,7 @@ mod tests {
         peak
     }
 
-    fn load_font(_names: &[&str]) -> Option<fontdue::Font> {
+    fn load_font(_names: &[&str]) -> Option<&'static fontdue::Font> {
         // Vendored asset is embedded: no $HOME dependency, no panic.
         Some(crate::ui_font())
     }

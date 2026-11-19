@@ -112,9 +112,19 @@ fn tray_state() -> &'static RwLock<TrayState> {
     TRAY.get_or_init(|| RwLock::new(TrayState::default()))
 }
 
-/// Clone the current item list (UI thread: draw + hit-test + clicks).
+/// Clone the current item list (UI thread: hit-test + clicks).
 pub fn snapshot() -> Vec<TrayItemSnapshot> {
     tray_state().read().unwrap().items.clone()
+}
+
+/// Borrow the item list for a read-only pass (the two draw paths).
+/// r1c finding 6: the draw runs on every settled frame and `snapshot()`
+/// cloned ~18 Strings and ~15 KB of icon data per frame that was then
+/// dropped untouched. Callers must not call back into the tray while
+/// holding this guard.
+fn with_items<R>(f: impl FnOnce(&[TrayItemSnapshot]) -> R) -> R {
+    let guard = tray_state().read().unwrap();
+    f(&guard.items)
 }
 
 /// Item count without cloning icons (input region / hit-test).
@@ -1079,7 +1089,7 @@ pub fn ensure_tray_host() {
 /// Blit a 16x16 straight-alpha RGBA icon onto the stage canvas at
 /// (x0, y0): same alpha-over convention as
 /// launcher_icons::blit_icon (source RGB, dest BGRA, A forced 255).
-fn blit_rgba16(canvas: &mut [u8], w: u32, h: u32, x0: i32, y0: i32, rgba: &[u8]) {
+fn blit_rgba16(canvas: &mut [u8], w: u32, h: u32, x0: i32, y0: i32, rgba: &[u8], op: f32) {
     debug_assert_eq!(rgba.len(), 16 * 16 * 4);
     for sy in 0..16i32 {
         let y = y0 + sy;
@@ -1092,7 +1102,7 @@ fn blit_rgba16(canvas: &mut [u8], w: u32, h: u32, x0: i32, y0: i32, rgba: &[u8])
                 continue;
             }
             let si = (sy as usize * 16 + sx as usize) * 4;
-            let sa = rgba[si + 3] as f32 / 255.0;
+            let sa = rgba[si + 3] as f32 / 255.0 * op;
             if sa <= 0.0 {
                 continue;
             }
@@ -1121,6 +1131,7 @@ fn draw_placeholder_disc(
     cy: f32,
     font: &fontdue::Font,
     label: &str,
+    op: f32,
 ) {
     let (fr, fg, fb) = (28u8, 30u8, 34u8);
     let x0 = ((cx - 8.0 - 1.0).floor() as i32).max(0);
@@ -1131,7 +1142,7 @@ fn draw_placeholder_disc(
         for x in x0..x1 {
             let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
             let d = ((px - cx).powi(2) + (py - cy).powi(2)).sqrt();
-            let a = (8.0 + 0.5 - d).clamp(0.0, 1.0) * 0.92;
+            let a = (8.0 + 0.5 - d).clamp(0.0, 1.0) * 0.92 * op;
             if a > 0.0 {
                 let i = (((y as u32 * w) + x as u32) * 4) as usize;
                 let inv = 1.0 - a;
@@ -1155,7 +1166,7 @@ fn draw_placeholder_disc(
                 if px_x < 0 || px_y < 0 || px_x >= w as i32 || px_y >= h as i32 {
                     continue;
                 }
-                let cc = cov[(gy as usize) * gm.width + gx as usize] as f32 / 255.0;
+                let cc = cov[(gy as usize) * gm.width + gx as usize] as f32 / 255.0 * op;
                 if cc <= 0.0 {
                     continue;
                 }
@@ -1313,7 +1324,7 @@ fn draw_placeholder_disc_scaled(
 /// same centres as draw_tray_cluster_stage, at `scale` device px per
 /// logical px, with the native 32x32 IconPixmap when available.
 pub fn draw_tray_cluster_2x(canvas: &mut [u8], bw: u32, bh: u32, font: &fontdue::Font, scale: f32) {
-    let items = snapshot();
+    with_items(|items| {
     if items.is_empty() {
         return;
     }
@@ -1339,6 +1350,7 @@ pub fn draw_tray_cluster_2x(canvas: &mut [u8], bw: u32, bh: u32, font: &fontdue:
             ),
         }
     }
+    });
 }
 
 /// Draw the tray cluster into the stage canvas (called from
@@ -1349,12 +1361,16 @@ pub fn draw_tray_cluster_stage(
     w: u32,
     h: u32,
     font: &fontdue::Font,
+    op: f32,
 ) {
-    let items = snapshot();
-    if items.is_empty() {
+    if op <= 0.0 {
         return;
     }
     // Centres come from main.rs (crate::tray_icon_centres, iter108-C).
+    with_items(|items| {
+    if items.is_empty() {
+        return;
+    }
     for (i, (cx, cy)) in crate::tray_icon_centres(items.len()).iter().enumerate() {
         let it = &items[i];
         match &it.icon {
@@ -1365,6 +1381,7 @@ pub fn draw_tray_cluster_stage(
                 (cx - 8.0).round() as i32,
                 (cy - 8.0).round() as i32,
                 rgba,
+                op,
             ),
             None => draw_placeholder_disc(
                 canvas,
@@ -1374,9 +1391,11 @@ pub fn draw_tray_cluster_stage(
                 *cy,
                 font,
                 if it.title.is_empty() { &it.id } else { &it.title },
+                op,
             ),
         }
     }
+    });
 }
 
 /// Draw the open DBusMenu panel content (panel-local coords; the

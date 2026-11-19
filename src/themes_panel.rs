@@ -259,11 +259,21 @@ const DOT_XS: [f32; 6] = [508.0, 523.0, 535.0, 552.0, 565.0, 580.0];
 
 const NAME_PX: f32 = 13.0;
 
-const C_HIGHLIGHT: (u8, u8, u8) = (5, 22, 60); // #05163C, selected row - muted periwinkle tint at the old lift's lightness (anchor #7CA2F5), iter96 (was s12 sample #1A1A25)
+const C_HIGHLIGHT: (u8, u8, u8) = (25, 26, 31); // #191A1F, selected row - r1d: reference selection is neutral dark, not navy (was #05163C iter96)
 const C_PRIMARY: (u8, u8, u8) = (255, 255, 255);
 const C_SECONDARY: (u8, u8, u8) = (255, 255, 255); // #FFFFFF — iter128: meta text white, was #9AA0A6 (154,160,166), peak lum ~143-166, contrast ~6:1. White peaks ~255 in-buffer (~237 live after the 1.5x upscale). Hierarchy kept by size (12 px vs 13 px names), not by dimming.
 const C_QUERY: (u8, u8, u8) = (255, 255, 255);
 const C_ICON_DISC: (u8, u8, u8) = (16, 18, 24); // #101218, s12 shape
+/// r1d: unselected-row chips are rounded SQUARES (35x29 device px,
+/// radius 6) at scale 1.5, not discs.
+const CHIP_W: f32 = 23.3;
+const CHIP_H: f32 = 19.3;
+const CHIP_R: f32 = 4.0;
+/// r1d: search row divider #1F2127, 1 logical px, and the 2 px caret
+/// that sits before an empty placeholder.
+const C_DIVIDER: (u8, u8, u8) = (31, 33, 39);
+const CARET_W: f32 = 2.0;
+const CARET_H: f32 = 14.0;
 
 // ---------------------------------------------------------------------------
 // Themes — names + dot palettes (6 dots per row, s12-measured count).
@@ -710,7 +720,10 @@ fn fade_thumb_left(canvas: &mut [u8], w: u32, h: u32) {
             if a <= 0.0 {
                 continue;
             }
-            blend_pixel(canvas, w, x, y, (0, 0, 0), a);
+            // r1d: blend toward the card fill, not pure black — the
+            // fade has to terminate exactly at C_HIGHLIGHT or its
+            // edge reads as a hard seam against the row.
+            blend_pixel(canvas, w, x, y, C_HIGHLIGHT, a);
         }
     }
 }
@@ -1025,10 +1038,35 @@ fn draw_search_line(
             C_QUERY, false,
         );
     }
+    if search_text.is_empty() {
+        // r1d: 2 px caret before the empty placeholder.
+        fill_rounded_rect(
+            canvas,
+            w,
+            h,
+            Rect::new(
+                SEARCH_TEXT_X - CARET_W - 4.0,
+                SEARCH_TEXT_TOP,
+                CARET_W,
+                CARET_H,
+            ),
+            0.5,
+            C_PRIMARY,
+        );
+    }
     let counter_w = text_width(font, counter, COUNTER_PX);
     draw_text(
         canvas, w, h, font, counter, COUNTER_PX, COUNTER_RIGHT - counter_w, COUNTER_TOP,
         C_SECONDARY, false,
+    );
+    // r1d: 1 px divider on the search row's bottom edge.
+    fill_rounded_rect(
+        canvas,
+        w,
+        h,
+        Rect::new(ROW_X, SEARCH_Y + SEARCH_H, ROW_W, 1.0),
+        0.0,
+        C_DIVIDER,
     );
 }
 
@@ -1145,8 +1183,14 @@ fn draw_unselected_row(
     // 6 dots at the right edge. No fill (video wins over QS).
     let (_, ry, _, rh) = row_rect(row);
     let cy = ry + rh / 2.0;
-    fill_circle(
-        canvas, w, h, ICON_CX, cy, ICON_DISC_D / 2.0, C_ICON_DISC,
+    // r1d: rounded square, not a disc (reference 35x29 device, r 6).
+    fill_rounded_rect(
+        canvas,
+        w,
+        h,
+        Rect::new(ICON_CX - CHIP_W / 2.0, cy - CHIP_H / 2.0, CHIP_W, CHIP_H),
+        CHIP_R,
+        C_ICON_DISC,
     );
     fill_circle(
         canvas, w, h, ICON_CX, cy, ICON_DOT_D / 2.0, icon_teal,
@@ -1264,22 +1308,14 @@ pub fn draw_themes_panel_live(
 mod tests {
     use super::*;
 
-    fn load_test_font() -> Font {
-        let home = std::env::var("HOME").expect("HOME must be set for the panel test");
-        for name in ["Quicksand-Bold.ttf", "Quicksand.ttf"] {
-            let path = format!("{home}/.local/share/fonts/{name}");
-            if let Ok(bytes) = std::fs::read(&path) {
-                if let Ok(f) = Font::from_bytes(bytes, fontdue::FontSettings::default()) {
-                    return f;
-                }
-            }
-        }
-        panic!("no Quicksand font found under ~/.local/share/fonts");
+    fn load_test_font() -> &'static Font {
+        // Vendored asset is embedded: no $HOME dependency, no panic.
+        crate::ui_font()
     }
 
     /// Render the default panel into a fresh buffer. main.rs fills the
     /// black capsule first, so the test pre-fills opaque black too.
-    fn render_default() -> (Vec<u8>, Font) {
+    fn render_default() -> (Vec<u8>, &'static Font) {
         let font = load_test_font();
         let mut canvas = vec![0u8; (PANEL_W * PANEL_H * 4) as usize];
         for px in canvas.chunks_exact_mut(4) {
@@ -1399,16 +1435,20 @@ mod tests {
         println!("search placeholder peak lum: {search_peak}");
         assert!(search_peak > 200, "search placeholder still dim: peak {search_peak}");
         // Selected-row highlight: mean in the row (left of thumb) is
-        // the muted-periwinkle tint #05163C (5,22,60) — dark like the old
-        // grey fill (26,26,37) at the same lightness, but blue-dominant:
-        // rendered mean ~(9,26,63), B-R ~54 (old grey: B-R ~11).
+        // the NEUTRAL dark fill #191A1F (25,26,31) — r1d: the reference
+        // selection is neutral, not the saturated navy #05163C this test
+        // used to pin. Measured mean lands ~(29,29,34): the fill plus the
+        // bullet and the selected name, so R and G track the fill and B
+        // sits a few units higher from the AA text.
         let (mr, mg, mb) = mean_rgb(&canvas, 20, 70, 350, 158);
         println!("highlight mean RGB ({mr:.0},{mg:.0},{mb:.0})");
-        assert!(mr > 2.0 && mr < 20.0, "highlight fill wrong: {mr:.0}");
-        assert!(mg > 10.0 && mg < 45.0, "highlight fill wrong: {mg:.0}");
-        assert!(mb > 40.0 && mb < 85.0, "highlight fill wrong: {mb:.0}");
-        assert!(mb - mr > 40.0, "highlight not periwinkle: {mr:.0},{mb:.0}");
-        assert!(mb - mg > 20.0, "highlight not periwinkle: {mg:.0},{mb:.0}");
+        assert!(mr > 20.0 && mr < 45.0, "highlight fill wrong: {mr:.0}");
+        assert!(mg > 20.0 && mg < 45.0, "highlight fill wrong: {mg:.0}");
+        assert!(mb > 24.0 && mb < 50.0, "highlight fill wrong: {mb:.0}");
+        // Neutral: the channels sit within a few units of each other. A
+        // navy fill would put B 30+ above R (the old (5,22,60) gave 55).
+        assert!(mb - mr < 12.0, "highlight not neutral: {mr:.0},{mb:.0}");
+        assert!(mb - mg < 12.0, "highlight not neutral: {mg:.0},{mb:.0}");
         // Bullet: bright pixels near (34,100).
         let bullet = count_bright(&canvas, 28, 94, 42, 107, 300);
         println!("bullet bright px: {bullet}");
@@ -1494,6 +1534,10 @@ mod tests {
     fn row_theme_index_wraps() {
         // Fallback count is 5 when the library is absent; with the
         // library deployed it is 24. Either way the mapping wraps.
+        // theme_reset() first: the query is a shared static and a
+        // sibling test that types into the search box can leave it
+        // non-empty, which switched this to the FILTERED branch.
+        theme_reset();
         let n = theme_total();
         assert_eq!(row_theme_index(0, 0), Some(0));
         assert_eq!(row_theme_index(1, 0), Some(1 % n.max(1)));

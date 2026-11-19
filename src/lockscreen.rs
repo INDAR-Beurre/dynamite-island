@@ -24,22 +24,24 @@
 //! GEOMETRY — all values are @1080p reference unless marked; the layout
 //! scales by s = surface_height / 1080 (Surface logical 1003 -> s = 0.928).
 //! ---------------------------------------------------------------------------
-//!   Giant clock block: 759 x 204 @1080 (39.5 % of width x 18.9 % of
-//!     height), TRUE CENTRE on both axes (block centre = screen centre).
-//!     Glyphs: Quicksand Bold, pixelSize = 0.27 x surface height
-//!     (~292 @1080, ~270 on the Surface). Cap height 204 @1080.
-//!     Advance: tabular — digit cells 0.60 em (~175 @1080), colon cell
-//!     0.21 em (~60 @1080, measured narrow). 4 x 175 + 60 = 760 ~ 759.
-//!   Cyan specular: REAL, glyph-clipped, #AAF9FE (170,249,254) at alpha
-//!     0.9 at the block's left edge, fading to transparent by ~42 % of
-//!     block width. Digits 3-5 stay pure white. Implemented as a second
-//!     pass over the same glyph mask with a horizontal gradient alpha.
+//!   Giant clock block: 868 x 279 ink at 2560x1440 (ink/W .33906,
+//!     cap/H .19375), TRUE CENTRE on both axes. Glyphs: Quicksand Bold at
+//!     pixelSize = 0.27 x surface height: measured ink width is within
+//!     0.01 % of the reference, so CLOCK_PX_FRAC stays. Advance: tabular
+//!     digit cells 0.60 em, colon cell 0.21 em.
+//!   Clock material (no white base, no cyan specular: both were the OLD
+//!     design and are deleted): the glyphs are wallpaper-sampled frosting.
+//!     The registered (1.030x) wallpaper is blurred at radius
+//!     0.016667 x H and pushed through a per-channel affine fit, then
+//!     composited INSIDE the glyph coverage over the veiled backdrop.
+//!     The ink therefore carries the wallpaper's own hue and varies with
+//!     it (reference ink median [87,235,206], 92.8 % teal-ish).
 //!   Drop shadow: offset (0, +3 x s), blur radius 8 x s, black alpha 0.35
 //!     (thumbnail value @720 ~+4 px -> +3 logical on the Surface).
-//!   Scrim: the wallpaper itself, sharp, NO blur, darkened by a RADIAL
-//!     scrim: black alpha 0.22 at centre -> 0.42 at the corners
-//!     (iter13 re-measurement, patch-averaged 9x9 f0620 vs f0571:
-//!     corners mean ratio 0.58, centre band 0.78).
+//!   Veil: the wallpaper itself (zoomed 1.030x), SHARP (best-fit global
+//!     blur is radius 0.6 device px, i.e. compression, not UI), darkened
+//!     by a VERTICAL black veil: alpha .430 at the top edge, .224 flat
+//!     over the middle, .507 at the bottom edge. See `veil_alpha`.
 //!   Lock pill (inside the lock surface, top-centre): black capsule,
 //!     57 x 27 @1080, radius h/2, top margin 42 @1080 (~39 Surface) —
 //!     NOTE: ~27 px LOWER than the island's 15 px gap; reproduce it.
@@ -195,19 +197,54 @@ pub const CAP_HEIGHT_RATIO: f32 = 0.70;
 
 pub const C_WHITE: (u8, u8, u8) = (255, 255, 255);
 pub const C_BLACK: (u8, u8, u8) = (0, 0, 0);
-/// Cyan specular tint, video-sampled: #AAF9FE.
-pub const C_CYAN: (u8, u8, u8) = (170, 249, 254);
-pub const CYAN_ALPHA: f32 = 0.9; // at the block's left edge
-pub const CYAN_END_FRAC: f32 = 0.42; // transparent by 42 % of block width
 pub const SHADOW_ALPHA: f32 = 0.35;
 pub const SHADOW_DY_FRAC: f32 = 3.0; // px @1080, times s
 pub const SHADOW_BLUR_FRAC: f32 = 8.0; // px @1080, times s
-pub const SCRIM_CENTRE: f32 = 0.22; // black alpha at screen centre
-pub const SCRIM_EDGE: f32 = 0.42; // black alpha at the corners
-// ^^ iter13 re-measurement (patch-averaged 9x9, f0620 vs f0571):
-// corners mean ratio 0.58 (alpha 0.42; five points 0.39-0.49), centre
-// band 0.78 (alpha 0.22). The scope doc's 0.36 edge was ~0.06 light.
-// Top-centre (320,25) reads 0.32 but is pill-contaminated — excluded.
+// ---------------------------------------------------------------------------
+// Locked-state materials: docs/lockscreen-spec.md §3 (measured from the
+// reference frames, re-checked by the parent; do NOT re-derive by eye).
+// ---------------------------------------------------------------------------
+/// The locked wallpaper is the desktop wallpaper zoomed 1.030x about
+/// screen centre (verified against pole/support edges over a 1.000-1.070
+/// scan). Applied to BOTH the veiled backdrop and the clock material.
+pub const LOCK_ZOOM: f32 = 1.030;
+
+/// Veil: black, **vertical only**. A radial vignette cannot reproduce the
+/// reference, which transmits the same amount at the left and right edges
+/// of any given row. Fitted against nine measured patch alphas (mean abs
+/// error 0.0037, max 0.0105): plateau alpha .224 over y .278-.750 H, .430
+/// at the top edge, .507 at the bottom edge. Normalised to screen height,
+/// so the profile is resolution-independent.
+pub const VEIL_TOP_STOP: f32 = 0.27778; // top ramp ends (400/1440 H)
+pub const VEIL_BOT_SPLIT: f32 = 0.75; // bottom ramp starts
+pub const VEIL_TRANSMIT_PLATEAU: f32 = 0.77635;
+pub const VEIL_TOP_DROP: f32 = 0.20660;
+pub const VEIL_BOT_DROP: f32 = 0.28306;
+
+/// Clock material: the wallpaper, blurred, seen through the glyphs. The
+/// blur is substantial (radius 0.016667 H = 24 px at 1440; fitted gradient
+/// residual -.11 %, RGB RMSE 2.39/255) but confined to the glyph interiors
+/// only: the backdrop itself stays sharp.
+pub const CLOCK_MAT_BLUR_FRAC: f32 = 0.016667;
+/// Per-channel affine fitted against 114,924 glyph-interior pixels:
+/// (gain, offset) on the blurred wallpaper. This keeps the wallpaper's own
+/// hue; it is NOT a palette entry (the teal #57EBCE is that wallpaper's
+/// colour, not a brand token).
+pub const CLOCK_MAT_R: (f32, f32) = (1.19396, 83.78911);
+pub const CLOCK_MAT_G: (f32, f32) = (1.25239, 83.09509);
+pub const CLOCK_MAT_B: (f32, f32) = (1.25567, 76.69171);
+
+/// Black alpha of the veil at row `y` of a screen `h` px tall.
+pub fn veil_alpha(y: f32, h: f32) -> f32 {
+    1.0 - veil_transmission(y, h)
+}
+
+pub fn veil_transmission(y: f32, h: f32) -> f32 {
+    let top = ((VEIL_TOP_STOP * h - y) / (VEIL_TOP_STOP * h)).clamp(0.0, 1.0);
+    let bot = ((y - VEIL_BOT_SPLIT * h) / ((1.0 - VEIL_BOT_SPLIT) * h)).clamp(0.0, 1.0);
+    VEIL_TRANSMIT_PLATEAU - VEIL_TOP_DROP * top - VEIL_BOT_DROP * bot
+}
+
 pub const PILL_TOP_1080: f32 = 42.0; // lock pill top margin @1080
 pub const PILL_W_1080: f32 = 57.0; // idle lock pill width @1080
 pub const PILL_H_1080: f32 = 27.0; // lock pill height @1080 (all states)
@@ -670,9 +707,11 @@ fn mask_bbox(cov: &[f32], w: usize, h: usize) -> (usize, usize, usize, usize) {
 }
 
 fn rasterize_clock(font: &Font, text: &str, px: f32) -> Mask {
-    let lm = font.horizontal_line_metrics(px).unwrap();
-    let ascent = lm.ascent;
-    let mh = (lm.ascent - lm.descent).ceil().max(1.0) as usize;
+    // Degrade to the em box instead of panicking (r1c finding 9).
+    let (ascent, mh) = match font.horizontal_line_metrics(px) {
+        Some(lm) => (lm.ascent, (lm.ascent - lm.descent).ceil().max(1.0) as usize),
+        None => (px, px.ceil().max(1.0) as usize),
+    };
     // Total advance with fixed tabular cells.
     let mut mw = 0.0f32;
     for ch in text.chars() {
@@ -755,10 +794,8 @@ fn box_blur(src: &[f32], w: usize, h: usize, radius: usize) -> Vec<f32> {
 
 /// Blit a coverage mask onto the canvas, scaled about the mask bbox
 /// centre onto screen centre (cx, cy), plus a vertical offset `dy`.
-/// `grad` is Some((block_left, block_w)) for the cyan pass: coverage is
-/// multiplied by the horizontal gradient (CYAN_ALPHA at the left edge,
-/// 0 past CYAN_END_FRAC of the block width). Returns the screen-space
-/// bbox of the drawn block (for the date-line anchor).
+/// Returns the screen-space bbox of the drawn block (for the date-line
+/// anchor).
 fn blit_mask(
     canvas: &mut [u8],
     w: u32,
@@ -770,7 +807,6 @@ fn blit_mask(
     dy: f32,
     rgb: (u8, u8, u8),
     alpha: f32,
-    grad: Option<(f32, f32)>,
 ) -> Rect {
     if alpha <= 0.0 {
         return Rect::new(cx, cy, 0.0, 0.0);
@@ -790,11 +826,7 @@ fn blit_mask(
             let dy2 = cy + (my as f32 - bcy) * scale_f + dy;
             let ix = dx.round() as i32;
             let iy = dy2.round() as i32;
-            let mut cov = c * alpha;
-            if let Some((block_left, block_w)) = grad {
-                let g = 1.0 - (ix as f32 - block_left) / (CYAN_END_FRAC * block_w);
-                cov *= CYAN_ALPHA * g.clamp(0.0, 1.0);
-            }
+            let cov = c * alpha;
             if cov > 0.0 {
                 blend_px(canvas, w, h, ix, iy, rgb, cov);
             }
@@ -803,6 +835,247 @@ fn blit_mask(
     Rect::new(cx - bw / 2.0, cy - bh / 2.0 + dy, bw, bh)
 }
 
+/// The fitted per-channel affine, applied to one blurred wallpaper pixel.
+///
+/// The coefficients were fitted where the reference clock sits over a DARK
+/// region (blurred ~(3,121,103) -> ink (87,235,206)). Applied to a bright
+/// wallpaper they overflow all three channels and the ink turns pure white
+/// (measured 89.7% of the owner's sky-backdropped clock), which loses the
+/// hue the material exists for. So an overflow is scaled DOWN uniformly
+/// instead of being clipped per channel: identical output everywhere the
+/// fit was made (nothing there reaches 255), hue preserved where it would
+/// have blown out.
+fn clock_material_px(b: [u8; 3]) -> [f32; 3] {
+    let mut m = [
+        CLOCK_MAT_R.0 * b[0] as f32 + CLOCK_MAT_R.1,
+        CLOCK_MAT_G.0 * b[1] as f32 + CLOCK_MAT_G.1,
+        CLOCK_MAT_B.0 * b[2] as f32 + CLOCK_MAT_B.1,
+    ];
+    let hi = m[0].max(m[1]).max(m[2]);
+    if hi > 255.0 {
+        let k = 255.0 / hi;
+        for v in m.iter_mut() {
+            *v *= k;
+        }
+    }
+    for v in m.iter_mut() {
+        *v = v.clamp(0.0, 255.0);
+    }
+    m
+}
+
+/// Composite the glyph material (wallpaper-sampled frosting) through the
+/// clock coverage, over the already-veiled backdrop: every covered pixel
+/// interpolates `backdrop -> material` by the glyph coverage. The material
+/// is sampled at the DESTINATION pixel, so a morph frame slides the
+/// frosting with the glyphs rather than stretching it.
+/// `mat` is RGB u8, w*h*3, registered to canvas pixels; None (no usable
+/// wallpaper) falls back to opaque white ink on the black backdrop.
+fn blit_glyph_material(
+    canvas: &mut [u8],
+    w: u32,
+    h: u32,
+    mask: &Mask,
+    scale_f: f32,
+    cx: f32,
+    cy: f32,
+    dy: f32,
+    mat: Option<&[u8]>,
+    alpha: f32,
+) -> Rect {
+    let (bx0, by0, bx1, by1) = mask.bbox;
+    let bcx = (bx0 + bx1) as f32 / 2.0;
+    let bcy = (by0 + by1) as f32 / 2.0;
+    let bw = (bx1 - bx0 + 1) as f32 * scale_f;
+    let bh = (by1 - by0 + 1) as f32 * scale_f;
+    if alpha > 0.0 {
+        for my in by0..=by1 {
+            for mx in bx0..=bx1 {
+                let c = mask.cov[my * mask.w + mx] * alpha;
+                if c <= 0.003 {
+                    continue;
+                }
+                let ix = (cx + (mx as f32 - bcx) * scale_f).round() as i32;
+                let iy = (cy + (my as f32 - bcy) * scale_f + dy).round() as i32;
+                if ix < 0 || iy < 0 || ix >= w as i32 || iy >= h as i32 {
+                    continue;
+                }
+                let i = ((iy as u32 * w + ix as u32) * 4) as usize;
+                let cc = c.min(1.0);
+                let keep = 1.0 - cc;
+                // `mat` and clock_material_px are RGB; the canvas is BGRA.
+                let m = match mat {
+                    Some(m) => {
+                        let bi = ((iy as u32 * w + ix as u32) * 3) as usize;
+                        clock_material_px([m[bi], m[bi + 1], m[bi + 2]])
+                    }
+                    None => [C_WHITE.0 as f32, C_WHITE.1 as f32, C_WHITE.2 as f32],
+                };
+                canvas[i] = (m[2] * cc + canvas[i] as f32 * keep) as u8;
+                canvas[i + 1] = (m[1] * cc + canvas[i + 1] as f32 * keep) as u8;
+                canvas[i + 2] = (m[0] * cc + canvas[i + 2] as f32 * keep) as u8;
+                canvas[i + 3] = 255;
+            }
+        }
+    }
+    Rect::new(cx - bw / 2.0, cy - bh / 2.0 + dy, bw, bh)
+}
+
+// ---------------------------------------------------------------------------
+// Registered wallpaper + clock material.
+// ---------------------------------------------------------------------------
+/// Bilinear sample of `src` (RGBA8, sw x sh) at fractional source coords.
+/// Edges clamp. Returns [r, g, b].
+fn sample_rgba(src: &[u8], sw: u32, sh: u32, fx: f32, fy: f32) -> [f32; 3] {
+    let x = fx.clamp(0.0, sw as f32 - 1.0);
+    let y = fy.clamp(0.0, sh as f32 - 1.0);
+    let x0 = x.floor() as u32;
+    let y0 = y.floor() as u32;
+    let x1 = (x0 + 1).min(sw - 1);
+    let y1 = (y0 + 1).min(sh - 1);
+    let tx = x - x0 as f32;
+    let ty = y - y0 as f32;
+    let at = |px: u32, py: u32| -> [f32; 3] {
+        let i = ((py * sw + px) * 4) as usize;
+        [src[i] as f32, src[i + 1] as f32, src[i + 2] as f32]
+    };
+    let a = at(x0, y0);
+    let b = at(x1, y0);
+    let c = at(x0, y1);
+    let d = at(x1, y1);
+    let mut out = [0.0f32; 3];
+    for k in 0..3 {
+        let top = a[k] + (b[k] - a[k]) * tx;
+        let bot = c[k] + (d[k] - c[k]) * tx;
+        out[k] = top + (bot - top) * ty;
+    }
+    out
+}
+
+/// Three box passes ~ one Gaussian of `sigma` (central limit).
+/// Pass radius r has variance ((2r+1)^2 - 1)/12, so n passes of radius r
+/// give sigma = sqrt(n*((2r+1)^2 - 1)/12).
+fn box_radius_for_sigma(sigma: f32) -> usize {
+    const PASSES: f32 = 3.0;
+    let v = sigma * sigma * 12.0 / PASSES + 1.0;
+    let r = (v.sqrt() - 1.0) / 2.0;
+    r.round().max(1.0) as usize
+}
+
+/// Cached lock materials: the REGISTERED wallpaper (1.030x about centre)
+/// and a blurred copy of it. Both are fixed for as long as the lock screen
+/// is up, so they are built on the first frame and reused: measured 252 ms
+/// cold and 99 ms warm before this cache, of which registration was 79 ms
+/// EVERY frame. Keyed on size, blur radius and a cheap wallpaper signature,
+/// so a different wallpaper still rebuilds. Cleared on the first frame with
+/// no wallpaper, which is how the ~9 MB is released on unlock.
+struct MatCache {
+    w: u32,
+    h: u32,
+    radius: usize,
+    sig: u64,
+    reg: Vec<u8>,  // w*h*3, registered wallpaper, pre-veil
+    blur: Vec<u8>, // w*h*3, blurred registered wallpaper, pre-affine
+}
+
+static MAT_CACHE: std::sync::Mutex<Option<MatCache>> = std::sync::Mutex::new(None);
+
+/// 64-sample FNV over the wallpaper: enough to notice a different image
+/// without hashing 6 MB. The caller re-reads the file on every lock entry,
+/// so the slice pointer alone would not be a reliable key.
+fn wallpaper_sig(wp: &[u8]) -> u64 {
+    let n = wp.len() / 4;
+    if n == 0 {
+        return 0;
+    }
+    let step = (n / 64).max(1);
+    let mut h = 0xcbf2_9ce4_8422_2325u64;
+    let mut i = 0;
+    while i < n {
+        for k in 0..3 {
+            h = (h ^ wp[i * 4 + k] as u64).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        i += step;
+    }
+    h
+}
+
+fn build_registered(w: u32, h: u32, wp: &[u8]) -> Vec<u8> {
+    let cx = (w as f32 - 1.0) / 2.0;
+    let cy = (h as f32 - 1.0) / 2.0;
+    let mut reg = vec![0u8; (w * h * 3) as usize];
+    for y in 0..h {
+        let sy = cy + (y as f32 - cy) / LOCK_ZOOM;
+        for x in 0..w {
+            let sx = cx + (x as f32 - cx) / LOCK_ZOOM;
+            let p = sample_rgba(wp, w, h, sx, sy);
+            let i = ((y * w + x) * 3) as usize;
+            reg[i] = p[0] as u8;
+            reg[i + 1] = p[1] as u8;
+            reg[i + 2] = p[2] as u8;
+        }
+    }
+    reg
+}
+
+fn blur_registered(reg: &[u8], w: u32, h: u32, radius: usize) -> Vec<u8> {
+    let n = (w * h) as usize;
+    let mut out = vec![0u8; n * 3];
+    let mut buf = vec![0.0f32; n];
+    for k in 0..3 {
+        for i in 0..n {
+            buf[i] = reg[i * 3 + k] as f32;
+        }
+        for _ in 0..3 {
+            buf = box_blur(&buf, w as usize, h as usize, radius);
+        }
+        for i in 0..n {
+            out[i * 3 + k] = buf[i].clamp(0.0, 255.0) as u8;
+        }
+    }
+    out
+}
+
+/// Run `f` with the registered backdrop and the blurred material for this
+/// size, building them only when size, radius or wallpaper changed. The
+/// mutex guard is held across `f`, so the slices cannot be freed by a
+/// concurrent rebuild while a frame reads them.
+fn with_lock_materials<R>(
+    w: u32,
+    h: u32,
+    wallpaper: &[u8],
+    f: impl FnOnce(&[u8], &[u8]) -> R,
+) -> Option<R> {
+    let radius = box_radius_for_sigma(CLOCK_MAT_BLUR_FRAC * h as f32);
+    let sig = wallpaper_sig(wallpaper);
+    let mut guard = MAT_CACHE.lock().ok()?;
+    let stale = match guard.as_ref() {
+        Some(c) => c.w != w || c.h != h || c.radius != radius || c.sig != sig,
+        None => true,
+    };
+    if stale {
+        let reg = build_registered(w, h, wallpaper);
+        let blur = blur_registered(&reg, w, h, radius);
+        *guard = Some(MatCache { w, h, radius, sig, reg, blur });
+    }
+    guard.as_ref().map(|c| f(&c.reg, &c.blur))
+}
+
+/// Free the cached registered wallpaper and its blur (~9 MB at 1504x1003).
+/// Called automatically on the first lock frame drawn without a wallpaper;
+/// `main.rs` can also call it when the state leaves Lockscreen, which is the
+/// only path that releases the memory before the next lock.
+pub fn drop_lock_materials() {
+    if let Ok(mut g) = MAT_CACHE.lock() {
+        if g.is_some() {
+            *g = None;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Lock pill (idle glyph / typing dots / wrong-password offset).
+// ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // Lock pill (idle glyph / typing dots / wrong-password offset).
 // ---------------------------------------------------------------------------
@@ -909,11 +1182,85 @@ fn draw_lock_pill(
 // ---------------------------------------------------------------------------
 // Public entry point.
 // ---------------------------------------------------------------------------
+/// Copy the cached registered wallpaper into `canvas` and lay the vertical
+/// veil over it. One alpha per row (the reference transmits equally at the
+/// left and right edge of a row, which a radial vignette cannot do), so this
+/// is also cheaper than the radial form it replaced: no per-pixel divide.
+fn paint_backdrop(canvas: &mut [u8], w: u32, h: u32, reg: &[u8], anim: &LockAnim) {
+    // 8.8 fixed point per row: one integer multiply-shift per channel
+    // instead of a float multiply (measured 19 -> 6 ms per frame at
+    // 1504x1003). The +128 rounds to nearest: truncating instead left the
+    // whole backdrop ~0.006 alpha darker than the recipe.
+    let row = (w * 4) as usize;
+    let row3 = (w * 3) as usize;
+    for y in 0..h {
+        let keep = ((1.0 - veil_alpha(y as f32 + 0.5, h as f32) * anim.scrim)
+            * 256.0)
+            .round() as u32;
+        let dst = &mut canvas[y as usize * row..(y as usize + 1) * row];
+        let src = &reg[y as usize * row3..(y as usize + 1) * row3];
+        for x in 0..w as usize {
+            let si = x * 3;
+            let i = x * 4;
+            dst[i] = ((src[si + 2] as u32 * keep + 128) >> 8) as u8; // B
+            dst[i + 1] = ((src[si + 1] as u32 * keep + 128) >> 8) as u8; // G
+            dst[i + 2] = ((src[si] as u32 * keep + 128) >> 8) as u8; // R
+            dst[i + 3] = 255;
+        }
+    }
+}
+
+/// Opaque black backdrop with the same veil (no wallpaper, or a poisoned
+/// material cache).
+fn paint_backdrop_black(canvas: &mut [u8], w: u32, h: u32) {
+    // The veil multiplies toward black, and the base is black already, so
+    // every pixel is opaque black whatever the scrim alpha.
+    for i in 0..(w * h) as usize {
+        canvas[i * 4] = 0;
+        canvas[i * 4 + 1] = 0;
+        canvas[i * 4 + 2] = 0;
+        canvas[i * 4 + 3] = 255;
+    }
+}
+
+/// Shadow, then the ink: the wallpaper seen THROUGH the glyphs, blurred and
+/// pushed through the fitted per-channel affine. No white base and no cyan
+/// specular: both were the old design. `mat` is the cached blurred
+/// registered wallpaper (w*h*3); None falls back to white (no wallpaper).
+fn clock_ink(
+    canvas: &mut [u8],
+    w: u32,
+    h: u32,
+    mask: &Mask,
+    anim: &LockAnim,
+    s: f32,
+    mat: Option<&[u8]>,
+) -> Rect {
+    let cx = w as f32 / 2.0;
+    let cy = h as f32 / 2.0;
+    let blur_r = (SHADOW_BLUR_FRAC * s).round().max(1.0) as usize;
+    let shadow_cov = box_blur(&mask.cov, mask.w, mask.h, blur_r);
+    let shadow_mask = Mask {
+        w: mask.w,
+        h: mask.h,
+        bbox: mask_bbox(&shadow_cov, mask.w, mask.h),
+        cov: shadow_cov,
+    };
+    blit_mask(
+        canvas, w, h, &shadow_mask, anim.clock_scale, cx, cy,
+        anim.clock_dy + SHADOW_DY_FRAC * s, C_BLACK, SHADOW_ALPHA * anim.clock_opacity,
+    );
+    blit_glyph_material(
+        canvas, w, h, mask, anim.clock_scale, cx, cy, anim.clock_dy,
+        mat, anim.clock_opacity,
+    )
+}
+
 /// Draw one lockscreen frame into `canvas` (fullscreen, w x h logical,
-/// Argb8888 BGRA). Order: wallpaper (or black fallback) -> radial scrim
-/// -> giant clock (shadow, white, cyan specular) -> lock pill -> date
-/// line (only if `data.date_line` is Some — NOT in the video, off by
-/// default).
+/// Argb8888 BGRA). Order: registered wallpaper (1.030x, or black fallback)
+/// -> vertical veil -> giant clock (shadow, wallpaper-sampled frosting
+/// inside the glyphs) -> lock pill -> date line (only if
+/// `data.date_line` is Some, NOT in the video, off by default).
 ///
 /// `font` is Quicksand (same font main.rs loads); `shared_icon_font` is
 /// the Material Symbols font main.rs already loaded (None => this module
@@ -935,78 +1282,36 @@ pub fn draw_lockscreen(
     let anim = data.anim;
     let l = lockscreen_layout(w, h, data.dots);
 
-    // --- (1) Wallpaper, or opaque black if none / wrong size. ---
-    match wallpaper {
-        Some(wp) if wp.len() == (w * h * 4) as usize => {
-            // RGBA -> BGRA blit, opaque.
-            for i in 0..(w * h) as usize {
-                canvas[i * 4] = wp[i * 4 + 2]; // B
-                canvas[i * 4 + 1] = wp[i * 4 + 1]; // G
-                canvas[i * 4 + 2] = wp[i * 4]; // R
-                canvas[i * 4 + 3] = 255; // A
-            }
-        }
-        _ => {
-            for i in 0..(w * h) as usize {
-                canvas[i * 4] = 0;
-                canvas[i * 4 + 1] = 0;
-                canvas[i * 4 + 2] = 0;
-                canvas[i * 4 + 3] = 255;
-            }
-        }
-    }
-
-    // --- (2) Radial scrim: black alpha 0.22 centre -> 0.42 corners. ---
-    // t = normalised elliptical radius squared, 0 at centre, 1 at corners.
-    if anim.scrim > 0.0 {
-        let rx = w as f32 / 2.0;
-        let ry = h as f32 / 2.0;
-        for y in 0..h {
-            let dy = (y as f32 + 0.5 - ry) / ry;
-            for x in 0..w {
-                let dx = (x as f32 + 0.5 - rx) / rx;
-                let t = (dx * dx + dy * dy).clamp(0.0, 1.0);
-                let a = (SCRIM_CENTRE + (SCRIM_EDGE - SCRIM_CENTRE) * t) * anim.scrim;
-                if a > 0.0 {
-                    blend_px(canvas, w, h, x as i32, y as i32, C_BLACK, a);
-                }
-            }
-        }
-    }
-
-    // --- (3) Giant clock: shadow, white base, cyan specular. ---
-    // Real Bold (Quicksand-Bold.ttf is the loaded font) — single white
-    // pass, no fake-bold double-blit (iter13).
+    // --- (1) Registered wallpaper + (2) vertical veil + (3) clock. ---
+    // Registration (1.030x about centre) and the material blur are the same
+    // for every frame of a lock, so both are cached (see with_lock_materials):
+    // measured 252 ms cold / 99 ms warm before the cache, 79 ms of which was
+    // registration on EVERY frame.
+    let src: Option<&[u8]> = match wallpaper {
+        Some(wp) if wp.len() == (w * h * 4) as usize => Some(wp),
+        _ => None,
+    };
+    let cx = w as f32 / 2.0;
     let px = CLOCK_PX_FRAC * h as f32;
     let mask = rasterize_clock(font, &data.time_hhmm, px);
-    let cx = w as f32 / 2.0;
-    let cy = h as f32 / 2.0;
-    let (bx0, _, bx1, _) = mask.bbox;
-    let block_w = (bx1 - bx0 + 1) as f32 * anim.clock_scale;
-    let block_left = cx - block_w / 2.0;
-    // Shadow: blurred mask, offset (0, +3*s), black 0.35.
-    let blur_r = (SHADOW_BLUR_FRAC * s).round().max(1.0) as usize;
-    let shadow_cov = box_blur(&mask.cov, mask.w, mask.h, blur_r);
-    let shadow_mask = Mask {
-        w: mask.w,
-        h: mask.h,
-        bbox: mask_bbox(&shadow_cov, mask.w, mask.h),
-        cov: shadow_cov,
+
+    let clock_block = match src {
+        Some(wp) => with_lock_materials(w, h, wp, |reg, blurred| {
+            paint_backdrop(canvas, w, h, reg, &anim);
+            clock_ink(canvas, w, h, &mask, &anim, s, Some(blurred))
+        })
+        .unwrap_or_else(|| {
+            // Mutex poisoned: still draw something rather than a blank
+            // screen: the veil over black plus a white clock.
+            paint_backdrop_black(canvas, w, h);
+            clock_ink(canvas, w, h, &mask, &anim, s, None)
+        }),
+        None => {
+            drop_lock_materials();
+            paint_backdrop_black(canvas, w, h);
+            clock_ink(canvas, w, h, &mask, &anim, s, None)
+        }
     };
-    blit_mask(
-        canvas, w, h, &shadow_mask, anim.clock_scale, cx, cy,
-        anim.clock_dy + SHADOW_DY_FRAC * s, C_BLACK, SHADOW_ALPHA * anim.clock_opacity, None,
-    );
-    // White base (single pass — real Bold).
-    blit_mask(
-        canvas, w, h, &mask, anim.clock_scale, cx, cy,
-        anim.clock_dy, C_WHITE, anim.clock_opacity, None,
-    );
-    // Cyan specular, glyph-clipped, gradient to transparent at 42 %.
-    let clock_block = blit_mask(
-        canvas, w, h, &mask, anim.clock_scale, cx, cy,
-        anim.clock_dy, C_CYAN, anim.clock_opacity, Some((block_left, block_w)),
-    );
 
     // --- (4) Lock pill (idle glyph / typing dots / wrong offset). ---
     draw_lock_pill(canvas, w, h, shared_icon_font, data, s);
@@ -1132,4 +1437,192 @@ mod tests {
         assert!(l.clock_block.w > 690.0 && l.clock_block.w < 720.0);
         assert!(l.clock_block.h > 180.0 && l.clock_block.h < 200.0);
     }
+
+    /// The discriminating property of a VERTICAL veil: at any given row the
+    /// alpha is the same at the left edge, the centre and the right edge.
+    /// A radial vignette fails exactly this (its row alpha is .34 at both
+    /// edges and .22 in the middle), and the old code was radial.
+    #[test]
+    fn veil_is_vertical_not_radial() {
+        for &(w, h) in &[(1504u32, 1003u32), (1280, 720), (2256, 1504)] {
+            // Flat mid-grey source, so the capture ratio IS the veil alpha.
+            let reg = vec![200u8; (w * h * 3) as usize];
+            let mut canvas = vec![0u8; (w * h * 4) as usize];
+            let anim = LockAnim::locked_hold(h);
+            paint_backdrop(&mut canvas, w, h, &reg, &anim);
+            for (name, y) in [("top", 0u32), ("plateau", h / 2), ("bottom", h - 1)] {
+                let row = &canvas[(y * w * 4) as usize..((y + 1) * w * 4) as usize];
+                let left = row[2] as f32 / 200.0;
+                let mid = row[((w / 2) * 4 + 2) as usize] as f32 / 200.0;
+                let right = row[((w - 1) * 4 + 2) as usize] as f32 / 200.0;
+                let want = 1.0 - veil_alpha(y as f32 + 0.5, h as f32);
+                assert!(
+                    (left - mid).abs() < 0.01 && (mid - right).abs() < 0.01,
+                    "{name} row of {w}x{h} is not flat: {left} {mid} {right}"
+                );
+                assert!((mid - want).abs() < 0.01, "{name} row alpha {mid} != {want}");
+            }
+        }
+    }
+
+    /// The veil runs darker at both edges than in the middle, and its fitted
+    /// anchors are the brief's: .430 top, .224 plateau, .507 bottom.
+    #[test]
+    fn veil_edges_match_the_fitted_recipe() {
+        let h = 1440.0f32;
+        assert!((veil_alpha(0.0, h) - 0.430).abs() < 0.005);
+        assert!((veil_alpha(h, h) - 0.507).abs() < 0.005);
+        assert!((veil_alpha(0.5 * h, h) - 0.224).abs() < 0.005);
+        // The plateau covers y .278-.750 H: flat within 1e-3.
+        let p0 = veil_alpha(0.278 * h, h);
+        for k in 1..=10 {
+            let y = (0.278 + 0.0472 * k as f32) * h;
+            assert!((veil_alpha(y, h) - p0).abs() < 1e-3);
+        }
+        // Darker at both ends than in the middle.
+        assert!(veil_alpha(0.02 * h, h) > veil_alpha(0.2 * h, h));
+        assert!(veil_alpha(0.2 * h, h) > veil_alpha(0.5 * h, h));
+        assert!(veil_alpha(0.9 * h, h) > veil_alpha(0.6 * h, h));
+    }
+
+    #[test]
+    fn clock_material_keeps_the_wallpaper_hue() {
+        // The affine, not a palette entry: a teal background must come out
+        // teal, a warm one warm, and black still lifted.
+        let f = clock_material_px;
+        // Reference: blurred wallpaper under the first `1` is teal
+        // ~(3,121,103); the observed ink there is ~(87,235,206).
+        let ink = f([3, 121, 103]);
+        assert!((ink[0] - 87.0).abs() < 6.0, "R {}", ink[0]);
+        assert!((ink[1] - 235.0).abs() < 6.0, "G {}", ink[1]);
+        assert!((ink[2] - 206.0).abs() < 6.0, "B {}", ink[2]);
+        let warm = f([150, 40, 20]);
+        assert!(warm[0] > ink[0], "a warm background must give warm ink");
+        assert!(warm[1] < ink[1]);
+        assert!(f([0, 0, 0])[1] > 40.0, "a black background is still lifted");
+        // A bright wallpaper overflows all three channels; the hue is kept
+        // by scaling down instead of clipping to white. The owner's sky
+        // under the clock is exactly this case.
+        let sky = f([194, 215, 250]);
+        assert!(sky[2] > sky[1] && sky[1] > sky[0], "sky ink lost its hue: {sky:?}");
+        assert!(sky[2] <= 255.0 && sky.iter().all(|v| *v >= 0.0));
+        // Wherever the fit was made, nothing saturates, so the scale-down
+        // is a no-op there: the fitted domain is unchanged.
+        // The domain the fit was made on (the reference's blurred wallpaper
+        // under the clock) must come out exactly as the plain per-channel
+        // affine: the scale-down only ever fires outside it.
+        let plain = |b: [u8; 3]| {
+            [
+                CLOCK_MAT_R.0 * b[0] as f32 + CLOCK_MAT_R.1,
+                CLOCK_MAT_G.0 * b[1] as f32 + CLOCK_MAT_G.1,
+                CLOCK_MAT_B.0 * b[2] as f32 + CLOCK_MAT_B.1,
+            ]
+        };
+        let mut worst = 0.0f32;
+        for r in (0..=60u8).step_by(6) {
+            for g in (85..=130u8).step_by(9) {
+                for b in (55..=130u8).step_by(9) {
+                    let got = f([r, g, b]);
+                    let want = plain([r, g, b]);
+                    for k in 0..3 {
+                        worst = worst.max((got[k] - want[k]).abs());
+                    }
+                }
+            }
+        }
+        assert!(worst < 1e-4, "fitting domain drifted by {worst}");
+    }
+
+    #[test]
+    fn box_radius_matches_the_fitted_gaussian() {
+        // sigma 24 px at 1440 (CLOCK_MAT_BLUR_FRAC), 3 box passes.
+        let sigma = CLOCK_MAT_BLUR_FRAC * 1440.0;
+        assert!((sigma - 24.0).abs() < 0.5);
+        let r = box_radius_for_sigma(sigma);
+        let d = (2 * r + 1) as f32;
+        let eff = (3.0 * (d * d - 1.0) / 12.0).sqrt();
+        assert!((eff - sigma).abs() < 1.5, "effective sigma {eff} for r {r}");
+    }
+
+    /// Real-pixel check of the composite: over a mid-grey backdrop, a
+    /// half-covered glyph pixel must land halfway between backdrop and the
+    /// affine-mapped material, in BGRA byte order, opaque.
+    #[test]
+    fn glyph_material_composites_over_the_backdrop() {
+        let (w, h) = (4u32, 4u32);
+        let mut canvas = vec![0u8; (w * h * 4) as usize];
+        for i in 0..(w * h) as usize {
+            canvas[i * 4] = 100; // B
+            canvas[i * 4 + 1] = 100; // G
+            canvas[i * 4 + 2] = 100; // R
+            canvas[i * 4 + 3] = 255;
+        }
+        // 2x2 mask, coverage .5 on one pixel, 1.0 on another.
+        let mut cov = vec![0.0f32; 4];
+        cov[0] = 0.5;
+        cov[1] = 1.0;
+        let mask = Mask { w: 2, h: 2, cov, bbox: (0, 0, 1, 1) };
+        // Blurred wallpaper: teal (3,121,103) -> ink ~(87,235,206).
+        let mat = [3u8, 121, 103].repeat((w * h) as usize);
+        blit_glyph_material(&mut canvas, w, h, &mask, 1.0, 2.0, 2.0, 0.0, Some(&mat), 1.0);
+        // bbox centre (0.5,0.5) maps to (2.0,2.0). Mask px (1,0) has
+        // coverage 1.0 -> (2.5,2.0).round() = (3,2); mask px (0,0) has 0.5
+        // -> (1.5,2.0).round() = (2,2).
+        let at = |x: u32, y: u32| {
+            let i = ((y * w + x) * 4) as usize;
+            (canvas[i + 2], canvas[i + 1], canvas[i])
+        };
+        let full = at(3, 2);
+        assert!((full.0 as i32 - 87).abs() < 6, "R {}", full.0);
+        assert!((full.1 as i32 - 235).abs() < 6, "G {}", full.1);
+        assert!((full.2 as i32 - 206).abs() < 6, "B {}", full.2);
+        let half = at(2, 2);
+        assert!((half.0 as i32 - (100 + 87) / 2).abs() < 4, "half R {}", half.0);
+        // Untouched pixel keeps the backdrop exactly.
+        assert_eq!(at(0, 3), (100, 100, 100));
+    }
+
+    /// The veil is applied as one alpha per row: two pixels in the same row
+    /// must darken identically whatever their x, and the row alpha must be
+    /// the fitted `veil_alpha`.
+    #[test]
+    fn veil_darkens_a_row_uniformly() {
+        let (w, h) = (16u32, 8u32);
+        let mut canvas = vec![200u8; (w * h * 4) as usize];
+        for y in 0..h {
+            let keep = 1.0 - veil_alpha(y as f32 + 0.5, h as f32);
+            for x in 0..w {
+                let i = ((y * w + x) * 4) as usize;
+                canvas[i] = (canvas[i] as f32 * keep) as u8;
+                canvas[i + 1] = (canvas[i + 1] as f32 * keep) as u8;
+                canvas[i + 2] = (canvas[i + 2] as f32 * keep) as u8;
+            }
+        }
+        for y in 0..h {
+            let i0 = ((y * w) * 4) as usize;
+            let i1 = ((y * w + w - 1) * 4) as usize;
+            assert_eq!(canvas[i0], canvas[i1], "row {y} is not flat");
+            let expect = (200.0 * (1.0 - veil_alpha(y as f32 + 0.5, h as f32))) as u8;
+            assert_eq!(canvas[i0 + 2], expect, "row {y} alpha");
+        }
+    }
+
+    #[test]
+    fn registration_magnifies_about_the_centre() {
+        let w = 2560.0f32;
+        let cx = (w - 1.0) / 2.0;
+        let dst = 0.25 * w;
+        let src = cx + (dst - cx) / LOCK_ZOOM;
+        // 1.030x means a source pixel 620 px off centre lands 640 px off
+        // centre: the sampled offset is SMALLER than the destination one.
+        assert!(src > dst, "left of centre must sample right of it at 1.03x");
+        assert!((src - cx).abs() < (dst - cx).abs());
+        let ratio = (dst - cx).abs() / (src - cx).abs();
+        assert!((ratio - LOCK_ZOOM).abs() < 1e-5, "ratio {ratio}");
+        // Centre is a fixed point.
+        assert!((cx + (cx - cx) / LOCK_ZOOM - cx).abs() < 1e-6);
+    }
 }
+
+
+
