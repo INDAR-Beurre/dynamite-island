@@ -961,3 +961,25 @@ let mut rect = if frame_running || self.state == IslandState::Lockscreen { full 
 **Likely cause (not yet confirmed):** the stage-sized shm ring. `SLOT_RING = 2` (`src/main.rs:514`), `needed = bw*bh*4` (`src/main.rs:5206`) = 2352×1272×4 = **11.96 MB per slot**, pool `needed * SLOT_RING` (`:5227`) = **23.9 MB**. The fixer is mid-edit on exactly this (`self.slots.len() == SLOT_RING` / `self.slot_bytes = slot_bytes`). Bounding the morph damage rect would shrink `needed` and therefore the whole pool — **the perf fix and the RAM fix are the same fix.**
 **Geometry drift:** config now `collapsed_width=67 bar_height=25 gap_top=13` → live pill **96×38**, aspect **2.526** (ref 2.643, 4.4% off). The parent-derived target remains **74×28** → 111×42. Not applied: the fixer owns config this round.
 **Sharpness:** `lapvar_norm 1665.74` vs ref 1277.0 = **30.4% high**; `stroke_over_cap 0.231` vs 0.200 = **15.5% too heavy**. Both were *under* at baseline (0.154) — the weight fix overshot. `cap_over_pill_h 0.342` vs 0.357.
+
+### Parent spot-check of #25's findings — ALL CONFIRMED IN TREE
+Ran the greps myself rather than trusting the verdict (the run has already caught one hallucinated finding and two stale ones).
+- `src/tray.rs:116` — `tray_state().read().unwrap().items.clone()`, doc says *"Clone the current item list (UI thread: draw + hit-test + clicks)"*. Called at `src/tray.rs:1316` inside `draw_tray_cluster_2x`, i.e. **every settled frame**. Confirmed.
+- `src/main.rs:8412` — `assert!(best.as_millis() < 200, "upscale took {best:?}, budget 200 ms")` against the doc at `src/main.rs:521` *"a 1176x636 stage costs ~5 ms, see the iter108 perf test"*. **The test it points to permits 40× the claim.** Confirmed.
+- `src/main.rs:305` — `CONFIG.read().unwrap().clone()`; doc admits *"Clone snapshot"*. Confirmed.
+- `src/main.rs:2493` — `&(i + 1).to_string()` per disc inside the per-frame painter. Confirmed.
+- **36** `DBG` occurrences in `src/main.rs` (critic said 34 sites; the extra 2 are non-`eprintln` mentions — same finding, count immaterial).
+- `horizontal_line_metrics().unwrap()` holdouts confirmed at **`src/main.rs:2011`, `src/controlcenter_panel.rs:2547`, `src/lockscreen.rs:673`**, with the degrading sibling form present at `src/main.rs:2525` (`let Some(lm) = … else { return }`). The fix is to copy the neighbour.
+- `ensure_loaded()` is called at **three** sites (`src/main.rs:2154`, `:2431`, `:3426`), not two — the third is the morph path, so a morph frame pays the stat+mutex+Arc-clone an extra time.
+
+### Panel extended to 17 slots (chain 5t) — source-only lenses while the fixer builds
+Scored so far (12): #1=6 · #2=5 · #3=3 · #4=7 · #5=6 · #6=4 · #8=3 · #11=3 · #21=6 · #22=4 · #23b=3 · #25=7. **Median 4.5.** Gate ≥9 **not met**.
+**Why source-only right now:** fixer r1b is mid-build and *restarting the panel* (pid 8599 runs `cargo build` then `kill -9` + relaunch). Live-pixel critics dispatched into that window produce fake findings — this already happened once at 01:38–01:42. So the new slots are forbidden from cargo, from restarting the panel and from driving its socket.
+| slot | lens | model | uuid |
+|---|---|---|---|
+| #26 | memory + shm budget | group/hy4 | `90e5b2ab` |
+| #27 | **lock screen vs corrected spec** (vision) | group/gemini-4-hydrogen | `49120719` |
+| #28 | **owner's additions: Bluetooth + workspaces** | group/hy4 | `1a62a97c` |
+| #29 | **portability + packaging** | logfare/deepseek-v4.1-flash-1017 | `2e26bac8` |
+(#24 expanded-panel vision `588d73cf` still outstanding.)
+Each brief carries the **retracted** `#F2A65A` accent claim explicitly so no critic re-introduces it, and #27 carries the **comparison-foil trap** (`l60`/`l320` are the design the creator rejects) so it cannot rebuild the wrong screen. #27 and #28 use the two routes proven to see images 5/5, keeping `gpt-6.1-sol` in reserve — the owner warned it drains their account.
