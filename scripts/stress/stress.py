@@ -521,6 +521,23 @@ class App:
             "best_row": best_row,
         }
 
+    def surface_present(self):
+        """True if the compositor actually lists our layer surface.
+
+        A live process with a working socket can still have NO surface (seen
+        01:39 while a build was in flight: `mmsg get all-layers` -> {"layers":[]}).
+        Every screen assertion is meaningless then, so a run must be declared
+        INVALID rather than scored.
+        """
+        try:
+            p = subprocess.run(["mmsg", "get", "all-layers"],
+                               capture_output=True, text=True, timeout=5)
+            if p.returncode != 0:
+                return None                     # cannot tell
+            return "dynamite" in p.stdout
+        except (OSError, subprocess.SubprocessError):
+            return None
+
     def pill_present(self):
         """True if the collapsed capsule is on screen right now.
 
@@ -1168,6 +1185,7 @@ def main():
           f"({app.socket_kind()})")
     total_tests = total_fails = total_asserts = 0
     failed_groups = []
+    invalid_groups = []
     known = {n for n, _ in GROUPS}
     if args.group:
         unknown = [g for g in args.group if g not in known]
@@ -1186,6 +1204,14 @@ def main():
         t0 = time.perf_counter()
         problems = []
         aborted = None
+        # A live socket with NO layer surface makes every screen assertion
+        # meaningless. Refuse to score rather than report a product failure.
+        surf = app.surface_present()
+        if surf is False:
+            print(f"GROUP {name:14s} INVALID  compositor lists no dynamite "
+                  f"layer surface (mmsg get all-layers); nothing to measure")
+            invalid_groups.append(name)
+            continue
         try:
             problems = fn(app, out)
         except Restart as e:
@@ -1250,6 +1276,11 @@ def main():
     # The owner's gate is >=1000 genuine assertions, not >=1000 sends: a
     # datagram that merely returned "ok" is not a test. Report both so an
     # inflated send count can never masquerade as coverage.
+    if invalid_groups:
+        print("RESULT INVALID: no dynamite layer surface for "
+              + ", ".join(sorted(set(invalid_groups)))
+              + " — fix the build/panel, then re-run. Not a product verdict.")
+        return 2
     if total_asserts < MIN_ASSERTS:
         print(f"RESULT FAIL: only {total_asserts} genuine assertions "
               f"(< {MIN_ASSERTS} required)")
