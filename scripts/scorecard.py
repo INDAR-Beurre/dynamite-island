@@ -22,10 +22,23 @@ LEDGER = REPO / "docs" / "scorecard.jsonl"
 BIN = REPO / "target" / "release" / "dynamite-rust"
 
 # Lower is better for these; higher is better for the rest.
-LOWER = {"lapvar_norm", "lapmean_norm", "rss_mb", "cpu_pct"}
+LOWER = {"rss_mb", "cpu_pct"}
 # Direction is meaningless for geometry: the target is a value, not a limit.
-TARGETS = {"aspect": 2.643, "cap_over_pill_h": 0.357, "stroke_over_cap": 0.200,
-           "text_over_pill_w": 0.486, "lapvar_norm": 1277.0}
+#
+# stroke_over_cap and lapvar_norm are deliberately NOT targets:
+#   * stroke_over_cap is stem/cap. Both sides render a 3.00 px stem; the ratio
+#     differs only because cap is 13 here and 15 there. Chasing it made two
+#     fixers try to change the font weight. See COUNCIL_LOG self-correction 9.
+#   * lapvar_norm compares edge energy, but the reference is a COMPRESSED VIDEO
+#     frame and ours is a clean framebuffer. Our render matches the reference
+#     once band-limited by ~0.3-0.5 px of blur. Blurring the real desktop to
+#     match a codec artefact would make it worse. Self-correction 11.
+# Both stay in the table as live-vs-live REGRESSION detectors.
+TARGETS = {"aspect": 2.643, "cap_over_pill_h": 0.357,
+           "text_over_pill_w": 0.486}
+# Scale-invariant: the reference screen is 2560 wide, ours 2256. Absolute
+# device px are NOT comparable across them (self-correction 10).
+TARGETS["width_pct"] = 4.336
 
 
 def flatten(m):
