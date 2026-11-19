@@ -1123,3 +1123,34 @@ Other verified findings:
 
 ### ⚠️ Note for the next brief — a font the critic asked for does not exist here
 #27b asked to load **SF Compact Display** for the lock clock. `fc-list | grep -iE 'sf.?compact|sf.?pro'` → **empty**; `assets/fonts/` holds only `Inter-Medium.ttf`. **Do not instruct a fixer to load a font that is not present** — it will silently fall back and the finding will look "fixed". Treat it as *match the reference's letterform proportions*, verified by measurement.
+
+## r1 wake — #29 portability (score 4), #27b lockscreen (score 4), #28b pending
+- #29 credible: built a fresh clone AND ran with empty $HOME. Blocker parent-reproduced:
+  `panicked at src/main.rs:6299: no Quicksand font file parses`. Assets half FIXED by parent
+  (263b807: both Quicksand faces + OFL tracked); loader change left to the fixer.
+- #27b width finding CORRECTED by parent (chain 4t): critic compared ADVANCE box to INK.
+  Re-measured by colour mask (luminance was contaminated by wallpaper): ref ink 868x279,
+  ours 963.6x280. Height already right (+0.4%); width +11.0% not +16%.
+  Solved: DIGIT_ADVANCE_EM 0.522, COLON_ADVANCE_EM 0.198 -> -0.01% error.
+  NEW: reference pitch is NON-UNIFORM (123/138.5/166.5/219.5) = proportional, not tabular.
+  Decision: keep tabular (centred clock must not shift as digits change), adopt the solved values.
+- Material claim CONFIRMED by parent: glyph interior median [87,235,206], left third over the
+  cream mast reads [111,230,201] vs [87,235,206] elsewhere -> wallpaper bleeds THROUGH the glyphs.
+  Flat fill (C_WHITE then C_CYAN gradient, src/lockscreen.rs:1000-1008) is genuinely wrong.
+
+## Parent packaging work while r1b holds the tree (no src/ edits)
+Fixer r1b still owns `src/` (12 modified files, `cargo test --release` running).
+Parent took only the findings that touch no `src/`, each verified by running:
+- `263b807` vendored both Quicksand faces + OFL under `assets/fonts/` (loader fix left to fixer).
+- `5f2997d` corrected #27b's clock-width finding to ink-vs-ink; solved 0.522/0.198.
+- `70f15ae` untracked build artefacts + deleted the dead root `wallpaper_blur.rs`
+  (15,149 B duplicate; `src/main.rs:128` resolves to `src/wallpaper_blur.rs`, 62,238 B).
+- `aa2569d` root README (prereqs incl. libasound/libxkbcommon, 14-tool table with
+  what each buys, 13 config keys, **explicit lock-screen-is-not-a-security-boundary
+  warning**) + `build.sh` building both crates, pkg-config preflight.
+- `e971ce8` supervisor: scratch fallback DELETED (loud stderr + exit 1), `mkdir -p`
+  log dir (found by test: fresh $HOME made the privacy chmod fail silently),
+  `--offline` claim removed; `layer_name:dynamite` -> `dynamite-rust` in docs AND
+  `~/.config/mango/rule.conf` (backup kept). The documented no-blur rule had matched nothing.
+- `a0eb900` `deploy/` ships rule.conf + autostart with ISLAND_HOME/XDG_RUNTIME_DIR,
+  no silent `qs -c dynamite` substitution. Missing-binary path proven: exit 1.
