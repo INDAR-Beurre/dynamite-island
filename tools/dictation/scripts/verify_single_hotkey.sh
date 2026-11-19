@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Live proof: Super+D is the only keyboard shortcut, and it is push-to-talk.
 set -u
-cd /home/alex/.t3/scratch/2026-11-13-can-you-please-like-i-e1185665
+# Resolve relative to this script so the proof survives the scratch dir being
+# deleted — that deletion is the whole point of embedding the tool.
+cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 chmod +x scripts/inject_super_d.py
 ORIG=$(pactl get-default-source)
 pactl load-module module-null-sink sink_name=superd-sink >/dev/null 2>&1

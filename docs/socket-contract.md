@@ -6,17 +6,18 @@ must treat them as a frozen public API.
 
 ## The external producer
 
-`~/.t3/scratch/2026-11-13-can-you-please-like-i-e1185665/` builds
-`static-dictation`, the dictation tool the user asked to have "embedded
-nicely into the package". It is a **separate process** that talks to the panel
-only through this socket.
+`tools/dictation/` builds `static-dictation`, the dictation tool the user asked
+to have "embedded nicely into the package". It is a **separate process** that
+talks to the panel only through this socket. (It used to live in
+`~/.t3/scratch/2026-11-13-can-you-please-like-i-e1185665/`; that path is now
+only a fallback in the supervisor.)
 
 | literal | producer | note |
 |---|---|---|
-| `dictation_start` | `src/main.rs:38` `dynamite_send("dictation_start")` | on hotkey press |
-| `dictation_end` | `src/main.rs:42` `dynamite_send("dictation_end")` | on release |
-| `dictation_bars:<v> <v> …` | `src/main.rs:132` | **one datagram per microphone frame**, values formatted `{v:.3}`, space-separated |
-| `collapsed` | `src/pill/tsar.rs:129` `dgram.send_to(b"collapsed", sock)` | after an utterance finalises |
+| `dictation_start` | `tools/dictation/src/main.rs:38` `dynamite_send("dictation_start")` | on hotkey press |
+| `dictation_end` | `tools/dictation/src/main.rs:42` `dynamite_send("dictation_end")` | on release |
+| `dictation_bars:<v> <v> …` | `tools/dictation/src/main.rs:132` | **one datagram per microphone frame**, values formatted `{v:.3}`, space-separated |
+| `collapsed` | `tools/dictation/src/pill/tsar.rs:129` | **DEAD CODE — not emitted by the shipped binary.** `src/main.rs:67` sets `pill = None` and `try_spawn()` is `#[cfg(test)]`-only; `grep -ac collapsed target/release/static-dictation` → 0. Kept in this table so nobody revives it by accident; the panel owns its own collapsed state. |
 
 The bar payload is built as
 `format!("dictation_bars:{}", sim.bars().iter().map(|v| format!("{v:.3}")).collect::<Vec<_>>().join(" "))`.

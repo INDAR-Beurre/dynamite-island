@@ -101,6 +101,21 @@ def case_teleport():
     return [canvas(0), canvas(60)], ""
 
 
+def case_strobe():
+    """Critic #23b's blocker: geometry NEVER changes, only the bar's brightness
+    alternates. Every frame differs from the last, so a change-counting
+    detector reports a full pose stream and scored this 100.0 — while the
+    screen shows a two-state flicker, which is visually WORSE than a teleport.
+    The score must see 2 unique shapes, not 11 changes.
+    """
+    fr = []
+    for i in range(12):
+        a = np.zeros((H, W, 3), np.uint8)
+        a[:, 0:6, :] = 255 if i % 2 == 0 else 120
+        fr.append(a)
+    return fr, ""
+
+
 def case_static():
     return [canvas(0)] * 6, ""
 
@@ -200,6 +215,22 @@ def main() -> int:
         check("precropped", "region_device_px", tuple(r["region_device_px"]),
               (0, 0, 450, 224))
         check("precropped", "poses", (r["motion"] or {}).get("poses"), 10)
+
+        # 8b strobe: the blocker case ---------------------------------------
+        print("\n8b. two-state strobe (must NOT score as smooth motion)")
+        cd = d / "strobe"
+        fr, extra = case_strobe()
+        write_case(cd, fr, extra)
+        r = analyse(cd)
+        m, s = r["motion"] or {}, r["score"]
+        check("strobe", "poses_unique", m.get("poses_unique"), 2)
+        check("strobe", "completeness", m.get("completeness"), 0.2, 0.01)
+        strobe_score = s["smoothness"]
+        ok = strobe_score is not None and strobe_score < scores["slideshow"]
+        print(f"  strobe ({strobe_score}) < slideshow ({scores['slideshow']})"
+              f"   [{'ok' if ok else 'FAIL'}]")
+        if not ok:
+            fails.append("strobe:must-score-below-slideshow")
 
         # ordering ------------------------------------------------------------
         print("\n9. ordering (a fewer-pose animation must never outscore a "

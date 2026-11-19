@@ -316,17 +316,22 @@ class App:
         return r
 
     def send_ok(self, payload, retries=3):
-        """Send, retrying through a socket rebind. Returns the outcome."""
+        """Send, retrying through a socket rebind OR documented back-pressure.
+
+        Critic #22: `backpressure` is a documented, correct response under load,
+        but only `refused` was retried, so a healthy panel under burst was
+        reported as "dead after burst". Both are transient; retry both.
+        """
         for _ in range(retries):
             r = self.send(payload)
-            if r != "refused":
+            if r not in ("refused", "backpressure"):
                 return r
             time.sleep(0.15)
             try:
                 self.refresh()
             except Restart:
                 raise
-        return "refused"
+        return r
 
     # -- effect witness ----------------------------------------------
     def _log_state(self):
@@ -503,11 +508,36 @@ class App:
         outside = [lum(y * W * 3 + x * 3)
                    for x in (x0 - 30, x0 - 45, x1 + 30, x1 + 45)
                    for y in range(max(0, y0), min(band, y1 + 1), 3)]
+        # POSITIVE evidence, not just absence of disqualifiers. Critic #22
+        # fooled every check above with a plain dark stripe from y=1..119 and
+        # no capsule at all: the y0==0 refusal misses y=1, and nothing required
+        # the box to CONTAIN anything. The collapsed pill always carries a
+        # clock, so demand bright glyph ink inside it.
+        ink = sum(1 for v in inside if v > 120)
         return {
             "w": W, "h": H, "x0": x0, "x1": x1, "y0": y0, "y1": y1,
             "inside_dark": dark_frac(inside), "outside_dark": dark_frac(outside),
+            "ink_frac": (ink / len(inside)) if inside else 0.0,
             "best_row": best_row,
         }
+
+    def pill_present(self):
+        """True if the collapsed capsule is on screen right now.
+
+        Used only to seed the state tracker, so a screenshot failure must not
+        be read as 'not collapsed' evidence either way — return False and let
+        the first drive() establish the state from a real morph line.
+        """
+        png = os.path.join(tempfile.gettempdir(), "stress-seed.png")
+        if not self.screenshot(png):
+            return False
+        m = self.pill_metrics(png)
+        if m is None:
+            return False
+        width = m["x1"] - m["x0"]
+        height = m["y1"] - m["y0"]
+        return (width > height and width < 260
+                and m["inside_dark"] > 0.55 and m.get("ink_frac", 0.0) >= 0.02)
 
     def check_pill(self, label):
         """Collapsed-state screen assertion. Returns (ok, detail)."""
@@ -540,9 +570,17 @@ class App:
             errs.append(f"pill interior not filled (dark={m['inside_dark']:.2f})")
         if m["outside_dark"] > 0.55:
             errs.append(f"no pill edge contrast (outside dark={m['outside_dark']:.2f})")
+        # The capsule is a stadium carrying a clock: wider than tall, with
+        # glyph ink inside. A featureless dark strip satisfies every check
+        # above and is not the panel.
+        height = m["y1"] - m["y0"]
+        if width <= height:
+            errs.append(f"not a stadium (w={width} <= h={height})")
+        if m.get("ink_frac", 0.0) < 0.02:
+            errs.append(f"no clock ink inside (ink={m.get('ink_frac', 0.0):.3f})")
         detail = (f"x[{m['x0']},{m['x1']}] y[{m['y0']},{m['y1']}] "
                   f"w={width} inside={m['inside_dark']:.2f} "
-                  f"outside={m['outside_dark']:.2f}")
+                  f"outside={m['outside_dark']:.2f} ink={m.get('ink_frac', 0.0):.3f}")
         return (not errs), (detail if not errs else "; ".join(errs) + f" | {detail}")
 
 
@@ -769,7 +807,7 @@ def group_protocol(app, out):
         app.guard(f"rapid-fire {word.decode()}")
         time.sleep(0.4)
         rc, ms = app.command(word, needle=None)
-        if rc != "ok":
+        if rc not in ("ok", "backpressure"):
             out.fails += 1
             problems.append(f"rapid-fire {word.decode()}: dead after burst")
         else:
@@ -806,6 +844,18 @@ def group_state(app, out):
         b"traymenu": b"-> TrayMenu", b"lockscreen": b"-> Lockscreen",
     }
 
+    # Critic #22 mutation: stubbing App.send to return "ok" for `calendar`
+    # WITHOUT sending it left this group at PASS 246/0, because a missing morph
+    # line fell back to "is the process still responsive?". Socket liveness is
+    # not state correctness. Track the state we last CONFIRMED, so a silent
+    # no-op is only excused when the panel is provably already in that state.
+    confirmed = {"state": None}
+    # Seed the tracker with reality: the suite usually starts on an already
+    # collapsed panel, which takes the instant path and logs no morph. Without
+    # this the very first `collapsed` looked like a dropped command.
+    if app.pill_present():
+        confirmed["state"] = b"collapsed"
+
     def drive(word, ctx, budget=2.0):
         """Send a state word and require the app to react within budget."""
         out.tests += 1
@@ -817,18 +867,32 @@ def group_state(app, out):
             return
         app.guard(f"{ctx} {word.decode()}")
         if ms is None:
-            # no morph line: either the state is identical to the current
-            # one (no-op) or the command was dropped. Disambiguate by
-            # requiring the process to still be responsive.
-            rc2, _ = app.command(b"themes", keyword[b"themes"], 1.5)
-            if rc2 != "ok":
-                out.fails += 1
-                problems.append(f"{ctx} {word.decode()}: unresponsive after")
-            else:
+            if word not in keyword:
+                # Sub-state command (locktype/lockback/unlock/dictation_*).
+                # It never changes the top-level state, so no morph line is
+                # expected. Still require a live process — that is all this
+                # group can honestly claim about it; effect-level coverage
+                # for these belongs in a pixel test, not here.
+                if app.alive():
+                    out.notes.append(
+                        f"{ctx}: {word.decode()} is a sub-state command; "
+                        f"no morph line expected")
+                else:
+                    out.fails += 1
+                    problems.append(f"{ctx} {word.decode()}: process died")
+                return
+            if confirmed["state"] == word:
+                # Provably already there: no transition is expected.
                 out.notes.append(
-                    f"{ctx}: {word.decode()} produced no morph log line "
-                    f"(same-geometry no-op?); process still responsive")
+                    f"{ctx}: {word.decode()} already current; no-op expected")
+                return
+            out.fails += 1
+            problems.append(
+                f"{ctx} {word.decode()}: NO EFFECT — no '{keyword.get(word, b'?').decode()}' "
+                f"morph line within {budget:.1f}s (last confirmed state "
+                f"{confirmed['state']!r}); command dropped or state broken")
             return
+        confirmed["state"] = word
         if ms > 1500:
             out.fails += 1
             problems.append(f"{ctx} {word.decode()}: {ms:.0f} ms > 1500 ms bound")

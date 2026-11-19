@@ -112,7 +112,13 @@ def analyse_motion(run, rel, deltas, frames, x0, y0, x1, y1):
     if pose_rate is None:
         completeness = None
     else:
-        completeness = min(1.0, poses / POSE_TARGET, pose_rate / PANEL_HZ)
+        # Use UNIQUE poses, not the raw change count. A two-state strobe
+        # (A->B->A->B...) changes every frame and would otherwise collect a
+        # perfect completeness while showing no motion at all — critic #23b
+        # built exactly that and scored 100.0. Unique shapes is the honest
+        # numerator: a real ramp has one per frame, a strobe has two.
+        uniq = count_unique_frames(run, frames, x0, y0, x1, y1)
+        completeness = min(1.0, uniq / POSE_TARGET, pose_rate / PANEL_HZ)
     dup_rate = duplicates / max(1, frames_in_window - 1)
     jump_rate = (len(spikes) / max(1, poses - 1)) if poses >= 2 else None
     return {
@@ -121,7 +127,7 @@ def analyse_motion(run, rel, deltas, frames, x0, y0, x1, y1):
         "span_ms": round(span_ms, 1),
         "frames_in_window": frames_in_window,
         "poses": poses,
-        "poses_unique": count_unique_frames(run, frames, x0, y0, x1, y1),
+        "poses_unique": uniq,
         "duplicates": duplicates,
         "duplicate_rate": round(dup_rate, 3),
         "spikes": len(spikes),

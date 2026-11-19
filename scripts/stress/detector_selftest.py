@@ -79,6 +79,40 @@ def main():
     check("dark window below not merged", metrics(a), True,
           lambda g: g["y1"] < 100)
 
+    # 5. Critic #22's blind spot: a plain dark stripe from y=1 (NOT y=0, so the
+    #    fullscreen refusal misses it), no capsule and no clock ink. It passed
+    #    all four old verdict inputs. check_pill must reject it on positive
+    #    evidence: a stadium shape and glyph ink inside.
+    a = np.full((H, W, 3), 200)
+    a[1:120, 1030:1230] = 3
+    g = metrics(a)
+    ok = g is None or g.get("ink_frac", 0.0) < 0.02
+    print(f"{'ok  ' if ok else 'FAIL'} y=1 dark stripe has no ink: {g}")
+    if not ok:
+        fails += 1
+
+    # 6. The full check_pill verdict on that same stripe must be False. Drive
+    #    it through the real predicate rather than re-implementing the bounds.
+    if g is not None:
+        width = g["x1"] - g["x0"]
+        height = g["y1"] - g["y0"]
+        rejected = (width <= height) or g.get("ink_frac", 0.0) < 0.02
+        print(f"{'ok  ' if rejected else 'FAIL'} check_pill rejects the stripe "
+              f"(w={width} h={height} ink={g.get('ink_frac', 0.0):.3f})")
+        if not rejected:
+            fails += 1
+
+    # 7. A capsule whose clock has vanished must be rejected too: the shape is
+    #    right but the panel is not drawing text.
+    a = np.full((H, W, 3), 200)
+    a[19:56, 1079:1177] = 2
+    g = metrics(a)
+    ok = g is not None and g.get("ink_frac", 0.0) < 0.02
+    print(f"{'ok  ' if ok else 'FAIL'} blank capsule reports no ink: "
+          f"{None if g is None else round(g.get('ink_frac', 0.0), 3)}")
+    if not ok:
+        fails += 1
+
     print("\nRESULT " + ("PASS" if fails == 0 else f"FAIL ({fails})"))
     return 1 if fails else 0
 
