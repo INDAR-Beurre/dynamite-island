@@ -1650,3 +1650,46 @@ i170 all FAIL. Every observed real curve is in the fixture set.
 `logfare/deepseek-v4.1-flash-1017` died mid-round after landing verified work
 (embedded fonts, bounded morph rect). Third fixer death; two providers now.
 Its tree state is sound: build 0 errors, 304 tests pass.
+
+## ★★ Structural finding — the pill GROWS INTO the panel (parent-measured)
+Critic #32 (expanded-panel pixel match, `group/hy4`) scored **3** and reported
+every expanded panel 18-28% too wide. Parent re-derived from
+`IslandState::size()` (`src/main.rs:200-214`) — the numbers agree exactly.
+But investigating the "content sits too low" finding exposed something larger:
+
+| | rows |
+|---|---|
+| `docs/reference/pill-settled.png` pill | **19..60** |
+| `docs/reference/panel-power.png` panel | **20..219** |
+
+**Same top edge.** Confirmed independently on the 60 fps morph: y stays
+**19-20** across all 14 frames while h grows **42 -> 188** and w **111 -> 825**.
+One capsule anchored at the top, growing down and out.
+
+Ours: `src/main.rs:449-460` `panel_top_menu() = STAGE_PAD_TOP + 28 + 2 = 33`,
+comment *"the expanded menus hang BELOW the pill … the pill stays visible
+above the panel with a 4 px gap"*. **A different design**, and it matches the
+creator's own words against it: *"The button itself actually opens up into the
+menu"*, *"why not have everything pop up out of one single island"*.
+
+This is the root of "looks bad compared to his setup" for every expanded state,
+and no amount of width tuning would have found it.
+
+### Width targets (scale-invariant, parent-derived)
+| panel | ours logical | ours %W | ref %W | ratio | target logical |
+|---|---|---|---|---|---|
+| Power | 400x150 | 26.596 | 21.016 | 1.266 | **316 x 118** |
+| Themes | 600x366 | 39.894 | 31.172 | 1.280 | **469 x 287** |
+| Launcher | 504x366 | 33.511 | 26.406 | 1.269 | **397 x 287** |
+| Wallpaper | 1008x270 | 67.021 | 56.680 | 1.182 | **853 x 84** |
+Aspects match within 0.5% for three of four => systematic width error, not a
+scale artefact. Wallpaper is additionally **3.2x too deep** (aspect 3.733 vs
+10.147) — it is a single row of thumbnails in the reference.
+
+## Fixer r1d dispatched — `magpie/logfare/glm-5.3`, thinking max
+uuid `c91d640c-6833-4ff3-a5ac-4b95eb6de48e`. Brief: `docs/r1d-brief.md`
+(8 findings, do-NOT-touch list, 6 retractions, 5 required verification commands).
+Chain 4t: r1c died on `The model is temporarily unavailable` after landing
+verified work; two DeepSeek routes have now failed as fixers, so the third
+candidate is GLM 5.3 on logfare — a different model family, not another
+transport retry. It is image-blind, but this brief is entirely numeric.
