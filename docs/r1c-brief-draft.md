@@ -305,9 +305,100 @@ samples the wallpaper beneath it. Recipe: **glyph-only Gaussian blur ~24 px**,
 Creator's spoken facts (these outrank pixel guesses): font **SF Compact
 Display**; wrong password **shakes**; the password field appears only when
 typing starts and disappears on Esc; **the island morphs into the keyhole and
-descends**, then the clock pops out. MangoWM implements `ext-session-lock-v1`
-(`docs/mango-capabilities.md`) — a lock screen that does not actually lock is a
-blocker.
+descends**, then the clock pops out.
+
+### 9a. ⛔ It does not lock — and that is a decision, not an oversight
+
+Verified in three places: `src/main.rs:9` *"a visual harness, NOT a session lock
+(no ext-session-lock surface, no PAM, no keyboard input yet)"*;
+`src/main.rs:2320` same; `src/lockscreen.rs:8` *"This module is draw-only"*.
+`grep -rn 'pam\|PAM' src/*.rs Cargo.toml` → **only comments**.
+
+**Do NOT build a PAM/session-lock stack this round.** The owner asked for a
+*replica*, not an auth system; that subsystem carries lockout failure modes and
+is out of scope for tonight. Instead:
+
+1. **Make it honest.** Nothing in the UI may imply the session is secured. A
+   user who believes it locks and walks away has an unlocked machine.
+2. **Document the gap** in the repo README: what it is (a visual preview), what
+   a real lock needs (`ext-session-lock-v1`, which MangoWM implements per
+   `docs/mango-capabilities.md`, plus PAM and a keyboard grab), and that it is
+   not implemented.
+3. **Never enable lock-at-boot.** The creator warns that a failed lock client
+   leaves an **untypeable locked session**. Test the unlock path first.
+
+### 9b. The veil: keep the measured values, do NOT adopt his dim number
+
+His `dim_strength = 0.12` (band 0.12–0.15; he criticises the 0.5 default) dims
+**unfocused clients relative to a full-brightness focused surface**,
+compositor-side. Our veil is an **absolute alpha over a static wallpaper with no
+focused window** — a different quantity, **not substitutable**.
+
+**Keep `SCRIM_CENTRE 0.22` / `SCRIM_EDGE 0.42`** (`src/lockscreen.rs:205-206`),
+which carry an iter13 patch-averaged re-measurement (corners mean ratio 0.58 ⇒
+alpha 0.42, five points 0.39–0.49). Adopting 0.12 would halve the veil and
+*destroy* the pixel match in the name of following his advice.
+
+What his number *does* authorize: a **gentle, still-legible** dim is deliberate,
+and 0.5-heaviness is the known mistake. **His acceptance test is legibility, not
+a number** — dimmed content must still read.
+
+> Note the spec says **vertical** veil while the constant names say
+> centre/corners (radial). Reconcile against `docs/lockscreen-spec.md` and the
+> frames; do not assume the comment is right just because it is old.
+
+---
+
+## 9c. Two verified defects found while mining the transcripts
+
+**Frost origin is computed from a hardcoded screen width.**
+`stage_screen_origin()` (`src/main.rs:888-891`) returns
+`(LOCKSCREEN_SIZE.0 as f32 - STAGE_W as f32) / 2.0` — from the **constant 1504**,
+not the live output size. The pill *looks* centred because the compositor centres
+the surface (`src/main.rs:6331` `layer.set_anchor(Anchor::TOP)` is **correct** and
+matches his stated mechanism: *"since I didn't pick a side, it just sits in the
+middle"*). But every **frost/wallpaper sample** taken through this origin is
+offset on any other output or scale — the 246-device-px mis-sample critic #5
+predicted. **Fix: read the output's logical size.**
+
+**Exclusive zone is already right — do not "fix" it.** We reserve
+`pill_strip_px()` (`src/main.rs:6333`), not the 636-tall stage. Reserving the
+stage would eat 63% of a 1002 px desktop. His rule confirms it: *"your whole
+screen minus your bar and your gaps."*
+
+**Open question, NOT a finding:** his bar may be on layer `top` (*"you can go
+through full screen over your bar"*) where we are `overlay`. The worker labelled
+this **inference** and did not check frames. Do not change the layer on an
+inference — it would alter fullscreen behaviour on a guess.
+
+---
+
+## 9d. His stated taste rules — use these to decide the decoration questions
+
+From `docs/transcript-taste.md` (53 quotes machine-checked verbatim):
+
+- **Contrast is a budget.** *"contrast is basically deciding where people look
+  first"*; blur a screenshot — *"whatever that you can still see in the blurry
+  version is what your desktop is shouting about."*
+  **This is a test you can actually run**: blur a capture of our panel and check
+  that only the clock and the active workspace survive. If the dictation bloom
+  survives, it is stealing the budget.
+- **One accent.** *"your accent and you only get one"*, *"the only saturated
+  color in the whole palette"*, reserved for *"you are here"*. Base/panels/
+  inactive borders *"really close to each other"* — *"this layer's job is to be
+  quiet"*. Set it once: *"all of it pulls from that same palette."*
+  → **Directly condemns** the four-file accent duplication and the saturated
+  teal bloom.
+- Clock *"bigger and bolder than everything else in the bar"*; other data
+  *"smaller and dimmer"*.
+- **Single island**: *"why not have everything pop up out of one single island"*;
+  *"The button itself actually opens up into the menu"*.
+- *"just make your panel solid… the wallpaper stays behind everything."*
+
+**He says NOTHING about glow, bloom, UI gradients, shadows, rim-light, waveforms
+or animation numbers.** Those remain *our* judgement — do not cite him as
+authority for removing them. The measured reference (no waveform, no glow, no
+gradient) is the authority there.
 
 ---
 
