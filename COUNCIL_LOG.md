@@ -1987,3 +1987,25 @@ pre-rendered `.rgba` per resolution. Queued for the next fixer.
 Worker's own unverified item, honestly flagged: it never compared the ink
 against `docs/reference/lock-resting.png` inside Rust, only against the
 recomputed model (0.74/255 agreement).
+
+## r1d fixer died (provider rate-limit) → r1e dispatched (chain 4t)
+
+`c91d640c` failed: "Please wait and consider throttling your request speed".
+Transport, not refusal — it had already landed §0, §11, §13, §19 correctly.
+Tree state checked before re-dispatch: build 0 errors, 297 passed / 19 failed.
+
+Diagnosed all 19 myself and wrote `docs/r1d-test-reconciliation.md` rather
+than handing over "fix the tests". Root cause is ONE correct change (§0), and
+3 of the 19 are a **poisoned TRAY_TEST_LOCK** — proven by running
+`tray_count_store_roundtrip` alone (1 passed). They need no edit; fixing the
+panicking sibling clears them. Explicitly forbade
+`.unwrap_or_else(|e| e.into_inner())`, which would hide the real failure.
+
+**r1e** = `magpie/logfare/deepseek-v4.1-flash-1017`, thinking max,
+uuid `1adfb483-8ce4-4b70-b1eb-c2f3a0b24c69`. Four tasks: green tests; the
+identical-branch 2× upscale (6.4× blur); measured colour/geometry; the
+wallpaper asset-size defect (decode PNG directly — the crate already vendors
+png 0.17, so the "no PNG decoder" comment is false).
+
+Brief carries all six retractions and the do-not-touch list, including
+`src/lockscreen.rs` (just finished and verified) and the no-lockout rule.
