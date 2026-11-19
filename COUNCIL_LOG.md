@@ -1897,3 +1897,26 @@ oy=3; `library::tests::accent_is_fixed_periwinkle_for_any_theme` expects
 (124,162,245) while the measured reference value (121,161,245) was applied.
 Build: **0 errors, 66 warnings**. Fixer r1d still running (glm-5.3, max).
 Do NOT score this tree until those tests are reconciled.
+
+## r1d — parent self-correction #13: the "+8% text width" is quantisation
+
+Measured `text_over_pill_w` ours 0.521 vs reference 0.482 (+8.0%) and
+per-glyph integer widths (ref '0' 10.67/15 = 0.711, ours 11/13 = 0.846,
++19%). Both are the **cap-13-vs-15 rounding**, not a width defect.
+
+Decisive probe — the COLON, same glyph on both sides, no digit-identity
+confound, measured by integrating coverage instead of thresholding:
+- integer: ref 3/15 = 0.2000, ours 3/13 = 0.2308 → **+15.4%**
+- subpixel: ref 0.0665, ours 0.0700 → **+5.3%**
+
+Target cap for our 36 px pill is 0.3571 × 36 = **12.86 → rounds to 13**,
+which is exactly what we render. `scripts/fontcheck.py` on the live string
+`07:22` gives stem/cap +2.4%, w/cap −0.8% — PASS. On `00:05`: +0.1%, +3.2%.
+
+**Lesson (third time this class of error):** at cap 13 a single pixel is
+7.7% of the metric. Any integer-pixel ratio compared across different
+render sizes is dominated by rounding. Use subpixel coverage, and always
+control the glyph identity. Do NOT "fix" the tracking to chase this.
+
+Committed `docs/reference/ab-pill-zoom.png` (4× A/B): capsule shape, pure
+black fill, periwinkle clock and glyph weight now visibly match.
