@@ -1745,3 +1745,34 @@ build in each child is not a green build together.
 - Reference stems 76-77 px on a 279 px cap = **stroke/cap .272-.276**, much
   heavier than Quicksand-Bold. Author states SF Compact Display. Report the
   gap; do not claim a font ID from shape correlation (tried and retracted).
+
+## Parent measurement round (while r1d and the lockscreen worker ran)
+Chain 6t. Purpose: the owner asked for screenshot numbers to move, so measure
+rather than wait. Six findings, two of them retractions of my own earlier work.
+
+1. **Wallpaper was not running** — every screenshot of ours sat on flat
+   RGB(20,20,36) = `root_color`. Started swaybg. Not a code defect, and a large
+   part of "looks bad compared to his setup".
+2. **Workspace discs are the owner's addition, not a deviation.** The dark
+   clusters I first read as a reference workspace strip are wallpaper content
+   (dark wood/window frames: (35,22,8), (38,24,2), (47,30,9)). Do not delete.
+3. **The clock is #BCD6FF, not white.** 25 stills, core ink (188,214,255).
+   Proven a fixed UI colour: invariant across a blue-sky scene (white point
+   236,242,254) and a warm indoor scene (228,239,215). Other text on the same
+   cool ramp: Lock label (201,207,233), uptime (112,112,120).
+4. **⛔ Retracted "the font is correct".** That rested on modal INTEGER stem
+   width (3px vs 3px) — quantised. Subpixel stems separate them: reference
+   0.1832/0.1846/0.1850/0.1859 over four frames, ours 0.1560 = **15% light**.
+   Coverage/cap² agrees independently (1.468 vs 1.250, ratio 0.852).
+   Baked **wght 675 / opsz 24** → stem/cap +2.0%, and tracking +0.0275em →
+   w/cap −0.3%. Shipped `assets/fonts/Inter-Clock.ttf` + OFL + README +
+   `scripts/fontcheck.py` gate.
+5. **The clock migrates during the morph** — centre x 0.437→0.104, centre y
+   0.512→0.330, cap 14→34 device px (2.4×) while cap/capsule-h 0.333→0.181.
+   Content opacity lags geometry.
+6. **Digit identity swings coverage 17%** (00:05 1.346, 05:36 1.312, 05:31
+   1.150) — larger than the deficit I was chasing. Always control the string.
+
+Lessons: PIL's `set_variation_by_axes` silently no-ops on this Inter file —
+use `fontTools.varLib.instancer`. Thresholded integer metrics hide sub-pixel
+defects; integrate coverage instead.
