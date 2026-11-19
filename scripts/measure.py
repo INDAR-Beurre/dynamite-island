@@ -26,9 +26,16 @@ def pid() -> int | None:
     # -x matches the executable name exactly: `-f` also matched the
     # measuring shell itself (its argv contains the project path), which
     # made rss_mb/cpu_pct report the *shell's* numbers.
-    out = subprocess.run(["pgrep", "-n", "-x", PROC], capture_output=True, text=True)
-    s = out.stdout.strip()
-    return int(s) if s else None
+    out = subprocess.run(["pgrep", "-x", PROC], capture_output=True, text=True)
+    pids = out.stdout.split()
+    if not pids:
+        return None
+    if len(pids) > 1:
+        # Two instances share one socket path: the newest pid need not be the
+        # one that owns the surface we are photographing. Refuse rather than
+        # attribute one process's pixels to another's RSS.
+        return None
+    return int(pids[0])
 
 
 def proc_stats(p: int | None) -> dict:

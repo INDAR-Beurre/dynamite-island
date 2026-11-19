@@ -534,7 +534,14 @@ class App:
                                capture_output=True, text=True, timeout=5)
             if p.returncode != 0:
                 return None                     # cannot tell
-            return "dynamite" in p.stdout
+            n = p.stdout.count('"name":"dynamite-rust"')
+            if n == 0:
+                n = p.stdout.count("dynamite")
+            # TWO instances bind the same socket path: words reach whichever
+            # bound last while pgrep -n picks the newest pid, so the process
+            # we measure need not be the one we drove. Seen 03:50. Refuse.
+            self.instances = n
+            return n == 1
         except (OSError, subprocess.SubprocessError):
             return None
 
@@ -1211,8 +1218,13 @@ def main():
         # meaningless. Refuse to score rather than report a product failure.
         surf = app.surface_present()
         if surf is False:
-            print(f"GROUP {name:14s} INVALID  compositor lists no dynamite "
-                  f"layer surface (mmsg get all-layers); nothing to measure")
+            n = getattr(app, "instances", 0)
+            why = (f"{n} dynamite instances are live; they share one socket path, "
+                   "so the process measured need not be the one driven"
+                   if n > 1 else
+                   "compositor lists no dynamite layer surface "
+                   "(mmsg get all-layers); nothing to measure")
+            print(f"GROUP {name:14s} INVALID  {why}")
             invalid_groups.append(name)
             continue
         try:
