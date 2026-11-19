@@ -559,3 +559,44 @@ when the stage shrinks, or clicks will land outside the surface.
 `free_morph_scratches` (`src/main.rs:4202`) already returns the morph pair with
 `malloc_trim(0)` on collapse; keep that. Do not drop `SLOT_RING` to 1 — the
 `pool.canvas(&slot) -> None` case *is* the frame back-pressure.
+
+---
+
+## 16. Lock screen — independently confirmed on a SECOND video
+
+The lock-screen spec came from one video's stills. Re-derived from
+`The Perfect Hyprland Lock Screen Setup [C6aSeHhlxsA].mp4` at 6 fps
+(`/tmp/lock60/`, 4930 frames), comparing an unlocked frame (`s00001`) with a
+locked one (`s02300`) of the **same wallpaper**:
+
+**Veil — vertical, confirmed.** Sky-only pixels (flat teal, clock excluded),
+transmission measured on G+B (R is 2–3 and dividing by it explodes):
+
+| y fraction | alpha |
+|---|---|
+| 0.025 | 0.420 |
+| 0.075 | 0.465 |
+| 0.175 | 0.303 |
+| 0.275–0.725 | **0.201 … 0.228** (plateau) |
+| 0.825 | 0.391 |
+| 0.925 | 0.462 |
+| 0.975 | 0.538 |
+
+**Plateau 0.220, top 0.411, bottom 0.476** — against the first video's
+0.224 / 0.430 / 0.507. Two independent sources, same shape. §9's recipe stands.
+
+**Backdrop is SHARP, confirmed.** Best-fit Gaussian on the high-contrast art
+(pole and wires): locked normalised lapvar 0.0371; unlocked unblurred 0.0359
+(**match**), 0.3 px blur 0.0297, 0.5 px 0.0188. Any real blur is far below
+0.3 px. Do not add one.
+
+**⚠️ The clock colour differs between the two videos.** This one measures a
+flat **(86, 235, 204)** mint, std ≈ 5 across three quarters of the glyph run;
+the island video's lock stills gave (87, 235, 206). Consistent with each other
+— but note this is **wallpaper-dependent**: the wallpaper here is teal, and
+the clock is a brighter, more saturated version of it. That supports §9's
+"wallpaper-sampled frosting" for the LOCK clock, while the ISLAND pill clock
+is a fixed #BCD6FF (§11). **They are different materials — do not unify them.**
+
+Clock geometry here: ink 220×70 on a 640×360 frame = **0.344 of screen width**,
+0.194 of height. Matches the 0.34 measured on the first video.
