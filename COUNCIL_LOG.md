@@ -1212,3 +1212,16 @@ cap/pill **0.342** (ref 0.357), stroke/cap **0.231** (ref 0.200, **+15.5% too he
 lapvar_norm **1609.55** (ref 1277.0, +26.0%), **RSS 30.8 MB**, **idle CPU 0.5%**.
 Baseline was aspect 4.029 / RSS 44.2 MB / CPU 2–9%. Geometry and CPU are essentially
 solved; the remaining sharpness gap is **stroke weight**, one value.
+
+## ⛔ PARENT SELF-CORRECTION #9 — the stroke-weight finding was an artefact (chain 4t)
+Carried for hours and handed to two fixers: "stroke/cap 0.231 vs 0.200, +15.5% too
+heavy, reduce weight". **Wrong.** Stem = stroke/cap × cap:
+reference 0.200 × 15 = **3.00 px**; live 0.231 × 13 = **3.00 px**. Identical ink.
+`0.231 = 3/13`, `0.200 = 3/15` exactly. The ratio's denominator is cap height, so a
+smaller clock reads "heavier". The real defect was **cap 13 vs 15 — the clock was too
+SMALL**. Same error class as the advance-vs-ink comparison: a ratio read as an absolute.
+**Solved by simulation through the real pipeline** (2× raster → 0.75 downsample, shipped
+Inter-Medium.ttf): `bar_height=28` ⇒ text_px 13.56 ⇒ **cap 15, stroke/cap 0.200,
+text_w 55** vs reference **15 / 0.200 / 54**. With `collapsed_width=74` ⇒ pill **111×42**,
+exactly the reference. **Two config values close the entire sharpness gap; no font change.**
+Recorded in `docs/r1c-brief-draft.md` §5b (commit `d588998`).
