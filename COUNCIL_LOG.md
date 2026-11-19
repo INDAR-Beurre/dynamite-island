@@ -2324,3 +2324,53 @@ r2 #8c dictation lifecycle (group hy4) score 4. Ran cargo test for both crates: 
  (3) Fresh install ships neither the supervised panel nor dictation autostart (deploy wrapper is a one-shot exec). deploy/dynamite_autostart.sh:1-10, deploy/install.sh:78-93.
  (4) Supervisor exits on rc=75 even when the keeper is unsupervised — observed live: supervisor exited 20:28 after rc=75, /proc/locks has no holder, so a crash of the manually-started keeper has no respawner until re-login.
  (5) Dictation has no single-instance lock: no flock in its supervisor, autostart pgrep matches only the script path, the newcomer unconditionally unlinks static-dictation.sock and rotates the log while the old writer still holds the fd. tools/dictation/scripts/dictation_supervisor.sh:19-24,37-40; tools/dictation/src/ctrl.rs:48-51.
+
+## r2 verdicts (continued) and parent fixes — commit 73a49df
+
+- #5b performance **8** (group/deepseek-v4.1-flash-1017, thinking max). Measured, not
+  speculative: live panel self 0.067% + children 0.908% of a core over 120 s.
+  ★ The 1 Hz `mmsg get all-tags` child was ~93% of the "0.0–1.0% idle" figure the
+  parent had been reporting as a win. `mmsg watch all-tags` streams the same data
+  at 0.00%. FIXED: poll only while the stream is down (TAG_STREAMING flag).
+  **Verified live: 1.050% -> 0.000% total over 45 s** (self 0.000, children 0.000).
+- #5b also refuted two earlier claims: `ensure_loaded` does ONE stat, not 2–3;
+  `rounded_rect_sdf` triplication costs zero CPU so it is not a perf finding.
+  And it refuted the parent's "hoisting may change pixels" warning for a
+  precomputed column table — bit-exact over 529,920 px, because only the
+  recomputation moves, not the +2/4 rounding order.
+- CC/Music refreshers: computed worst case ~4.3% of a core forever after one menu
+  draw (78.5 ms CPU/5 s CC, 27.2 ms CPU/s Music even with zero players). FIXED
+  with `park_while_closed`, waking within 250 ms of opening so nothing is stale.
+  Honest limit: computed from isolated timings, not observed live — the display
+  is wedged so no menu could be opened.
+- #14b UX **7** (logfare/deepseek-v4.1-flash-1017, thinking max).
+  ★ Real and fixed: the pill's collapse rect is the centre of every panel, so an
+  67x11 strip at the top-centre of all four search fields collapsed the panel
+  instead of placing a caret. Verified by arithmetic, then the new test caught a
+  case the arithmetic missed: at DEFAULT bar_height=28 the pill centre lands
+  exactly on the field's first row, so the field only wins BELOW the centre.
+  ⛔ Its second major ("wheel cycle leaves the panel deaf to Esc") is UNVERIFIED:
+  the code documents and implements that a region change does not fire Leave
+  without pointer motion, and the Leave arm ignores a stationary Leave. Not
+  changing the focus model on an untested mechanism — the previous Exclusive
+  behaviour was a proven keyboard-steal bug. Test to run when the display returns:
+  wheel-cycle Wallpaper->Power with the pointer parked at the old edge, press Esc.
+  ⛔ Declined: making the pill rect stop being a close target in Music/CC/Calendar/
+  Power. That is the owner's stated interaction and iter27b pins it.
+- #7d dictation **7**, #8c lifecycle **4**. Four lifecycle holes fixed:
+  blocking datagram send (measured: 11 datagrams then blocks forever — froze the
+  tool AND EndOnDrop), signals bypassing EndOnDrop, the 55 s hold flush discarding
+  audio captured during the POST, and a second launch stealing the control socket.
+  Plus supervisor flock + in-loop rotation + TERM forwarding, and loud lines for a
+  dead capture stream / 0 armed input nodes.
+- #10c portability **7**. Verified a fresh /tmp clone builds both crates and the
+  exe-relative font fallback works with any HOME. Still open: probe geometry
+  hard-coded 2256x1504 with equality gates, `pkill -x swaybg`, install.sh not
+  installing dictation, undocumented cc prerequisite for ring, `/home/alex`
+  fallback at src/wallpaper_blur.rs:343, two tracked scratch scripts.
+- 324 tests pass. Two failures during this work were MINE and were fixed, not
+  explained away: the search-band test caught the default-geometry collision, and
+  `live_display_tracks_system` failed because the refresher gate is real — the test
+  now sets panel_open like production does.
+- Cleaned two orphaned `mmsg watch all-tags` children (parents dead, reparented to
+  dinit, 0 CPU) left by earlier panel kills. Not a product leak.
