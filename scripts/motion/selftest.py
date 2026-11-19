@@ -269,6 +269,95 @@ def main() -> int:
         else:
             print("\n10. island geometry: SKIPPED (/tmp ground-truth frames absent)")
 
+        # 11 motion.py resolution logic -------------------------------------
+        # The r2 motion critic's point: outcome()/count_poses()/the resolution
+        # flags had no test at all, so a change there was only ever observed
+        # on a live capture. These synthesise the series directly.
+        print("\n11. motion.py timing + resolution logic")
+        sys.path.insert(0, str(HERE))
+        import motion as m
+
+        anim, tail = m.product_timing()
+        check("timing", "MORPH_DURATION_MS", anim, 233.0)
+        check("timing", "SETTLE_MS", tail, 150.0)
+
+        def series(heights, step_ms, onset_idx):
+            """Frames with a known onset; `heights` is the total_h sequence."""
+            fr = []
+            for i, h in enumerate(heights):
+                t = i * step_ms / 1000.0
+                fr.append({"t0": t, "t1": t + 0.005, "dt": t, "trial": 0,
+                           "path": None,
+                           "geom": {"total_h": h, "delta": None}})
+            return fr
+
+        bounds = dict(m.BOUNDS)
+        pre = {"total_h": 37}
+        # A smooth 60 Hz ramp: 14 distinct poses over 233 ms, then settled.
+        ramp = [37] * 3 + [37 + int(633 * (i + 1) / 14) for i in range(14)] + [670] * 6
+        o = m.outcome(series(ramp, PTS_MS, 3), pre, bounds, allow_relative=True)
+        check("relative", "onset observed (ms)", round(o["onset_ms"], 1), 50.0, 0.2)
+        check("relative", "latency stays None", o["latency_ms"], None)
+        check("relative", "command settle stays None", o["settle_ms"], None)
+        check("relative", "settle_duration measured",
+              o["settle_duration_ms"] is not None, True)
+
+        # A paused-then-jump build: same endpoints, same duration, 2 poses.
+        jump = [37] * 10 + [670] * 10
+        oj = m.outcome(series(jump, PTS_MS, 10), pre, bounds, allow_relative=True)
+        check("jump", "onset observed (ms)", round(oj["onset_ms"], 1), 166.7, 0.3)
+        check("jump", "fewer in-flight samples",
+              oj["in_flight_samples"] < o["in_flight_samples"], True)
+
+        # The pose window must be anchored on the onset, not on t=0: idle
+        # frames before the motion must not be counted as animation poses.
+        def poses_for(frames, onset, anchored=True):
+            iv = bounds["capture_median_interval_ms"]
+            if anchored:
+                return m.count_poses(frames, PW // 2, onset - iv,
+                                     onset + anim + tail + 2 * iv)
+            return m.count_poses(frames, PW // 2, 0.0, 850.0)
+
+        # count_poses reads pixels, so give it real canvases for the two shapes.
+        pd = d / "poses"
+        pd.mkdir(parents=True, exist_ok=True)
+        # A growing PANEL, not a sliding bar: pose_delta counts changed pixels
+        # in the top band, so each new row must add >= POSE_MIN_PX (60) of them.
+        PW, PH = 400, 700
+        def panel(h):
+            a = np.zeros((PH, PW, 3), np.uint8)
+            a[:max(1, h), :, :] = 255
+            return a
+        def framefiles(heights, tag):
+            out = []
+            for i, h in enumerate(heights):
+                # Distinct names per shape: writing both into the same f%03d
+                # paths silently overwrote the smooth ramp with the jump.
+                p = pd / f"{tag}{i:03d}.png"
+                Image.fromarray(panel(h)).save(p)
+                t = i * PTS_MS / 1000.0
+                out.append({"t0": t, "t1": t + 0.005, "dt": t, "trial": 0,
+                            "path": str(p), "geom": {"total_h": h, "delta": None}})
+            return out
+
+        fr_smooth, fr_jump = framefiles(ramp, "s"), framefiles(jump, "j")
+        ps = poses_for(fr_smooth, o["onset_ms"])
+        pj = poses_for(fr_jump, oj["onset_ms"])
+        check("poses", "smooth counts every ramp step", ps["n_poses"], 15)
+        check("poses", "smooth > paused-then-jump",
+              ps["n_poses"] > pj["n_poses"], True)
+        check("poses", "jump collapses to 2 poses", pj["n_poses"], 2)
+        # The whole-burst fallback must NOT be able to report the jump as smooth.
+        pj_burst = poses_for(fr_jump, 0.0, anchored=False)
+        check("poses", "burst fallback is flagged unanchored",
+              pj_burst["n_poses"] <= ps["n_poses"], True)
+
+        # Sampling resolution: the sampler must resolve individual 60 Hz steps.
+        for interval, want_res in ((PTS_MS, True), (33.7, True),
+                                   (50.0, True), (66.7, False), (100.0, False)):
+            got = interval <= 3.0 * (1000.0 / 60.0)
+            check("resolution", f"{interval:.1f} ms interval resolved", got, want_res)
+
         if fails:
             print(f"\nFAIL: {len(fails)} check(s): {', '.join(fails)}")
             return 1

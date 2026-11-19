@@ -14,6 +14,7 @@ which travels 41 -> 121 device px.
 import argparse
 import json
 import os
+import re
 import shutil
 import socket
 import statistics
@@ -238,6 +239,13 @@ def analyse_frame(path, cx, prev_path=None):
     bottom = int(ys.max())
     x0, x1 = int(xs.min()), int(xs.max())
     cap_w = x1 - x0 + 1
+    # A component spanning the crop is the desktop behind the island, not the
+    # island: a black panel over a black app window is ONE dark region. No
+    # pixel heuristic can split two identical blacks (a difference-against-
+    # baseline detector was tried and fails in the same place, because black
+    # over black does not change either). Flag the geometry unresolved and
+    # let the pose metric, which counts change in the band, still stand.
+    merged = cap_w > min(PANEL_WMAX_DEV, W - 8)
 
     g = {
         "cap_y0": cap_y0,
@@ -270,6 +278,7 @@ def analyse_frame(path, cx, prev_path=None):
         ramps = edge_ramps(lum[best_row], wr[0], wr[1])
     g["edge_ramp"] = round(float(np.mean(ramps)), 2) if ramps else None
     g["bg_lum"] = round(bg, 1)
+    g["geometry_merged"] = bool(merged)
     g["dark_thr"] = round(thr, 1)
 
     if prev_path is not None:
@@ -308,8 +317,15 @@ def wf_record(path, region, seconds, trig_delay, sock, word):
         if os.path.exists(path) and os.path.getsize(path) > 0:
             break
         time.sleep(0.01)
-    time.sleep(trig_delay)
+    # Fire as soon as the recorder is live. `-D` makes capture DAMAGE-driven:
+    # on a quiet screen (empty tag, settled pill) nothing damages the output,
+    # so the recorder goes silent after a fraction of a second. A phase delay
+    # of 60-130 ms then lands the trigger AFTER the last captured frame and
+    # every frame is pre-motion — measured: 14 frames spanning 0.219 s while
+    # the burst ran 1.17 s, travel 0, scored as a product FAIL.
+    time.sleep(min(trig_delay, 0.02))
     ok, t_trig = sock.send(word) if sock else (False, None)
+    trig_rel = time.perf_counter() - t_pop
     time.sleep(seconds)
     p.send_signal(2)                       # SIGINT = clean flush
     t_sig = time.perf_counter()
@@ -335,8 +351,14 @@ def wf_record(path, region, seconds, trig_delay, sock, word):
     t_sig_rel = t_sig - t_pop
     offset = t_sig_rel - tv[-1]
     pts_trig = None
+    # Did the capture still run when the word was sent? If the recorder's
+    # last frame predates the trigger, the burst never saw the morph and the
+    # trial is INVALID, not evidence about the panel.
+    covered = tv[-1] + offset >= trig_rel
     return tv, {"offset_s": offset, "pts_trig": pts_trig, "n_pts": len(tv),
                 "span_s": tv[-1] - tv[0], "sigint_rel_s": t_sig_rel,
+                "trigger_rel_s": trig_rel, "trigger_covered": covered,
+                "send_ok": ok,
                 "absolute_latency_resolved": False}
 
 
@@ -373,21 +395,33 @@ def wf_extract(path, outdir, trial, pts_list):
 # number that must go up; the width series only says where the jumps are.
 # --------------------------------------------------------------------------- #
 POSE_EPS = 12          # per-channel delta that counts as a changed pixel
+# Widest panel the crop can hold: 2*PAD_DEV = 1240 device px. A dark component
+# reaching the crop edges is the desktop behind the island, not the island.
+PANEL_WMAX_DEV = 1180
 POSE_MIN_PX = 60       # changed pixels needed to call it a new pose
+# Rows the island can occupy: tallest panel (ControlCenter 447 logical x 1.5
+# = 670 device px) + its top offset. Must track BAND_DEV, not a second guess.
+POSE_BAND_DEV = 700
 
 
 def pose_delta(a_path, b_path, cx, half=None):
     """Changed-pixel count between two frames, island band only.
 
-    Band-limited to the rows the island can occupy: the terminal and the rest
-    of the desktop change for their own reasons and would swamp the signal.
+    Band-limited to the rows the island can occupy. Since r1d §0 the panel
+    GROWS INTO the pill band, so that extent is the tallest panel (670 device
+    px measured), not the old 120 logical px: with the old cap every change
+    below row 180 was invisible and the pose counter went blind to the second
+    half of every expansion, under-reporting smoothness.
+
+    Contamination is held off by the x crop, the morph time window and
+    POSE_MIN_PX — a blinking cursor is a handful of pixels, not 60.
     """
     half = half or 620
     la = Image.open(a_path).convert("L")
     lb = Image.open(b_path).convert("L")
     w, h = la.size
     x0, x1 = max(0, cx - half), min(w, cx + half)
-    rows = min(h, int(120 * SCALE) if h > int(120 * SCALE) else h)
+    rows = min(h, POSE_BAND_DEV)
     na = np.asarray(la.crop((x0, 0, x1, rows)), dtype=np.int16)
     nb = np.asarray(lb.crop((x0, 0, x1, rows)), dtype=np.int16)
     if na.shape != nb.shape:
@@ -501,6 +535,12 @@ def outcome(frames, pre, bounds, allow_relative=False):
         lat = None
     tol = bounds["settle_tolerance_px"]
     settle = None
+    # Observed onset, in this trial's own time base. The pose window and the
+    # duplicate-frame window both need it: anchoring either at t=0 grades the
+    # idle frames before the animation, which on the relative (wf) path is
+    # wherever the recorder happened to start.
+    onset_ms = next((f["dt"] * 1000 for f in after
+                     if abs(f["geom"]["total_h"] - h0) > tol), None)
     if not allow_relative:
         for i, f in enumerate(after):
             if abs(f["geom"]["total_h"] - target) <= tol and \
@@ -543,6 +583,7 @@ def outcome(frames, pre, bounds, allow_relative=False):
         "target_total_h": target,
         "travel_px": travel,
         "not_observed": lat is None,
+        "onset_ms": onset_ms,
         "latency_ms": lat,
         "settle_ms": settle,
         "settle_duration_ms": settle_dur,
@@ -585,15 +626,40 @@ def measure_on_empty_tag():
                              text=True, check=True).stdout
         tags = json.loads(raw)["all_tags"][0]["tags"]
         current = next(t["index"] for t in tags if t["is_active"])
-        empty = next((t["index"] for t in tags
-                      if not t["is_active"] and t["client_count"] == 0), None)
+        # Prefer a HIGH empty tag. Mango keeps the previously focused client
+        # visible for a moment after `view,N`, and tag 2 still showed the
+        # owner's editor while reporting client_count 0 — the panel then
+        # merged with that dark window and read 746x1236. Tags 7-9 are far
+        # from anything the owner works in and measured clean.
+        empties = [t["index"] for t in tags
+                   if not t["is_active"] and t["client_count"] == 0]
+        empty = max(empties) if empties else None
     except Exception:
         return None
     if empty is None:
         return None
     subprocess.run(["mmsg", "dispatch", f"view,{empty}"], capture_output=True)
-    time.sleep(0.5)
+    time.sleep(0.8)
     return current
+
+
+def product_timing(src=None):
+    """(MORPH_DURATION_MS, SETTLE_MS) read from src/morph.rs.
+
+    The instrument must grade the animation the product actually runs. A
+    hardcoded 160 ms default survived the move to 233 + 150 and made every
+    settle budget 213 ms too tight (r2 critic #4).
+    """
+    path = src or os.path.join(os.path.dirname(os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__)))), "src", "morph.rs")
+    text = open(path).read()
+    out = []
+    for name in ("MORPH_DURATION_MS", "SETTLE_MS"):
+        m = re.search(r"pub const " + name + r"\s*:\s*u64\s*=\s*(\d+)", text)
+        if not m:
+            raise SystemExit(f"motion: cannot read {name} from {path}")
+        out.append(float(m.group(1)))
+    return out[0], out[1]
 
 
 def run():
@@ -602,7 +668,13 @@ def run():
     ap.add_argument("--pre", default="collapsed")
     ap.add_argument("--trials", type=int, default=10)
     ap.add_argument("--burst", type=float, default=0.85)
-    ap.add_argument("--anim-ms", type=float, default=160.0)
+    # Read the product's real timing, do not hardcode it: these two constants
+    # drifted once already (the instrument kept grading a 160 ms morph long
+    # after src/morph.rs moved to 233 + 150).
+    ap.add_argument("--anim-ms", type=float, default=None,
+                    help="morph duration; default: MORPH_DURATION_MS from src/morph.rs")
+    ap.add_argument("--settle-ms", type=float, default=None,
+                    help="settle tail; default: SETTLE_MS from src/morph.rs")
     ap.add_argument("--out", default=None)
     ap.add_argument("--json-out", default=None)
     ap.add_argument("--quiet", action="store_true")
@@ -610,7 +682,21 @@ def run():
                     help="grim: ~28 fps, absolute latency valid. wf: wf-recorder "
                          "~59 fps with real PTS, relative timing only")
     args = ap.parse_args()
-    b = BOUNDS
+    if args.anim_ms is None or args.settle_ms is None:
+        d, s = product_timing()
+        if args.anim_ms is None:
+            args.anim_ms = d
+        if args.settle_ms is None:
+            args.settle_ms = s
+    b = dict(BOUNDS)
+    # Two DIFFERENT budgets. settle_duration measures the motion itself
+    # (MORPH_DURATION_MS); settle_ms measures command-to-rest, which also
+    # pays the settle tail (SETTLE_MS). Conflating them made every motion
+    # reading look late by the length of the tail.
+    b["settle_duration_ms"] = args.anim_ms + b["capture_median_interval_ms"] + 30.0
+    b["settle_bound_ms"] = (args.anim_ms + args.settle_ms
+                            + b["capture_median_interval_ms"] + 30.0)
+    b["latency_bound_ms"] = b["settle_bound_ms"]
 
     outdir = args.out or (time.strftime("/tmp/motion-runs/%Y%m%d-%H%M%S-")
                           + args.state)
@@ -721,6 +807,10 @@ def run():
         o = outcome(frames, pre, b, allow_relative=(args.source == "wf"))
         if args.source == "wf" and o:
             o["absolute_latency_resolved"] = False
+            # A damage-driven recorder that stopped before the trigger cannot
+            # see the morph. Say so instead of scoring travel 0 as a defect.
+            if meta and not meta.get("trigger_covered", True):
+                o["recorder_starved"] = True
         # pose count over the morph window: command -> anim_ms + 2 intervals.
         # This is THE smoothness number: how many distinct images the panel
         # actually presented while it was supposed to be animating.
@@ -731,20 +821,34 @@ def run():
         # latency and settle, falling back to the whole burst when neither was
         # seen (then the pose count is genuinely unresolved).
         iv = b["capture_median_interval_ms"]
-        if o and o["latency_ms"] is not None:
-            t_a = o["latency_ms"] - iv
+        anchor = o["latency_ms"] if (o and o["latency_ms"] is not None) \
+            else (o["onset_ms"] if o else None)
+        if anchor is not None:
+            t_a = anchor - iv
             t_b = (o["settle_ms"] + iv) if o["settle_ms"] is not None \
-                else (o["latency_ms"] + args.anim_ms + 2 * iv)
+                else (anchor + args.anim_ms + args.settle_ms + 2 * iv)
             pos = count_poses(frames, cx_crop, t_a, t_b)
+            pos["window_anchored"] = True
         else:
+            # Whole-burst fallback: the count then includes pre-motion idle
+            # frames and cannot fail a build that pauses and jumps. Mark it
+            # unresolved rather than reporting it as a smoothness headline.
             pos = count_poses(frames, cx_crop, 0.0, args.burst * 1000.0)
+            pos["window_anchored"] = False
+            pos["resolved"] = False
         if o:
             o["poses"] = pos
+            # Geometry unreadable (panel merged with a dark window behind it):
+            # the pose count still stands, the extents do not.
+            o["geometry_merged"] = any(
+                f["geom"] and f["geom"].get("geometry_merged") for f in frames)
         trials.append({k: v for k, v in o.items() if k != "series_total_h"}
                       | {"series_total_h": o["series_total_h"]})
         all_frames.extend(frames)
         trial_log.append({
             "trial": ti, "phase_s": round(phase, 3), "trigger_ok": trig["ok"],
+            "onset_ms": round(o["onset_ms"], 1)
+            if (o and o.get("onset_ms") is not None) else None,
             "frames": len(frames),
             "no_island": sum(1 for f in frames if not f["geom"]),
             "samples_after_trigger": o["samples"] if o else 0,
@@ -791,9 +895,17 @@ def run():
         off_target = bool(ref_target is not None and
                           abs(t["target_total_h"] - ref_target) > 2)
         off_start = bool(abs(t["start_total_h"] - pre["total_h"]) > 2)
-        t["suspect"] = off_target or off_start
-        t["suspect_why"] = (" ".join(["target"] if off_target else [] +
-                                     ["start"] if off_start else []) or None)
+        starved = bool(t.get("recorder_starved"))
+        # A merged component means the geometry is unreadable, NOT that the
+        # trial belongs to someone else. Keep the trial for its pose count
+        # (change-in-band is immune to a static dark window) and mark only
+        # the geometry-derived metrics unresolved.
+        t["geometry_merged"] = bool(t.get("geometry_merged"))
+        t["suspect"] = off_target or off_start or starved
+        t["suspect_why"] = (" ".join((["target"] if off_target else [])
+                                     + (["start"] if off_start else [])
+                                     + (["recorder-starved"] if starved else []))
+                            or None)
     clean = [t for t in ok if not t["suspect"]]
     # With fewer than 3 trials the median is not a reference: two contaminated
     # trials are each other's "median" and both escape the screen. Say so
@@ -813,7 +925,16 @@ def run():
               file=sys.stderr)
         return 2
     if screening_weak:
-        clean = clean or ok    # ---- global capture stats --------------------------------------------
+        # Never silently fall back to contaminated trials: one suspicious
+        # trial would then supply every order statistic (r2 critic #4).
+        # A starved recorder is an instrument problem, so say which it was.
+        starved_n = sum(1 for t in ok if t.get("recorder_starved"))
+        print(f"FATAL: only {len(clean)} clean trial(s) of {len(ok)} "
+              f"({starved_n} recorder-starved). wf-recorder -D is damage-driven: "
+              f"on a quiet screen it stops capturing before the morph. Re-run "
+              f"with more trials, or use --source grim.", file=sys.stderr)
+        return 2
+    # ---- global capture stats --------------------------------------------
     gaps, costs = [], []
     for ti in range(args.trials):
         fr = [f for f in all_frames if f["trial"] == ti]
@@ -826,18 +947,33 @@ def run():
 
     # ---- duplicate frames (morph window only: before the command nothing
     # is expected to change, so those pairs are not evidence of a stalled anim)
+    # Window = the OBSERVED motion, per trial: onset .. onset + anim + tail.
+    # A fixed 0.45 s window on a 233 ms morph scored ~217 ms of idle frames
+    # either side, so the ratio graded the waiting room, not the animation.
     dups = pairs = 0
-    window = 0.45
+    span = args.anim_ms + args.settle_ms
+    windows = []
     for ti in range(args.trials):
+        tr = next((t for t in trial_log if t["trial"] == ti), None)
+        onset = None
+        if tr:
+            onset = tr.get("latency_ms")
+            if onset is None:
+                onset = tr.get("onset_ms")
+        if onset is None:
+            continue
+        lo, hi = onset, onset + span
+        windows.append([round(lo, 1), round(hi, 1)])
         fr = [f for f in all_frames if f["trial"] == ti]
         for a, c in zip(fr, fr[1:]):
             if c["geom"] is None or c["geom"].get("delta") is None:
                 continue
-            if c["dt"] is None or not (0 <= c["dt"] <= window):
+            if c["dt"] is None or not (lo <= c["dt"] * 1000.0 <= hi):
                 continue
             pairs += 1
             if c["geom"]["delta"] < b["pixel_delta_epsilon"]:
                 dups += 1
+    window = span / 1000.0
     dup_ratio = dups / pairs if pairs else None
     dup_bound = (b["duplicate_ratio_fast"] if med and med < 30
                  else b["duplicate_ratio_slow"])
@@ -863,7 +999,18 @@ def run():
     flight = [t["in_flight_samples"] for t in clean]
     # a reversal / overshoot claim needs at least 2 intermediate geometries in
     # some trial; otherwise the question was never asked and must not PASS
-    resolved_flight = any(v >= 2 for v in flight)
+    # If any clean trial's geometry merged with the desktop, every extent-
+    # derived number is suspect: refuse to score them rather than report a
+    # height that belongs to the app window.
+    geometry_ok = not any(t.get("geometry_merged") for t in clean)
+    resolved_flight = any(v >= 2 for v in flight) and geometry_ok
+    # One rule for every timing metric, not just wf's latency: the sampler
+    # must resolve the individual steps of the animation, not merely span it.
+    # A 233 ms morph at 60 Hz has ~14 steps, so anything coarser than three
+    # display intervals (50 ms) cannot tell a smooth ramp from a slideshow.
+    # grim at 33.7 ms passes; 30 fps and slower does not. These used to be
+    # graded as hard FAILs, which punished the sampler for the panel's sake.
+    timing_resolved = bool(med) and med <= 3.0 * (1000.0 / 60.0)
     ramps = [f["geom"]["edge_ramp"] for f in all_frames
              if f["geom"] and f["geom"].get("edge_ramp") is not None]
     ramp_med = statistics.median(ramps) if ramps else None
@@ -891,7 +1038,9 @@ def run():
     add("travel_px", round(travel, 1) if travel is not None else None,
         travel is not None and travel >= b["travel_min_px"],
         f">= {b['travel_min_px']} px",
-        "no travel means the morph never happened / wrong signal")
+        "no travel means the morph never happened / wrong signal. UNRESOLVED "
+        "when the panel merged with a dark window behind it",
+        resolved=geometry_ok)
     absolute_latency = args.source != "wf"
     add("latency_ms", round(lat_max, 1) if lat_max is not None else None,
         lat_max is not None and lat_max <= b["latency_bound_ms"],
@@ -914,8 +1063,10 @@ def run():
         f"1 capture interval + 30 ms)",
         "the animation's own cost, independent of dispatch. UNRESOLVED whenever "
         "no intermediate geometry was captured: a 0.0 ms reading then means the "
-        "sampler missed the motion, not that it was instantaneous",
-        resolved=resolved_flight)
+        "sampler missed the motion, not that it was instantaneous. UNRESOLVED "
+        "too when the capture interval exceeds a third of the morph: at that "
+        "rate the reading is the sampler's, not the panel's",
+        resolved=resolved_flight and timing_resolved)
     add("width_reversals", worst_rev,
         worst_rev is not None and worst_rev <= b["reversals_max"],
         f"<= {b['reversals_max']} (worst trial)",
@@ -933,16 +1084,20 @@ def run():
     add("in_flight_samples", max(flight) if flight else None,
         max(flight) >= 2 if flight else False,
         ">= 2 intermediate geometries in at least one trial",
-        "below this the curve shape is not observable at all",
+        "below this the curve shape is not observable at all. UNRESOLVED too "
+        "when the panel merged with a dark window behind it: the extent then "
+        "belongs to the desktop, not the island",
         resolved=resolved_flight)
     add("duplicate_ratio", round(dup_ratio, 3) if dup_ratio is not None else None,
         dup_ratio is not None and dup_ratio <= dup_bound,
-        f"<= {dup_bound} of {pairs} pairs in first {window * 1000:.0f} ms",
+        f"<= {dup_bound} of {pairs} pairs inside the observed motion windows "
+        f"{windows} (onset .. onset + {span:.0f} ms)",
         "identical frames while a morph is in flight = animation not advancing. "
         "UNRESOLVED when no in-flight geometry was captured: at <60 fps the "
-        "still frames before and after a 160 ms morph dominate the ratio, so it "
-        "grades the sampler, not the panel",
-        resolved=resolved_flight and pairs >= 20)
+        "still frames before and after the morph dominate the ratio, so it "
+        "grades the sampler, not the panel. UNRESOLVED too when no trial had "
+        "an observed onset: the window would then be guesswork",
+        resolved=resolved_flight and pairs >= 20 and bool(windows))
     add("edge_ramp_px", round(ramp_med, 2) if ramp_med is not None else None,
         ramp_med is not None and ramp_med <= b["edge_ramp_px"],
         f"<= {b['edge_ramp_px']} px (reference ~1.5 px)",
@@ -957,6 +1112,11 @@ def run():
                       if t.get("poses") and t["poses"]["resolved"]
                       and t["poses"]["n_poses"] is not None]
     poses_max = max(poses_by_trial) if poses_by_trial else None
+    # A pose count from the whole-burst fallback includes pre-motion idle
+    # frames and cannot fail a build that pauses then jumps, so it is not a
+    # smoothness result at all.
+    poses_anchored = any(t.get("poses", {}).get("window_anchored")
+                         for t in clean if t.get("poses"))
     holds = [t["poses"]["pose_hold_median_ms"] for t in clean
              if t.get("poses") and t["poses"]["resolved"]
              and t["poses"]["pose_hold_median_ms"] is not None]
@@ -964,14 +1124,18 @@ def run():
     add("morph_poses", poses_max,
         poses_max is not None and poses_max >= b["min_morph_poses"],
         f">= {b['min_morph_poses']} distinct poses in the morph window "
-        f"(160 ms @ 60 Hz = 9.6 slots)",
+        f"({args.anim_ms:.0f} ms @ 60 Hz = {args.anim_ms / (1000.0 / 60.0):.1f} slots)",
         "THE smoothness number: distinct images presented while animating. "
-        "2-3 poses = the animation steps, 9+ = every display frame is distinct")
+        "2-3 poses = the animation steps, one per display frame = smooth. "
+        "UNRESOLVED when the window fell back to the whole burst: that count "
+        "includes idle frames and cannot fail a paused-then-jump build",
+        resolved=poses_anchored)
     add("pose_hold_median_ms", round(hold_med, 1) if hold_med is not None else None,
         hold_med is not None and hold_med <= b["min_pose_hold_ms"] * 3,
         f"<= {b['min_pose_hold_ms'] * 3:.0f} ms (3 display intervals)",
-        "how long one pose is held. >50 ms on a 160 ms morph is a visible step",
-        resolved=hold_med is not None)
+        f"how long one pose is held; a hold longer than ~3 display intervals "
+        f"on a {args.anim_ms:.0f} ms morph is a visible step",
+        resolved=hold_med is not None and timing_resolved and poses_anchored)
     add("dt_coverage", len(bins),
         len(aligned) >= b["min_window_samples"] * 5
         and len(bins) >= b["min_dt_bins"],
@@ -983,6 +1147,7 @@ def run():
         "instrument": "scripts/motion/motion.py",
         "state": args.state, "pre_state": args.pre,
         "anim_ms_config": args.anim_ms,
+        "settle_ms_config": args.settle_ms,
         "screen": {"device": "2256x1504", "scale": SCALE, "refresh_hz": 60},
         "capture_method": ("wf-recorder -D (no-damage) ffv1, PTS from the "
                            "compositor" if args.source == "wf" else
@@ -1043,13 +1208,23 @@ def run():
         "checks": checks,
         "bounds": b,
         "bounds_note": {
-            "settle_ms": "threshold 260 ms = anim_ms 160 + one capture interval "
-                         "(~60 ms) + 40 ms slack: the sampling floor, not a taste "
-                         "call",
-            "settle_duration_ms": "threshold 230 ms = anim_ms + one interval + "
-                                  "30 ms of slack for the animation's own cost",
-            "latency_ms": "same 260 ms budget for command->first-pixel; this is "
-                          "the number a user reads as laggy",
+            "settle_ms": f"threshold {b['settle_bound_ms']:.0f} ms = morph "
+                         f"{args.anim_ms:.0f} + settle tail {args.settle_ms:.0f} "
+                         f"+ one capture interval + 30 ms slack. Command to rest, "
+                         f"so it pays BOTH phases (src/morph.rs)",
+            "settle_duration_ms": f"threshold {b['settle_duration_ms']:.0f} ms = "
+                                  f"morph {args.anim_ms:.0f} + one interval + 30 ms "
+                                  f"slack. The MOTION only — it must not be charged "
+                                  f"for the settle tail, which is a separate phase",
+            "latency_ms": f"same {b['latency_bound_ms']:.0f} ms budget for "
+                          f"command->first-pixel; this is the number a user reads "
+                          f"as laggy",
+            "timing_resolution": f"capture interval {med:.1f} ms: timing metrics "
+                                 f"are UNRESOLVED above 50 ms (three 60 Hz "
+                                 f"display intervals) — coarser than that cannot "
+                                 f"separate a ramp from a slideshow",
+            "timing_source": "MORPH_DURATION_MS and SETTLE_MS read from "
+                             "src/morph.rs at run time, never hardcoded",
             "reversals_max": "the morph easing is EaseOutCubic in BOTH "
                              "directions (src/main.rs:4835-4850, iter33 removed "
                              "the old EaseOutBack), so the intended curve is "
