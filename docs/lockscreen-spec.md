@@ -291,3 +291,48 @@ Read all1135 lines of `/home/alex/rust-island-build/src/lockscreen.rs`. Source i
 - Match clock ink center and279px height before tuning colors. Check `11:28` width≈872px, not a fixed1015px tabular layout.
 - Match capsule68×40/top58 at rest; dots8–9px and pitch≈16.2px.
 - Lock must move the capsule and visibly emit/descend the clock; a standalone fade is not equivalent.
+
+---
+
+## PARENT CORRECTION — clock width, measured ink-vs-ink (2026-11-19 02:45)
+
+Critic #27b reported "clock ~16% too wide, retune advances". **The direction is
+right, the number was wrong, and the reason is different.** It compared an
+ADVANCE BOX against an INK measurement — the same apples-to-oranges error class
+this run has caught five times.
+
+Reference re-measured by COLOUR, not luminance. A luminance threshold is
+contaminated: `l40.png`'s wallpaper has a cream mast and an orange buoy inside
+the clock's row band, so `lum>110` returned 2057x340 (80% of screen width).
+Masking the glyph teal instead — `(G>170)&(B>150)&(R<200)&(G-R>40)` — gives:
+
+| quantity | reference `l40.png` | ours (tabular, px=388.8) |
+|---|---|---|
+| string | `11:28` | same |
+| ink bbox | x[847,1714] y[581,859] | — |
+| ink size | **868 x 279** | **963.6 x 280** |
+| width % of 2560 | 33.9% | 37.6% |
+| centre x | **1280.5** (screen centre 1280) | centred by construction |
+| ink aspect | 3.111 | 3.441 |
+
+- **Height is already correct**: 280 vs 279 = +0.4%. Do NOT change `CLOCK_PX_FRAC`.
+- **Width is +11.0%**, not +16%. Measured ink-vs-ink through a faithful
+  reimplementation of `rasterize_clock`'s tabular cell layout (`src/lockscreen.rs:673-700`).
+- Natural (non-tabular) advances give ink **824** = **-5.1%**, i.e. the tabular
+  cells are what push it wide.
+- **Solved minimal fix**: `DIGIT_ADVANCE_EM 0.60 -> 0.522`, `COLON_ADVANCE_EM
+  0.21 -> 0.198` (`src/lockscreen.rs:190,192`) yields ink **867.9 = -0.01% error**.
+
+**Deeper finding the critic missed — the reference is NOT tabular.** Measured
+centre-to-centre glyph pitches: **123.0, 138.5, 166.5, 219.5 px**. Tabular spacing
+is uniform by definition (ours: 233.3 px for every digit). His `1` is much
+narrower than his `8`; that is proportional spacing, consistent with SF Compact
+Display. A tabular layout cannot match those pitches at ANY single advance value.
+
+Trade-off, stated so the fixer chooses knowingly: proportional advances match
+the reference letterform but let the block width change as digits change
+(`11:28` -> `11:29`), which shifts the centred clock. Tabular keeps it still.
+**Recommendation: keep tabular, adopt 0.522/0.198.** The width match is exact and
+the pill stays put; the pitch difference is a second-order letterform gap that
+no available font can close anyway (SF Compact Display is absent from this
+machine — `fc-list` finds no SF face — and cannot be shipped).
