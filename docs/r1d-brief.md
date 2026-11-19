@@ -631,3 +631,39 @@ copy — the registration matters. Use the registered wallpaper.)
 (overall means 21.9/84.3/71.5 vs 20.8/84.1/70.0). The veil and sharpness
 confirmations are still independent captures, but the clock-colour
 comparison is **not** an independent wallpaper test. Do not claim it as one.
+
+---
+
+## 17. Power panel internal layout — exact fractions
+
+Measured inside the known panel bbox x[1011,1548] y[20,219] (538×200).
+Ignore the two edge columns at 0.025 W and 0.969 W — those are the panel's own
+rounded-corner antialiasing, not discs.
+
+**Five discs, uniform pitch:**
+
+| disc | centre x / W |
+|---|---|
+| 1 | 0.1924 |
+| 2 | 0.3457 |
+| 3 | **0.5000** |
+| 4 | 0.6533 |
+| 5 | 0.8058 |
+
+- **diameter = 0.1004 × W** (54 / 538)
+- **pitch = 0.1533 × W** (82.5 / 538), uniform to ±0.001
+- **centre y = 0.5175 × H**
+- active fill **(121, 160, 243)**
+
+At the §1 target of 316×118 logical (474×177 device):
+
+```
+disc diameter  31.7 logical  (47.6 device)
+disc pitch     48.4 logical  (72.7 device)
+disc centres   0.1924 / 0.3457 / 0.5000 / 0.6533 / 0.8058 of panel width
+disc centre y  0.5175 of panel height
+```
+
+Express all of these as **fractions of the panel**, not pixel constants, so
+they survive the width change and any future `expanded_height` edit.
+`src/power_panel.rs:91-98` currently produces pitch 90/99/99/90 — non-uniform.
