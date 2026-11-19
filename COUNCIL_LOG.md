@@ -1099,3 +1099,27 @@ He states the rule twice (*"contrast is basically deciding where people look fir
 2. **Sign matters**: a black pill on bright wallpaper shouts as loudly as a bright tile on a dark one. Rank by magnitude, report the sign.
 3. **Sigma must scale from the FULL frame height**, else `--crop` to the bar strip shrinks the blur to 2 px and turns the test into an edge detector (74 spurious survivors → 5).
 **Reference bar strip** (`s17.png`, crop 0,0,2560,140, σ 21.6): **5 survivors**, top one dark shout −99 area 89,600 spanning x[770,1530] — the pill plus its neighbours reading as one quiet dark band. Nothing saturated survives. **That is the target: few, dark, low-magnitude.**
+
+### #29 portability + packaging — score 4 (`logfare/deepseek-v4.1-flash-1017`)
+**Best-evidenced verdict of the round.** It did not read code and guess — it **built a fresh clone in `/tmp/portcheck` (0 errors, 62 warnings)** and **ran the binary with an empty `$HOME`**.
+**⛔ BLOCKER, parent-reproduced verbatim:**
+```
+HOME=/tmp/emptyhome2 ./target/release/dynamite-rust
+thread 'main' (18053) panicked at src/main.rs:6299:10:
+no Quicksand font file parses
+```
+The **entire UI font** resolves from `$HOME/.local/share/fonts/{Quicksand-Bold.ttf,Quicksand.ttf}` only, then `.expect(...)`. `git ls-files | grep -ci quick` → **0**. **The product does not start on any machine but this one.** It dies *before* reaching Wayland, so this is the first thing a new user hits. Silent secondary defect: the fallback accepts `Quicksand.ttf` (**wght 300 Light**) when Bold is missing, changing every panel's metrics with **no log line**.
+Fix shape: track the fonts under `assets/fonts/` (OFL, redistributable), resolve exe-relative like `clock_font()` already does, **embed the Bold bytes as the last candidate** so no filesystem font is ever required, drop the `.expect`, log the winner.
+Other verified findings:
+- **major** — no root README, no `build.sh`/Makefile/justfile, no sample config; `STATUS.md:1-6` still says *"v0.1 prototype: collapsed clock pill only"*. Two crates need two build commands and nothing says so.
+- **major** — `tools/dictation/EMBEDDING.md` documents `--offline` but a cold `CARGO_HOME` fails (`no matching package named \`anyhow\` found`). **The repo documents its own hole instead of closing it.** Online build works (132 crates).
+- **major** — supervisor's `LEGACY` scratch-binary fallback (`tools/dictation/scripts/dictation_supervisor.sh:9,26-33`) silently runs an **unauditable binary** on a fresh clone. **This is my own fallback, added when embedding — the critic is right that it should be a loud error, not a silent substitution.**
+- **major** — the whole launcher layer lives **outside git** and hardcodes `/home/alex` + `/run/user/1000`; `~/.config/mango/scripts/dynamite_autostart.sh:51-57` **silently falls back to `qs -c dynamite`**, a *different Quickshell UI*. `git ls-files | grep -E '\.conf$'` → **zero**.
+- **major** — **16 external tools** undocumented, no capability check; every spawn is `.spawn().ok()?` so a missing `bluetoothctl` renders a **blank BT row indistinguishable from "no devices"**. `libasound`/`libxkbcommon` are hard **link-time** requirements, undocumented.
+- **minor, parent-verified** — **layer-rule name mismatch**: binary sets `NAMESPACE = "dynamite-rust"` (`src/main.rs:1932`), but `~/.config/mango/rule.conf:134` and `docs/mango-capabilities.md:26,122` say `layer_name:dynamite`. **The documented no-blur/no-shadow optimisation matches nothing.**
+- **minor, parent-verified** — stale **root `wallpaper_blur.rs` (15,149 B)** is tracked while `src/main.rs:128 mod wallpaper_blur;` resolves to `src/wallpaper_blur.rs` (**62,238 B**). Dead duplicate in git. Plus a tracked `.pyc`, a `.bak`, and 17 motion-output files.
+- **minor** — `LOCKSCREEN_SIZE (1504,1002)` compile-time constant; the fullscreen guard is `configured_size.0 >= 1400` (`src/main.rs:4597,4611`) so **the lock animation never draws on an output narrower than 1400 logical px**. Confirms worker A's frost-origin finding from a second direction.
+**Genuinely good, credited**: config parsing clamps every numeric key and ignores unknown ones — garbage input cannot break startup; secrets clean; every external tool degrades rather than crashes.
+
+### ⚠️ Note for the next brief — a font the critic asked for does not exist here
+#27b asked to load **SF Compact Display** for the lock clock. `fc-list | grep -iE 'sf.?compact|sf.?pro'` → **empty**; `assets/fonts/` holds only `Inter-Medium.ttf`. **Do not instruct a fixer to load a font that is not present** — it will silently fall back and the finding will look "fixed". Treat it as *match the reference's letterform proportions*, verified by measurement.
