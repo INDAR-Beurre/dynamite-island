@@ -1561,3 +1561,39 @@ samples**; non-persistent spikes are reported as `transient RSS spikes`.
 
 Latency unchanged and excellent: p50 44.9 / p95 85.7 / p99 127.5 / max 140.4
 vs 400 ms bound.
+
+## Round 1 status — 18 slots scored, median 4.5, gate >=9 NOT MET
+| slot | lens | score |
+|---|---|---|
+| #1 | glyph sharpness | 6 |
+| #2 | screenshot A/B (vision) | 5 |
+| #3 | geometry | 3 |
+| #4 | typeface | 7 |
+| #5 | fill / frost / slop | 6 |
+| #6 | idle CPU + redraw proof | 4 |
+| #8 | memory | 3 |
+| #11 | stress / does-it-reproduce | 3 |
+| #21 | dictation embedding | 6 |
+| #22 | stress-harness integrity | 4 |
+| #23b | motion-harness integrity | 3 |
+| #25 | rust idiom + panic safety | 7 |
+| #26 | memory + shm budget | 5 |
+| #27b | lockscreen vision | 4 |
+| #28b | owner's additions (BT/workspaces) | 6 |
+| #29 | portability | 4 |
+| #30b | reference motion spec | 4 |
+| #31 | dictation mic lifecycle + RAM | 6 |
+
+Sorted: 3,3,3,3,4,4,4,4,4,**5**,5,6,6,6,6,6,7,7 → **median 4.5**, mean 4.78.
+Fixer r1c (`logfare/deepseek-v4.1-flash-1017`, thinking max, `2bfdb05f`) still
+running; its morph-rect + embedded-font work is verified in the tree.
+
+### Provider losses recorded
+- `magpie/group/gemini-4-hydrogen` — **BANNED**: `HTTP 403 … Google has
+  disabled this account's access to Antigravity for violating the Terms of
+  Service`. Do not dispatch again.
+- `magpie/group/deepseek-v4.1-flash-1017` — two fixer deaths, `YJS: Upstream
+  error`. Same model on **logfare** works; swapped per the two-strike rule.
+- `magpie/logfare/glm-5.3*` — image-blind at runtime; capacity/RPM failures.
+Remaining vision routes: `magpie/group/hy4` (65 K context) and
+`magpie/agentrouter/gpt-6.1-sol` (expensive — owner warned).
