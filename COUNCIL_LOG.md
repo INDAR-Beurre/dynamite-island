@@ -849,3 +849,8 @@ Dispatched two 5-question probes (`704af058` hy4, `01427332` gemini-4-hydrogen),
 | wallpaper | median RGB **[62, 120, 243]** — blue sky with white cloud |
 Capsule bbox in `/tmp/ref/s/s17.png`: **x[1224,1335] y[19,60], 112×42**. (The canonical 111×42 figure came from a slightly tighter mask; the 1-px difference is the AA edge and does not change any ratio.)
 Whichever probe answers correctly takes the reference-spec brief; if both fail, retry `sol` once.
+
+### ✅ `magpie/group/hy4` CAN SEE IMAGES — 5/5 on the probe
+`704af058` answered **BLACK · `00:05` · light-on-dark · under 10% · blue** — every item matches the parent-established ground truth, including the exact clock string, which cannot be guessed from a filename.
+**This is the cheapest confirmed vision route found so far** (`group/hy4`, 65 K context) and it frees the expensive `agentrouter/gpt-6.1-sol` slot for the owner. All subsequent visual critics route here unless it fails.
+**Caveat to carry:** 65 K context is small for a spec task over ~120 frames. The brief must therefore name a *bounded* frame set rather than "look at everything", or the child will run out of window mid-spec.
