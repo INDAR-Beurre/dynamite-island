@@ -92,6 +92,20 @@ Words include `collapsed`, `controlcenter`, `music`, `calendar`, `themes`,
 `dictation_end`. See `docs/socket-contract.md` for the full contract — those
 literals are an API shared with the dictation tool, not internal strings.
 
+### The bar needs a wallpaper behind it
+
+The capsule is a near-black shape. On a bare compositor root it is almost
+invisible, and the frost material has nothing to sample. If the bar looks flat
+or wrong, check that a wallpaper daemon is actually running:
+
+```sh
+pgrep -a swaybg || swaybg -i ~/.config/mango/wallpaper/wallpaper.png -m fill &
+```
+
+Without one you see MangoWM's `root_color` (`config.conf`) behind the bar, not
+your wallpaper. The panel reads the wallpaper *file* for its frost, so the
+capsule still renders — which makes this easy to miss.
+
 ## Configuration
 
 `~/.config/dynamite-rust/config.conf`, `key=value`, `#` comments. A missing file
