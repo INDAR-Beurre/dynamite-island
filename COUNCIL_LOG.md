@@ -834,3 +834,18 @@ Full-stage median total **107.4 ms** (n=5) vs region **26.85 ms** (n=1). At 107 
 **`-D` (`--no-damage`) is mandatory**: without it wf-recorder emits only on damage and reports a fake 38 fps. With it, 60.1 real buffers/s, "Using video filter: null" (no fps filter padding the count).
 
 **Fifth harness defect found by a child, pre-existing:** `drive_bars.py` sent on an **unconnected** AF_UNIX socket → `[Errno 107]`. The archived "sustained" baseline (54/60 zero-delta frames) **measured nothing**. Fixed with `sendto(path)`; now sends 213 bar updates over 2.6 s. Also fixed: deltas in (0, 0.05] fell into **no** histogram bucket; frame indices off by one; PTS were capture-relative while `trigger.log` used wall clock, so the anchored window picked a **trailing carousel tick instead of the morph**; and "nearest run" window selection reported *1 pose* on a stalled build — **the instrument would have flattered the very defect it was built to expose.**
+
+### Critic #20 (vision) failed — probing cheaper vision routes before spending more `sol` (chain 5t)
+`c8338066` (`agentrouter/gpt-6.1-sol`) died with **`Error reading response: malformed server-sent event JSON`** and wrote no spec. Transport fault, not a refusal, so one retry is allowed. **But I did not reflexively retry the expensive route.**
+Reasoning: `sol` is the only route I have *positively confirmed* sees images, and the owner explicitly warned it drains their account. There will be several more visual rounds, so paying two tiny probes now to find a cheaper seeing route pays for itself. Every `glm` route is image-blind at runtime; `hy4` and `gemini-4-hydrogen` declare image input but had **never been probed** — and a visual critic that cannot see would invent measurements, the worst outcome for a pixel-perfect task.
+Dispatched two 5-question probes (`704af058` hy4, `01427332` gemini-4-hydrogen), each told to answer **"CANNOT SEE IMAGES"** rather than guess.
+**Ground truth established by the parent from the pixels, so the probes are gradeable:**
+| question | truth |
+|---|---|
+| capsule fill | **BLACK**, p25 = **0.0** |
+| text | **`00:05`** (read directly at 4× nearest-neighbour zoom) |
+| polarity | light-on-dark, ink peak 255 |
+| width fraction | **4.375%** → "under 10%" |
+| wallpaper | median RGB **[62, 120, 243]** — blue sky with white cloud |
+Capsule bbox in `/tmp/ref/s/s17.png`: **x[1224,1335] y[19,60], 112×42**. (The canonical 111×42 figure came from a slightly tighter mask; the 1-px difference is the AA edge and does not change any ratio.)
+Whichever probe answers correctly takes the reference-spec brief; if both fail, retry `sol` once.
