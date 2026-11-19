@@ -60,6 +60,18 @@ slop  src/lockscreen.rs:199-204 / main.rs:673-706  duplicate shadow
 
 ### F1 — accent fragmentation is the deep slop (severity: high)
 
+> **Measured against the reference (parent, `/tmp/ref/s/s13.png`).** The active
+> Lock disc's modal interior is **#79A1F5 (121,161,245)**; next most common
+> #7BA0F3 / #7BA0F5 — one periwinkle within video-compression noise. So the
+> hue family below is **correct** and must not be changed. `DEFAULT_ACCENT`
+> #7CA2F5 is within **3 units per channel** of the reference.
+> The genuine colour defect is that **#93A4F5 (147,164,245) is 26 units too
+> light on red** — fix toward #79A1F5, do not invent a new hue.
+> **A critic claimed the target accent was #F2A65A (orange). That was
+> hallucinated** — the hex exists nowhere in the reference, docs or assets,
+> only in that critic's own finding. Obeying it would have destroyed the
+> pixel match. Retracted in `COUNCIL_LOG.md`.
+
 The island *has* one accent in spirit — periwinkle #7CA2F5 — and
 `library.rs:36-41` even declares `ISLAND_ACCENT == DEFAULT_ACCENT`. But the
 accent is **re-typed by hand at five call sites with three different byte
