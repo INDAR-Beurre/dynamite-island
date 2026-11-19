@@ -805,3 +805,20 @@ Models follow the owner's instruction: primarily DeepSeek v4.1 Flash **from diff
 **#22 must mutation-test the suite** — deliberately break something reversible in /tmp and confirm the suite FAILS. A suite that cannot fail is not a gate, and the owner's ≥1000-test rule is meaningless without this.
 **#23's decisive question**: could height quantisation collapse a genuinely smooth 10-pose morph into 3 distinct heights and produce a FALSE teleport verdict? Travel is 48 px over 160 ms ≈ 5 px/frame, so it should not — but if it can, the next fixer would chase a non-bug. Also asked to break the selftest's ordering claim.
 Both harness critics are told the panel may restart under them (Errno 107) and to re-run rather than report a false failure.
+
+### ★★ The panel's OWN profiler confirms the upscale is ~97% of the cost
+Two motion children independently reported `up=105.1 ms (upscale_only=105.1 ms)`. **I did not take that on trust** — `grep -rn 'upscale_only' src/` returns **nothing**, and `strings /proc/7964/exe | grep -c upscale_only` = **0**. The profiler is **not in the current tree or binary**; it was a temporary instrumented build. Found the actual logs at **`/tmp/prof7.log`, `/tmp/prof8.log`** (11-18 21:30 / 21:34, i.e. pre-r1b). Parsed every line:
+| state | rect | draw_ms | **up_ms** | total_ms |
+|---|---|---|---|---|
+| Collapsed | false | 509.34 | 81.171 | **590.52** |
+| Dictation | **true** | 26.84 | **0.000** | **26.85** |
+| Music | false | 28.06 | 79.298 | 107.37 |
+| ControlCenter | false | 37.97 | 66.163 | 104.15 |
+| Collapsed | false | **2.70** | **76.858** | 79.57 |
+| Lockscreen | false | 4.82 | 105.137 | 109.97 |
+**The load-bearing row is the second Collapsed one: the pill itself draws in 2.70 ms; the upscale costs 76.86 ms — 96.6% of the frame.** And the one `rect=true` row (Dictation) shows **up = 0.000 ms**: the region path skips the upscale entirely. That is critic #6's "99.7% of the upscale is thrown away" confirmed by the panel's own instrumentation, from a source I verified rather than a child's claim.
+Full-stage median total **107.4 ms** (n=5) vs region **26.85 ms** (n=1). At 107 ms per paint the morph can only present ~9 poses/s — matching the measured 2–3 poses per 160 ms and the VFR 18.5 fps.
+**Caveat recorded honestly:** these are pre-r1b numbers from an instrumented build that no longer exists. The cost *structure* is unchanged — `src/main.rs:5335` still calls `upscale_canvas_2x_into` full-stage whenever `frame_running`. Re-instrument after the fix to confirm the drop.
+
+### Critic #23 failed — provider transport, retrying once
+`7839890c` (`group/deepseek-v4.1-flash-1017`) died immediately with `400: {"code":null,"message":"YJS: Upstream error (request id: …)","type":"invalid_request_error"}`, last message "I'll start by loading the thinking tool". A transport error at turn start, not a model refusal and not a brief defect. Per the skill: one retry, then move on.
