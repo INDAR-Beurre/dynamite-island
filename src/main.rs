@@ -2191,7 +2191,20 @@ fn clock_font() -> Option<&'static fontdue::Font> {
 ///    no install can fail for a missing font
 /// 4. `$HOME/.local/share/fonts/Quicksand.ttf` (Light, wght 300) — last,
 ///    logged as metric-changing
-pub(crate) fn ui_font() -> fontdue::Font {
+///
+/// The font is parsed ONCE and handed out as `&'static`, so there is a
+/// single Font object per process. That is not just laziness:
+/// `lock_timer::rasterize_cached` keys its glyph cache on the font's
+/// address, and a Font that is re-parsed per call can be reallocated at
+/// a recycled address and inherit another font's glyph coverage (r1c:
+/// that produced zero-width chevrons and a 23-row workspace disc in the
+/// parallel test run).
+pub(crate) fn ui_font() -> &'static fontdue::Font {
+    static FONT: std::sync::OnceLock<fontdue::Font> = std::sync::OnceLock::new();
+    FONT.get_or_init(load_ui_font)
+}
+
+fn load_ui_font() -> fontdue::Font {
     const EMBEDDED_BOLD: &[u8] = include_bytes!("../assets/fonts/Quicksand-Bold.ttf");
     static LOGGED: std::sync::Once = std::sync::Once::new();
     let mut candidates: Vec<(PathBuf, &'static str)> = Vec::new();
@@ -3820,7 +3833,7 @@ struct Island {
     layer: Option<LayerSurface>,
     pool: Option<SlotPool>,
     buffer: Option<smithay_client_toolkit::shm::slot::Buffer>,
-    font: fontdue::Font,
+    font: &'static fontdue::Font,
     // Icon font, loaded LAZILY on the first Power/ControlCenter draw.
     // Material Symbols Rounded parses to ~19 MB in fontdue — loading it
     // eagerly would 6x the idle PSS (4 MB -> 24 MB) for states that never
@@ -5521,7 +5534,7 @@ impl Island {
                     &frame,
                     &mut self.morph_scratch_from,
                     &mut self.morph_scratch_to,
-                    &self.font,
+                    self.font,
                     icon_from,
                     icon_to,
                     &lock_data,
@@ -5547,7 +5560,7 @@ impl Island {
                     w,
                     h,
                     self.state,
-                    &self.font,
+                    self.font,
                     // Icon font only for the states that draw glyphs; the
                     // collapsed/lock/placeholder states must not pay its ~19 MB.
                     icon_font_for(&self.icon_font, self.state),
@@ -5576,7 +5589,7 @@ impl Island {
         let pill_on_top = matches!(self.state, IslandState::Collapsed | IslandState::TrayMenu)
             || MENU_CYCLE.contains(&self.state);
         if self.morph.is_none() && pill_on_top {
-            draw_top_row_2x(canvas, bw, bh, &self.font, active_tag_cached());
+            draw_top_row_2x(canvas, bw, bh, self.font, active_tag_cached());
         }
         let buffer = match pool.create_buffer_in(
             &slot,
@@ -5948,7 +5961,7 @@ impl PointerHandler for Island {
                         && self.morph.is_none()
                     {
                         music_panel::control_hit(
-                            &self.font,
+                            self.font,
                             event.position,
                             panel_origin(self.state),
                         )
@@ -6704,7 +6717,11 @@ fn main() {
             Ok(_) => {
                 eprintln!("dynamite-rust: another instance owns {} -- exiting",
                           sock_path.display());
-                std::process::exit(0);
+                // 75 = EX_TEMPFAIL: "not a failure, do not retry". The
+                // supervisor counts ANY sub-30 s run as a rapid exit, so
+                // exiting 0 here drove it to its 10-strike give-up cap and
+                // it stopped restarting the island for 300 s at a time.
+                std::process::exit(75);
             }
             // Nothing is listening: a stale file from a crashed run.
             Err(_) => { let _ = std::fs::remove_file(&sock_path); }
@@ -7807,6 +7824,74 @@ mod iter30_tests {
         }
     }
 
+    /// r1c finding 3: SUPER+5..9 must not black out the row. Whatever
+    /// the active tag, it has to be one of the four drawn slots, and
+    /// tags 1..4 must keep the original 1,2,3,4 layout (every geometry
+    /// assertion and the reference measurement assume it).
+    #[test]
+    fn ws_window_always_shows_the_active_tag() {
+        for active in 1..=9u8 {
+            let tags = ws_visible_tags(active);
+            assert!(
+                tags.contains(&active),
+                "active tag {active} missing from drawn tags {tags:?}"
+            );
+            assert_eq!(tags.len(), WS_COUNT);
+            // Contiguous, ascending, in range.
+            for (i, t) in tags.iter().enumerate() {
+                assert_eq!(*t, tags[0] + i as u8, "tags not contiguous: {tags:?}");
+                assert!((1..=9).contains(t), "tag out of range: {tags:?}");
+            }
+        }
+        // The first four tags are the regression-frozen layout.
+        for active in 1..=4u8 {
+            assert_eq!(ws_visible_tags(active), [1, 2, 3, 4], "tag {active}");
+        }
+        assert_eq!(ws_visible_tags(5), [2, 3, 4, 5]);
+        assert_eq!(ws_visible_tags(9), [6, 7, 8, 9]);
+    }
+
+    /// r1c finding 4: occupancy comes from the same JSON mmsg already
+    /// prints, and a window-less tag must not read as occupied.
+    #[test]
+    fn parse_tag_state_occupancy() {
+        // Real `mmsg get all-tags` output, tag 2 active with one window.
+        let json = "{\"all_tags\":[{\"monitor\":\"eDP-1\",\"tags\":[{\"index\":1,\"is_active\":false,\"is_urgent\":false,\"layout\":\"T\",\"client_count\":0},{\"index\":2,\"is_active\":true,\"is_urgent\":false,\"layout\":\"T\",\"client_count\":1},{\"index\":3,\"is_active\":false,\"is_urgent\":true,\"layout\":\"T\",\"client_count\":2}]}]}";
+        let ts = parse_tag_state(json).expect("parses");
+        assert_eq!(ts.active, 2);
+        assert!(!ts.is_occupied(1), "empty tag 1 read as occupied");
+        assert!(ts.is_occupied(2), "tag 2 has a window");
+        assert!(ts.is_occupied(3), "tag 3 has two windows");
+        assert!(!ts.is_occupied(4), "tag absent from the JSON");
+        assert_eq!(ts.urgent & 0b100, 0b100, "tag 3 urgent bit");
+        assert_eq!(ts.urgent & 0b010, 0, "tag 2 not urgent");
+        // Nothing active => nothing to cache (the caller keeps its last).
+        assert!(parse_tag_state("{\"all_tags\":[]}").is_none());
+        assert!(parse_tag_state("not json").is_none());
+        // A tag whose flags would be misattributed to its NEIGHBOUR must
+        // not happen: index 1 empty, index 2 occupied.
+        let two = "[{\"index\":1,\"is_active\":true,\"is_urgent\":false,\"client_count\":0},{\"index\":2,\"is_active\":false,\"is_urgent\":false,\"client_count\":3}]";
+        let ts = parse_tag_state(two).expect("parses");
+        assert_eq!(ts.active, 1);
+        assert!(!ts.is_occupied(1), "tag 1 stole tag 2's count");
+        assert!(ts.is_occupied(2), "tag 2 lost its count");
+    }
+
+    /// The active disc draws the accent, an occupied one a lighter grey,
+    /// an empty one the dark grey — and active always beats occupied.
+    #[test]
+    fn workspace_colours_are_distinct() {
+        assert_ne!(WS_ACTIVE_FILL, WS_OCCUPIED_FILL);
+        assert_ne!(WS_OCCUPIED_FILL, WS_INACTIVE_FILL);
+        // Occupied is lighter than empty on every channel (visible on a
+        // near-black bar without introducing a new hue).
+        for c in 0..3 {
+            let occ = [WS_OCCUPIED_FILL.0, WS_OCCUPIED_FILL.1, WS_OCCUPIED_FILL.2][c];
+            let emp = [WS_INACTIVE_FILL.0, WS_INACTIVE_FILL.1, WS_INACTIVE_FILL.2][c];
+            assert!(occ > emp, "occupied must be lighter on channel {c}");
+        }
+    }
+
     #[test]
     fn workspace_hit_stage_coords() {
         // Centre hits return the tag; gaps and the pill do not.
@@ -8327,7 +8412,7 @@ mod iter39_keyboard_tests {
 mod iter108_tests {
     use super::*;
 
-    fn load_font() -> fontdue::Font {
+    fn load_font() -> &'static fontdue::Font {
         ui_font()
     }
 
@@ -8783,7 +8868,7 @@ mod iter108_tests {
 mod iter109_tests {
     use super::*;
 
-    fn load_font() -> fontdue::Font {
+    fn load_font() -> &'static fontdue::Font {
         ui_font()
     }
 

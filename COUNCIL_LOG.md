@@ -1487,3 +1487,50 @@ into layout space. Derived region is now `552,1543,952,1753`; capture.sh
 default went from 0 frames to **11 frames in 1 s at 20 fps**.
 Also fixed a latent path bug: run_all.sh called `../../scripts/measure.py`
 relative to CWD, which only worked from one directory.
+
+## #31 dictation mic/RAM — score 6. Two findings REFUTED, one confirmed and worse than reported.
+**✅ CONFIRMED, and the real cost is not RAM**: the mic is open from login and
+**nothing can ever close it** — `tools/dictation/src/main.rs:90`
+`capture::start().expect(...)`; `tools/dictation/src/capture.rs:57-103` parks the
+owner thread forever, no Drop/stop channel/JoinHandle, `AudioIn` is Clone-only
+holding a Receiver. Live proof: PipeWire node 92 `alsa_capture.static-dictation`
+state R; `/proc/asound/card0/pcm0c/sub0/status` RUNNING, appl_ptr +145384 frames/3 s.
+**The battery cost**: `/sys/bus/pci/devices/0000:00:1f.3/power/runtime_status`
+stays `active` with `power_save=1`, `power_save_controller=Y` and playback closed
+⇒ the open capture is the ONLY thing keeping the HDA codec awake. Invisible in
+every RSS/Pss number. Idle: dictation Pss **1572-1597 kB**, 28 threads, 102 fds,
+**96-99 ctxt/s**; panel Pss **30816 kB**, 10-11 threads, **1 ctxt/s**.
+**Not a privacy leak**: idle audio is drained and discarded (`main.rs:108-118`,
+the `if recording` gate is INSIDE the frame loop), never persisted or sent — all
+10 sockets are unix. That drain IS the 100/s context-switch rate.
+**⛔ REFUTED — "the panel binary has no dictation_start literal"**: parent sent
+both words to the live panel and got `DBG morph Collapsed -> Dictation` and
+`DBG morph Dictation -> Collapsed`. LLVM compiles `word == "literal"` into an
+inline length check + immediate compares, so **no string constant exists** —
+`strings` finding 0 is expected, not a defect. End-to-end works.
+**⛔ REFUTED (partly) — "stress reads a stale log"**: `scripts/stress/stress.py`
+already follows `/proc/PID/fd/2` via `stderr_target()`. But the parent's OWN ad-hoc
+probes read `~/.cache/dynamite.log` while the panel writes **`.log.1`** (rotated
+out from under it) — that is why my manual checks looked dead. Harness was right.
+
+## #30b reference motion — score 4, and it CORRECTED MY BRIEF
+**The 855 `dense/` frames are 5 fps (Δ200 ms), NOT 60 fps.** I briefed them as
+sequential video frames. All source videos are **60/1 fps** (ffprobe), so the
+extraction was decimated. **Reference pose counts at source rate were therefore
+never measured** — the child said so instead of inventing a number.
+Clean morph windows: power open/close **400 ms** (d00387-d00389, d00403-d00405),
+wide panel **600 ms** (d00210-d00213, d00225-d00228), ±200 ms quantisation.
+First-move-to-settled **200–400 ms** — **our 317 ms is already inside his range**;
+raising `anim_ms` without adding poses would not fix the lag.
+**EaseOutCubic is right**; the only clean overshoot is **+1.5 % width / +1.2 %
+height** at d00212 (not 15 %). Clock ink vanishes by the first morph frame and
+returns at settle; panel content is already present during growth.
+**Action taken**: re-extracting the island video at **native 60 fps**, top-strip
+crop `900:220:830:0`, into `/tmp/ref60/` so pose counts are finally measurable.
+
+## Supervisor give-up loop caused by MY guard (04:44–04:50)
+The single-instance guard exited **0**; the supervisor counts ANY sub-30 s run as
+a rapid exit whatever the rc, so 10 strikes hit `GIVE-UP CAP REACHED … backing off
+to 300s`. **Fix**: guard now exits **75 (EX_TEMPFAIL)**, and both the live
+`~/.config/mango/scripts/dynamite_autostart.sh` and the repo copy treat rc=75 as
+"another instance owns the socket" → log and `exit 0`, no strike. Backup kept.
