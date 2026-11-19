@@ -915,3 +915,13 @@ Verified the copy is genuine: `diff -rq` clean vs scratch, Cargo.lock identical,
 - **Offline build is machine-sufficient, not self-sufficient.** With an empty `CARGO_HOME`: `error: no matching package named \`anyhow\` found`. No vendor dir, no `.cargo/config.toml`, no build entry point; `target/` is gitignored so a fresh clone has no binary and no command that makes one.
 - **Always-on microphone** — `src/main.rs:90` `capture::start().expect(...)` runs at launch, `capture.rs:88-103` parks forever. Measured **Pss 1794 kB idle, 28 threads, ~99 voluntary ctx-switches/s**, permanently live `alsa_capture.static-dictation` PipeWire node. Direct hit on "as little RAM as possible". `.expect` + 1 s restart loop = crash loop if the mic vanishes. Fix: start on `HotkeyEvent`, drop on `HoldEnd`. **Deliberately not done by the parent** — it changes runtime behaviour of a tool the owner uses daily.
 - The "separate manifest" rationale shields **sctk 0.21.1, which only dead `src/pill/tsar.rs` uses**. Deleting the pill module would make a single workspace safe.
+
+### ⚠️ Measurement validity — the panel currently has NO layer surface (parent, verified)
+While re-running the mutation gate the control kept failing. Root cause is **not** the harness:
+- `mmsg get all-layers` → **`{"layers":[]}`**. The panel process is alive (pid 11464, started 01:39:24) and its socket answers, but **it has no layer surface on screen**.
+- Sending `collapsed` / `lockscreen` / `unlock` / `dictation` produced **0 new stderr lines** for each.
+- The top 200 rows of a fresh `grim` are **pure black** (median [0,0,0]) — that is the owner's T3 window, not the panel.
+- Binary mtime **01:38:50**; `cargo build --release --offline` is running again right now (fixer mid-edit, `SLOT_RING` change in flight).
+**Conclusion: the fixer's in-flight build is in a broken intermediate state.** Every screen-based measurement taken since ~01:38 is invalid, and the mutation-gate control failures after that point are environment, not product. Earlier measurements (scorecard rows, the 1207-test PASS, the profiler table) predate it and stand.
+**Harness gap this exposed:** the suite asserts socket liveness but never asserts **surface presence**. Added to the r1c brief as a required gate: a run is INVALID unless `mmsg get all-layers` lists the panel.
+**Config drift noted:** the fixer set `collapsed_width=67` (log line at 01:31:31), not the 74 the parent derived for a 111-device-px pill. 67×1.5 ≈ 100 px. Must be re-measured once a working binary is back.
