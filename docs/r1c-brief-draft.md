@@ -288,8 +288,43 @@ thing and nearly specified an avatar + username + bottom password box that
 - typing = `l120.png` — password dots **inside the top capsule**
 - `l3/l20/l90/l160/l200/l260` = the unlocked desktop
 
-Measured: clock ink **872×279** centred ~(1280,720) = **34% of screen width**;
-resting capsule **68×40 at y=58**; dots **8–9 px dia, ~16.2 px pitch**.
+Measured: clock ink **868×279** centred **x=1280.5** (screen centre 1280) =
+**33.9% of screen width**; resting capsule **68×40 at y=58**; dots **8–9 px dia,
+~16.2 px pitch**.
+
+⚠️ **Measure the clock by COLOUR, never by luminance.** `l40.png`'s wallpaper has
+a cream mast and an orange buoy inside the clock's row band, so `lum>110` returns
+**2057×340 (80% of width)** — pure contamination. Use the glyph-teal mask
+`(G>170)&(B>150)&(R<200)&(G-R>40)`, restricted to rows 560–880.
+
+### 9-pre. Clock width — the corrected, solved finding
+
+A critic reported "clock ~16% too wide". It compared an **advance box** to an
+**ink** measurement. Re-measured ink-vs-ink through a faithful reimplementation
+of `rasterize_clock`'s tabular layout (`src/lockscreen.rs:673-700`):
+
+| | reference | ours (px=388.8) |
+|---|---|---|
+| ink size | **868×279** | **963.6×280** |
+| width % of 2560 | 33.9% | 37.6% |
+
+- **Height is already correct** (+0.4%). **Do NOT change `CLOCK_PX_FRAC`.**
+- Width is **+11.0%**, not +16%.
+- **Solved minimal fix**: `DIGIT_ADVANCE_EM 0.60 → 0.522` and
+  `COLON_ADVANCE_EM 0.21 → 0.198` (`src/lockscreen.rs:190,192`) → ink **867.9**,
+  error **−0.01%**. Two constants, no layout rewrite.
+- Natural (non-tabular) advances give 824 = −5.1%, so the tabular cells are what
+  push it wide.
+
+**Deeper, and a deliberate trade-off**: the reference's centre-to-centre glyph
+pitches are **123.0, 138.5, 166.5, 219.5 px** — *non-uniform*, i.e. proportional
+spacing (his `1` is far narrower than his `8`). Tabular is uniform by definition
+(ours: 233.3 px every digit), so **no single advance value can match those
+pitches**. Keep tabular anyway: proportional would let the centred block shift
+as digits change (`11:28`→`11:29`). Adopt 0.522/0.198, accept the second-order
+letterform gap. **SF Compact Display is absent from this machine** (`fc-list`
+finds no SF face) and cannot be shipped — do not write a loader for it; a silent
+fallback would make the finding look fixed while changing nothing.
 
 **The clock is wallpaper-sampled frosting INSIDE the glyphs** — median ink RGB
 **[87,235,206]**, 92.8% teal-ish, and it *varies across x* because each glyph
@@ -476,39 +511,39 @@ redistributable). Commit `263b807`. **The loader change is yours:**
 
 Verify with the exact command above: it must reach Wayland, not panic.
 
-## 0b. The rest of the packaging gap (all from #29, verified)
+## 0b. The packaging gap — ✅ MOSTLY CLOSED BY THE PARENT, do not redo
 
-- **No root README, no build entry point.** Two crates, two build commands,
-  nothing says so. `STATUS.md:1-6` still claims *"v0.1 prototype: collapsed clock
-  pill only"*. Add a README with **Prerequisites** (`libasound`, `libxkbcommon`
-  via pkg-config — both are hard **link-time** requirements — plus a
-  wlr-layer-shell compositor), the two build commands, and where binaries land.
-- **`tools/dictation/EMBEDDING.md` documents `--offline` but a cold `CARGO_HOME`
-  fails**: `error: no matching package named \`anyhow\` found`. Either drop
-  `--offline` from the docs or vendor the deps the way `png` is already vendored.
-  **Do not leave a doc that documents its own hole.**
-- **Delete the supervisor's `LEGACY` scratch fallback**
-  (`tools/dictation/scripts/dictation_supervisor.sh:9,26-33`). The parent added it
-  when embedding; #29 is right that on a fresh clone it silently runs an
-  **unauditable binary**. Missing build ⇒ **loud error to stderr + non-zero exit**.
-- **The launcher layer is not in git.** `~/.config/mango/{autostart.sh,bind.conf,
-  rule.conf}` hardcode `/home/alex` and `/run/user/1000`;
-  `dynamite_autostart.sh:51-57` **silently falls back to `qs -c dynamite`**, a
-  *different Quickshell UI*. Add `deploy/` with paths derived from one
-  `ISLAND_HOME` and `XDG_RUNTIME_DIR`; make the `qs` fallback an explicit error.
-- **Layer-rule name mismatch (verified):** binary sets
-  `NAMESPACE = "dynamite-rust"` (`src/main.rs:1932`) but
-  `~/.config/mango/rule.conf:134` and `docs/mango-capabilities.md:26,122` say
-  `layer_name:dynamite`. **The documented no-blur/no-shadow rule matches
-  nothing.** Fix both docs and ship the corrected rule in `deploy/rule.conf`.
-- **16 external tools, no capability check.** Every spawn is `.spawn().ok()?`, so
+The parent took every part of #29 that touches no `src/`. **These are DONE and
+committed; verify them, do not reimplement:**
+
+- ✅ `aa2569d` root **README.md** (prereqs incl. `libasound`/`libxkbcommon` as hard
+  link-time deps, a 14-tool table saying what each buys and what breaks without
+  it, all 13 config keys, and an explicit **lock-screen-is-not-a-security-boundary**
+  section) + **`build.sh`** building both crates with a pkg-config preflight.
+- ✅ `e971ce8` supervisor `LEGACY` scratch fallback **deleted** — missing build is
+  now loud stderr + exit 1 (proven). Also fixed a bug the test exposed: no
+  `mkdir -p` for the log dir meant a fresh `$HOME` made the privacy `chmod 600`
+  fail silently. `--offline` removed from the documented commands.
+- ✅ `e971ce8` `layer_name:dynamite` → `dynamite-rust` in
+  `docs/mango-capabilities.md` **and** `~/.config/mango/rule.conf` (backup kept).
+- ✅ `a0eb900` **`deploy/`** ships `rule.conf` + `dynamite_autostart.sh` deriving
+  paths from `ISLAND_HOME`/`XDG_RUNTIME_DIR`, no `qs -c dynamite` substitution.
+- ✅ `70f15ae` git hygiene: untracked the `.pyc`, the `.bak`, 17 `motion/out/`
+  files, and deleted the dead root `wallpaper_blur.rs`; `.gitignore` extended.
+
+**Still yours (needs `src/`):**
+
+- **The startup panic in §0** — the assets are vendored (`263b807`) but the
+  loader still only reads `$HOME`. This is the blocker.
+- **`STATUS.md:1-6`** still claims *"v0.1 prototype: collapsed clock pill only"*.
+  Correct it to match reality.
+- **14 external tools, no capability check.** Every spawn is `.spawn().ok()?`, so
   a missing `bluetoothctl` renders a **blank BT row indistinguishable from "no
-  devices"**. Add a one-shot startup line naming what is missing. Do not add a
-  dependency for this — `which` in a loop is enough.
-- **Git hygiene:** tracked `.pyc`, `src/music_panel.rs.20261115-040501.bak`, 17
-  files under `scripts/motion/out/`, and a **stale root `wallpaper_blur.rs`
-  (15,149 B)** that is dead — `src/main.rs:128 mod wallpaper_blur;` resolves to
-  `src/wallpaper_blur.rs` (62,238 B). `git rm` them; extend `.gitignore`.
+  devices"**. Add a one-shot startup line naming what is missing — `which` in a
+  loop, no new dependency. The README already lists them; keep the two in sync.
+- **Cold offline build** still impossible for `tools/dictation` (no vendor dir).
+  Optional: `cargo vendor` the direct deps the way `png` is already vendored.
+  The docs no longer claim otherwise, so this is a nice-to-have, not a lie.
 - **Output geometry is a compile-time constant.** `LOCKSCREEN_SIZE (1504,1002)`
   and the guard `configured_size.0 >= 1400` (`src/main.rs:4597,4611`) mean **the
   lock animation never draws on an output narrower than 1400 logical px**. Read
