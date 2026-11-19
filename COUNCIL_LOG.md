@@ -2060,3 +2060,24 @@ trials; pose_hold_median 75-99 ms; settle 283 ms; duplicate_ratio 0.785.
 Reference is 14 poses / 233 ms. The defect is real and unfixed — it is r1f's
 task 2. Earlier "12 poses" readings came from `analyze.py` on a crop that
 included the app window; the bounded instrument is the trustworthy one.
+
+## Stress instrument repair #25 — the verdict measured where the loop stopped
+
+Full suite failed `load_leak` with "Pss grew 11.6 MB after warmup (bound 8)".
+Isolated re-run PASSED with `growth_after_warmup=-0.1`. The curve explains it:
+`62 68 68 79 79 79 79 79 79 67` — the loop ENDED while a lock surface was
+still resident (24 MB shm slot), and the tail median landed inside that
+excursion. It measured WHERE the loop stopped, not retention.
+
+Fix: `group_load` drives home (`unlock`, `collapsed`) and takes six more
+samples; the verdict uses those. Not a tail average — a long excursion
+would drag that up too.
+
+Selftest gained three settle fixtures. First version scored -67.9 MB on all
+three because I passed MB where the series is in kB; the leak fixture
+"passed" for the wrong reason and the BAD line caught it. Now 14/14,
+including `ends mid-reload, LEAKED to 95 -> FAIL`.
+
+**Full suite: tests=1207 asserts=6179 fails=0 groups=5, RESULT PASS.**
+Latency p50 29.0 / p95 57.0 / p99 64.7 / max 76.5 ms against a 400 ms bound
+(baseline p95 was 220.7). This is the best latency of the run.
