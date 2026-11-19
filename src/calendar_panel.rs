@@ -408,7 +408,7 @@ fn fill_circle(canvas: &mut [u8], w: u32, h: u32, cx: f32, cy: f32, r: f32, rgb:
 // helpers are private and this module must stay drop-in).
 // ---------------------------------------------------------------------------
 struct TextRow {
-    glyphs: Vec<(fontdue::Metrics, Vec<u8>)>,
+    glyphs: Vec<(fontdue::Metrics, std::sync::Arc<[u8]>)>,
     width: f32,
     ascent: f32,
 }
@@ -417,7 +417,7 @@ fn layout_text(font: &fontdue::Font, text: &str, px: f32) -> TextRow {
     let mut glyphs = Vec::new();
     let mut width = 0.0f32;
     for ch in text.chars() {
-        let (m, cov) = font.rasterize(ch, px);
+        let (m, cov) = crate::lock_timer::rasterize_cached(font, ch, px);
         width += m.advance_width;
         glyphs.push((m, cov));
     }
@@ -489,7 +489,7 @@ fn draw_text_centred_at(
 /// treatment — their offsets differ by ~2px at their respective sizes,
 /// which is exactly the iter87 chevron drift.
 fn glyph_band_offset(font: &fontdue::Font, ch: char, px: f32) -> f32 {
-    let (m, _) = font.rasterize(ch, px);
+    let (m, _) = crate::lock_timer::rasterize_cached(font, ch, px);
     if m.height == 0 {
         return 0.0; // no ink — no offset to correct
     }

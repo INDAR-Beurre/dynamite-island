@@ -103,7 +103,7 @@ use smithay_client_toolkit::{
         },
         WaylandSurface,
     },
-    shm::{slot::SlotPool, Shm, ShmHandler},
+    shm::{slot::{Slot, SlotPool}, Shm, ShmHandler},
 };
 
 // State-content modules (iter 6 builders, wired in iter 7;
@@ -198,7 +198,7 @@ impl IslandState {
     }
     fn size(self) -> (u32, u32) {
         match self {
-            Self::Collapsed => (cfg().collapsed_width, 28),
+            Self::Collapsed => (cfg().collapsed_width, cfg().bar_height),
             Self::Dictation => (220, 64),
             Self::Lock => (54, 24),
             Self::Power => (400, cfg().expanded_height),
@@ -252,6 +252,10 @@ struct IslandConfig {
     collapsed_width: u32,
     expanded_height: u32,
     gap_top: i32,
+    /// Pill height in logical px (settings "Bar height"). Drives the
+    /// collapsed size, the exclusive strip, the top-row centre line
+    /// and the derived clock size — one source, no loose 28s.
+    bar_height: u32,
     inner_padding: f32,
     anim_ms: u64,
     hover_open: bool,
@@ -269,6 +273,7 @@ impl IslandConfig {
         collapsed_width: 76,
         expanded_height: 150,
         gap_top: TOP_MARGIN,
+        bar_height: 28,
         inner_padding: 14.0,
         anim_ms: 160,
         hover_open: true,
@@ -331,6 +336,11 @@ fn parse_config(text: &str) -> IslandConfig {
                     c.gap_top = n.clamp(0, 200);
                 }
             }
+            "bar_height" => {
+                if let Ok(n) = v.parse::<u32>() {
+                    c.bar_height = n.clamp(18, 80);
+                }
+            }
             "inner_padding" => {
                 if let Ok(n) = v.parse::<f32>() {
                     c.inner_padding = n.clamp(0.0, 64.0);
@@ -369,10 +379,11 @@ fn load_config() {
     };
     *CONFIG.write().unwrap() = parsed.clone();
     eprintln!(
-        "dynamite-rust: config collapsed_width={} expanded_height={} gap_top={} inner_padding={} anim_ms={} hover_open={} scroll_cycle={} clock_24h={} hover_state={}",
+        "dynamite-rust: config collapsed_width={} expanded_height={} gap_top={} bar_height={} inner_padding={} anim_ms={} hover_open={} scroll_cycle={} clock_24h={} hover_state={}",
         parsed.collapsed_width,
         parsed.expanded_height,
         parsed.gap_top,
+        parsed.bar_height,
         parsed.inner_padding,
         parsed.anim_ms,
         parsed.hover_open,
@@ -437,7 +448,7 @@ const WHEEL_COOLDOWN: Duration = Duration::from_millis(150);
 // (iter30 a3b: oy + h/2 per view), not at the pill line.
 // The pill states sit at STAGE_PAD_TOP = 3 (screen gap_top 3); the
 // expanded menus hang BELOW the pill (iter30 a3c): panel top
-// PANEL_TOP_MENU = 3 + 28 + 2 = 33 (screen 33), so the pill stays
+// panel_top_menu() = 3 + 28 + 2 = 33 (screen 33), so the pill stays
 // visible above the panel with a 4 px gap.
 // The stage keeps slack for a ~10% expand overshoot (iter33: the
 // overshoot itself is REMOVED — EaseOutCubic now, see begin_morph —
@@ -457,11 +468,18 @@ const NAV_DISC_GAP: f32 = 8.0;
 const STAGE_PAD_X: f32 = 38.0;
 /// Transparent margin between the panel and the stage edge (y).
 const STAGE_PAD_TOP: f32 = 3.0;
+/// Pill height in stage-logical px (the one source the whole top row
+/// reads: collapsed size, strip, centre line, derived text size).
+fn pill_h() -> f32 {
+    cfg().bar_height as f32
+}
+
 /// Expanded-panel top inside the stage (iter30 a3c): the panel hangs
-/// BELOW the pill instead of swallowing it — pill top STAGE_PAD_TOP
-/// (screen gap_top 3), 28 tall, then a 4 px gap, so the panel top
-/// is 3 + 28 + 2 = 33 (screen 33). Pill states keep STAGE_PAD_TOP.
-const PANEL_TOP_MENU: f32 = STAGE_PAD_TOP + 28.0 + 2.0;
+/// BELOW the pill instead of swallowing it — pill top STAGE_PAD_TOP,
+/// pill_h tall, then a 2 px gap. Pill states keep STAGE_PAD_TOP.
+fn panel_top_menu() -> f32 {
+    STAGE_PAD_TOP + pill_h() + 2.0
+}
 /// Fixed stage surface size (see the sizing note above).
 const STAGE_W: u32 = (1100.0 + 2.0 * STAGE_PAD_X) as u32;
 /// 636 = menu top 31 + ControlCenter overshoot height 577.5 (+5 slack)
@@ -490,6 +508,10 @@ const STAGE_H: u32 = 636;
 /// untouched: surface size stays STAGE_W x STAGE_H logical, input
 /// regions and pointer coords stay logical — only the buffer is 2x.
 const RENDER_SCALE: u32 = 2;
+/// Number of pinned shm slots the stage draws into (see draw_if_ready).
+/// 2 is the safe minimum: one buffer can be on screen while the next is
+/// drawn. 1 deadlocks when the compositor keeps the only buffer.
+const SLOT_RING: usize = 2;
 
 /// Bilinear 2x upscale of a premultiplied BGRA canvas (iter108) into
 /// `dst` (which must hold (2w * 2h * 4) bytes). Exact 2x ratio, so
@@ -543,6 +565,101 @@ pub(crate) fn upscale_canvas_2x(src: &[u8], w: u32, h: u32) -> Vec<u8> {
     let mut dst = vec![0u8; (w * RENDER_SCALE * h * RENDER_SCALE * 4) as usize];
     upscale_canvas_2x_into(src, w, h, &mut dst);
     dst
+}
+
+/// Rect helpers for damage tracking (F-A step 4): half-open device/logical
+/// rects, `(x0, y0, x1, y1)`.
+pub(crate) fn union_rect(
+    a: (i32, i32, i32, i32),
+    b: (i32, i32, i32, i32),
+) -> (i32, i32, i32, i32) {
+    (a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3))
+}
+
+/// Clip a rect to `w x h`; empty (x1<=x0) means nothing to do.
+pub(crate) fn clip_rect(
+    r: (i32, i32, i32, i32),
+    w: u32,
+    h: u32,
+) -> (i32, i32, i32, i32) {
+    let w = w as i32;
+    let h = h as i32;
+    (
+        r.0.clamp(0, w),
+        r.1.clamp(0, h),
+        r.2.clamp(0, w),
+        r.3.clamp(0, h),
+    )
+}
+
+/// Zero one logical rect of a stage canvas. Settled frames clear only
+/// the rect they will repaint + damage, so untouched shm pages stay
+/// unfaulted (Pss counts resident pages, not the mapped pool).
+fn clear_rect(canvas: &mut [u8], w: u32, h: u32, r: (i32, i32, i32, i32)) {
+    let r = clip_rect(r, w, h);
+    if r.2 <= r.0 || r.3 <= r.1 {
+        return;
+    }
+    let w = w as usize;
+    let x0 = r.0 as usize;
+    let x1 = r.2 as usize;
+    for y in r.1..r.3 {
+        let i = ((y as usize) * w + x0) * 4;
+        canvas[i..i + (x1 - x0) * 4].fill(0);
+    }
+}
+
+/// `upscale_canvas_2x_into` for one logical rect (device rect = 2x):
+/// the settled pill writes a few hundred KB, not the whole 11.97 MB
+/// stage buffer, so only those pages become resident.
+pub(crate) fn upscale_canvas_2x_region(
+    src: &[u8],
+    w: u32,
+    h: u32,
+    dst: &mut [u8],
+    region: (i32, i32, i32, i32),
+) {
+    let (wu, hu) = (w as usize, h as usize);
+    if wu == 0 || hu == 0 {
+        return;
+    }
+    let r = clip_rect(region, w, h);
+    if r.2 <= r.0 || r.3 <= r.1 {
+        return;
+    }
+    let (bw, bh) = (2 * wu, 2 * hu);
+    debug_assert_eq!(src.len(), wu * hu * 4);
+    debug_assert_eq!(dst.len(), bw * bh * 4);
+    let dx0 = (r.0 as usize) * 2;
+    let dx1 = (r.2 as usize) * 2;
+    let dy0 = (r.1 as usize) * 2;
+    let dy1 = (r.3 as usize) * 2;
+    for dy in dy0..dy1 {
+        let j = dy / 2;
+        let (y0, y1, wy0, wy1) = if dy % 2 == 0 {
+            (j.saturating_sub(1), j, 1u32, 3u32)
+        } else {
+            (j, (j + 1).min(hu - 1), 3u32, 1u32)
+        };
+        for dx in dx0..dx1 {
+            let i = dx / 2;
+            let (x0, x1, wx0, wx1) = if dx % 2 == 0 {
+                (i.saturating_sub(1), i, 1u32, 3u32)
+            } else {
+                (i, (i + 1).min(wu - 1), 3u32, 1u32)
+            };
+            let di = (dy * bw + dx) * 4;
+            for c in 0..4 {
+                let s00 = src[(y0 * wu + x0) * 4 + c] as u32;
+                let s01 = src[(y0 * wu + x1) * 4 + c] as u32;
+                let s10 = src[(y1 * wu + x0) * 4 + c] as u32;
+                let s11 = src[(y1 * wu + x1) * 4 + c] as u32;
+                let top = (wx0 * s00 + wx1 * s01 + 2) / 4;
+                let bot = (wx0 * s10 + wx1 * s11 + 2) / 4;
+                dst[di + c] = ((wy0 * top + wy1 * bot + 2) / 4) as u8;
+            }
+        }
+    }
 }
 
 /// Row-width profile of a disc in a BGRA canvas (iter108): for each
@@ -761,7 +878,7 @@ fn stage_margin_top() -> i32 {
 /// below the strip and overlays windows like a menu should).
 /// Fullscreen apps are out of scope.
 fn pill_strip_px() -> i32 {
-    cfg().gap_top + 28
+    cfg().gap_top + cfg().bar_height as i32
 }
 
 /// Screen-logical coords of the stage top-left: the layer is anchored
@@ -776,7 +893,7 @@ fn stage_screen_origin() -> (f32, f32) {
 
 /// Panel top-left inside the stage (the panel is centred horizontally).
 /// Pill states sit STAGE_PAD_TOP below the stage top; expanded menus
-/// hang below the pill at PANEL_TOP_MENU (iter30 a3c), so the pill
+/// hang below the pill at panel_top_menu() (iter30 a3c), so the pill
 /// stays visible above the panel with a 4 px gap.
 fn panel_origin(state: IslandState) -> (f32, f32) {
     let (pw, _) = state.size();
@@ -785,7 +902,7 @@ fn panel_origin(state: IslandState) -> (f32, f32) {
         | IslandState::Dictation
         | IslandState::Lock
         | IslandState::Lockscreen => STAGE_PAD_TOP,
-        _ => PANEL_TOP_MENU,
+        _ => panel_top_menu(),
     };
     ((STAGE_W as f32 - pw as f32) / 2.0, oy)
 }
@@ -841,8 +958,10 @@ const WS_DISC_R: f32 = 8.0;
 const WS_GAP_PILL: f32 = 4.0;
 /// Edge-to-edge gap between neighbouring circles.
 const WS_GAP_CIRCLE: f32 = 4.0;
-/// Circle centre line = pill centre line (STAGE_PAD_TOP + 24/2 = 15).
-const WS_CY: f32 = STAGE_PAD_TOP + 12.0;
+/// Circle centre line = pill centre line.
+fn ws_cy() -> f32 {
+    STAGE_PAD_TOP + pill_h() / 2.0
+}
 /// Number glyph size inside a circle (iter92: digit ~8 px tall at
 /// 11.0 em — ~0.5 x the Ø16 disc, same ratio as the old Ø28/14 em).
 const WS_NUMBER_PX: f32 = 11.0;
@@ -868,13 +987,13 @@ const WS_INACTIVE_FILL: (u8, u8, u8) = (28, 30, 34);
 /// old Ø28 there is no overhang). Hugs the pill with a 4 px gap.
 fn workspace_disc_centres() -> [(f32, f32); WS_COUNT] {
     let (pill_x, _, _, _) = panel_rect_stage(IslandState::Collapsed);
-    let mut out = [(0.0f32, WS_CY); WS_COUNT];
+    let mut out = [(0.0f32, ws_cy()); WS_COUNT];
     for i in 0..WS_COUNT {
         // i = 0 is tag 1 (leftmost); count back from the pill.
         let from_right = (WS_COUNT - 1 - i) as f32;
         let cx = pill_x - WS_GAP_PILL - WS_DISC_R
             - from_right * (2.0 * WS_DISC_R + WS_GAP_CIRCLE);
-        out[i] = (cx, WS_CY);
+        out[i] = (cx, ws_cy());
     }
     out
 }
@@ -889,7 +1008,7 @@ fn workspace_cluster_rect() -> (f32, f32, f32, f32) {
     let (pill_x, _, _, _) = panel_rect_stage(IslandState::Collapsed);
     (
         x0 - WS_DISC_R,
-        WS_CY - WS_DISC_R,
+        ws_cy() - WS_DISC_R,
         pill_x - (x0 - WS_DISC_R),
         2.0 * WS_DISC_R,
     )
@@ -951,8 +1070,10 @@ const TRAY_ICON_R: f32 = 8.0;
 const TRAY_GAP_PILL: f32 = 4.0;
 /// Edge-to-edge gap between neighbouring tray icons.
 const TRAY_GAP_ICON: f32 = 4.0;
-/// Tray icon centre line = pill centre line (same as WS_CY).
-const TRAY_CY: f32 = STAGE_PAD_TOP + 12.0;
+/// Tray icon centre line = pill centre line (same as ws_cy()).
+fn tray_cy() -> f32 {
+    ws_cy()
+}
 /// Step between neighbouring tray icon centres (16 + 4).
 const TRAY_STEP: f32 = TRAY_ICON_D + TRAY_GAP_ICON;
 
@@ -996,7 +1117,7 @@ fn tray_icon_centres(n: usize) -> Vec<(f32, f32)> {
         .map(|i| {
             (
                 pill_right + TRAY_GAP_PILL + TRAY_ICON_R + i as f32 * TRAY_STEP,
-                TRAY_CY,
+                tray_cy(),
             )
         })
         .collect()
@@ -1016,7 +1137,7 @@ fn tray_cluster_rect(n: usize) -> Option<(f32, f32, f32, f32)> {
     let pill_right = pill_x + pw as f32;
     Some((
         pill_right,
-        TRAY_CY - TRAY_ICON_R,
+        tray_cy() - TRAY_ICON_R,
         n as f32 * TRAY_STEP,
         2.0 * TRAY_ICON_R,
     ))
@@ -1039,6 +1160,53 @@ fn top_row_span(n: usize) -> (f32, f32) {
         None => pill_right,
     };
     (wx, right)
+}
+
+/// Top-row content rect in STAGE-LOGICAL coords (F-A step 5 / F-G):
+/// pill + workspace row + tray row with a 2 px AA margin. This is the
+/// only area a settled collapsed frame touches, and the same rect the
+/// 2x top-row painter clears — one source, no drift.
+fn top_row_rect() -> (i32, i32, i32, i32) {
+    let (px, py, pw, ph) = panel_rect_stage(IslandState::Collapsed);
+    let c = workspace_disc_centres();
+    let n = tray_item_count();
+    let right = if n > 0 {
+        let tc = tray_icon_centres(n);
+        tc[n - 1].0 + TRAY_ICON_R
+    } else {
+        px + pw
+    };
+    (
+        (c[0].0 - WS_DISC_R - 2.0).floor() as i32,
+        ((py - 2.0).max(0.0)).floor() as i32,
+        (right + 2.0).ceil() as i32,
+        (py + ph + 2.0).ceil() as i32,
+    )
+}
+
+/// Content rect of one settled frame in stage-logical coords: the top
+/// row plus the state's own panel (padded for its shadow and, for
+/// menu states, the nav discs). Used for both the clear and the
+/// damage rect, so what is drawn is exactly what is presented.
+fn content_rect(state: IslandState) -> (i32, i32, i32, i32) {
+    let top = top_row_rect();
+    if state == IslandState::Lockscreen {
+        return top;
+    }
+    let (ox, oy, pw, ph) = panel_rect_stage(state);
+    let pad = if MENU_CYCLE.contains(&state) || state == IslandState::TrayMenu {
+        (PANEL_SHADOW_BLUR + PANEL_SHADOW_OFF.1.abs() + NAV_DISC_R + NAV_DISC_GAP + 2.0).ceil()
+            as i32
+    } else {
+        2
+    };
+    let panel = (
+        ox as i32 - pad,
+        (oy as i32 - pad).max(0),
+        (ox + pw) as i32 + pad,
+        (oy + ph) as i32 + pad,
+    );
+    union_rect(top, panel)
 }
 
 /// Pill centre x on screen (logical px): stage origin + stage-centred
@@ -1773,8 +1941,8 @@ static DICTATION_BARS: Mutex<[f32; 27]> = Mutex::new([0.0; 27]);
 /// (OutputState::info().logical_size) should replace the constant —
 /// see iterations/builder-lockscreen-iter10.md.
 const LOCKSCREEN_SIZE: (u32, u32) = (1504, 1002);
-// Collapsed clock size lives in lock_timer::TEXT_PX (17.0 — the
-// 13.0 value failed the 0.50 digit-height ratio; see lock_timer.rs).
+// Collapsed clock size is derived from the pill height (see
+// lock_timer::text_px); there is no fixed px constant any more.
 
 fn socket_path() -> PathBuf {
     let dir = std::env::var_os("XDG_RUNTIME_DIR")
@@ -1826,7 +1994,7 @@ fn rounded_rect_alpha(x: f32, y: f32, w: f32, h: f32, r: f32) -> f32 {
 }
 
 struct TextRow {
-    glyphs: Vec<(fontdue::Metrics, Vec<u8>)>,
+    glyphs: Vec<(fontdue::Metrics, std::sync::Arc<[u8]>)>,
     width: f32,
     ascent: f32,
     height: f32,
@@ -1849,26 +2017,44 @@ fn layout_text(font: &fontdue::Font, text: &str, px: f32) -> TextRow {
     }
 }
 
-/// Inter (A3), parsed once for the process: the pill clock's face. On a
-/// missing/unparsable file this returns None and every caller falls back
-/// to the Quicksand UI font — never a startup panic.
+/// Inter-Medium static instance (wght 550, fvar removed by the bake),
+/// parsed once for the process: the pill clock's face. fontdue 0.9
+/// cannot select variable axes, so the baked static is authoritative:
+/// on the reference strings it gives stroke/cap 0.200 and w/cap 3.600
+/// (the reference's own numbers), while Inter's default 400 measures
+/// 0.143. Search order: next to the executable, the repo path, then
+/// the variable font (thin) and finally Quicksand — never a panic.
 static CLOCK_FONT: std::sync::OnceLock<Option<fontdue::Font>> = std::sync::OnceLock::new();
 
 fn clock_font() -> Option<&'static fontdue::Font> {
     CLOCK_FONT
         .get_or_init(|| {
-            let path = std::env::var_os("HOME")
-                .map(PathBuf::from)?
-                .join(".local/share/fonts/Inter.ttf");
-            match std::fs::read(&path)
-                .ok()
-                .and_then(|b| fontdue::Font::from_bytes(b, fontdue::FontSettings::default()).ok())
-            {
-                Some(f) => Some(f),
+            let mut candidates: Vec<PathBuf> = Vec::new();
+            if let Ok(exe) = std::env::current_exe() {
+                if let Some(dir) = exe.parent() {
+                    // target/release -> repo root, and a packaged layout.
+                    candidates.push(dir.join("../../assets/fonts/Inter-Medium.ttf"));
+                    candidates.push(dir.join("../../../assets/fonts/Inter-Medium.ttf"));
+                    candidates.push(dir.join("assets/fonts/Inter-Medium.ttf"));
+                }
+            }
+            candidates.push(PathBuf::from(
+                "/home/alex/rust-island-build/assets/fonts/Inter-Medium.ttf",
+            ));
+            if let Some(home) = std::env::var_os("HOME") {
+                candidates.push(PathBuf::from(home).join(".local/share/fonts/Inter.ttf"));
+            }
+            let found = candidates.iter().find_map(|path| {
+                std::fs::read(path)
+                    .ok()
+                    .and_then(|b| fontdue::Font::from_bytes(b, fontdue::FontSettings::default()).ok())
+                    .map(|f| (path.clone(), f))
+            });
+            match found {
+                Some((_, f)) => Some(f),
                 None => {
                     eprintln!(
-                        "dynamite-rust: {} missing/unparsable; clock falls back to Quicksand",
-                        path.display()
+                        "dynamite-rust: no clock font found (Inter-Medium.ttf); clock falls back to Quicksand"
                     );
                     None
                 }
@@ -2199,34 +2385,63 @@ fn blit_panel(
 }
 
 /// Settled collapsed pill drawn at RENDER_SCALE straight into the 2x shm
-/// buffer (A1): the clock is rasterised at TEXT_PX * RENDER_SCALE and
+/// buffer (A1): the clock is rasterised at text_px(pill_h) * RENDER_SCALE and
 /// composited 1:1, so its coverage is never resampled by the 1x -> 2x
 /// upscale (the compositor still downsamples 2x -> 1.5x, once). The
 /// capsule fill repeats draw_panel_into's collapsed path exactly (same
 /// frost sample and formula, same 1-logical-px AA band), so geometry and
 /// margins are untouched and only the glyphs get sharper.
-fn draw_collapsed_pill_2x(canvas: &mut [u8], bw: u32, bh: u32, fallback: &fontdue::Font) {
+/// Top-row painter for settled frames (F-G): the pill, the workspace
+/// discs and the tray cluster are all rasterised at RENDER_SCALE
+/// straight into the 2x shm buffer, so nothing in the top row is ever
+/// resampled by the 1x -> 2x upscale. Flat treatments only: no disc
+/// shadows, no rims, no gradients. Clears the top-row rect (in device
+/// px) first, exactly the rect the damage covers.
+fn draw_top_row_2x(
+    canvas: &mut [u8],
+    bw: u32,
+    bh: u32,
+    font: &fontdue::Font,
+    active_tag: u8,
+) {
+    let s = RENDER_SCALE as f32;
+    let row = top_row_rect();
+    let drow = clip_rect(
+        (row.0 * 2, row.1 * 2, row.2 * 2, row.3 * 2),
+        bw,
+        bh,
+    );
+    if drow.2 <= drow.0 || drow.3 <= drow.1 {
+        return;
+    }
+    for y in drow.1..drow.3 {
+        let i = ((y as usize) * bw as usize + drow.0 as usize) * 4;
+        let n = ((drow.2 - drow.0) as usize) * 4;
+        canvas[i..i + n].fill(0);
+    }
     let state = IslandState::Collapsed;
     let (pw, ph) = state.size();
-    let s = RENDER_SCALE as f32;
-    let (w2, h2) = (pw * RENDER_SCALE, ph * RENDER_SCALE);
     let (wf, hf) = (pw as f32, ph as f32);
+    let (w2, h2) = (pw * RENDER_SCALE, ph * RENDER_SCALE);
+    let (pox, poy) = panel_origin(state);
+    let (x0, y0) = ((pox * s).round() as i32, (poy * s).round() as i32);
     let radius = state.radius();
     let (sox, soy) = stage_screen_origin();
-    let (pox, poy) = panel_origin(state);
     let bg_origin = (sox + pox, soy + poy);
     let bg = wallpaper_blur::ensure_loaded();
     let uniform_bg: [u8; 3] = match &bg {
         Some(b) => b.sample_frost_uniform(bg_origin.0 + wf / 2.0, bg_origin.1 + hf / 2.0),
         None => [0, 0, 0],
     };
-    let mut scratch = vec![0u8; (w2 * h2 * 4) as usize];
     for y in 0..h2 {
         for x in 0..w2 {
             let lx = (x as f32 + 0.5) / s;
             let ly = (y as f32 + 0.5) / s;
             let d = rounded_rect_sdf(lx, ly, wf, hf, radius);
             let a = (0.5 - d).clamp(0.0, 1.0);
+            if a <= 0.0 {
+                continue;
+            }
             let p = match &bg {
                 Some(_) => frost_fill_px_blur(
                     a,
@@ -2241,38 +2456,178 @@ fn draw_collapsed_pill_2x(canvas: &mut [u8], bw: u32, bh: u32, fallback: &fontdu
                 ),
                 None => frost_fill_px(a, d, lx, ly, wf, hf, frost_alpha(state)),
             };
-            let i = ((y * w2 + x) * 4) as usize;
-            scratch[i] = p[2];
-            scratch[i + 1] = p[1];
-            scratch[i + 2] = p[0];
-            scratch[i + 3] = p[3];
+            let dx = x0 as u32 + x;
+            let dy = y0 as u32 + y;
+            if dx >= bw || dy >= bh {
+                continue;
+            }
+            let i = ((dy * bw + dx) * 4) as usize;
+            // Premultiplied BGRA over the cleared region: exact copy.
+            canvas[i] = p[2];
+            canvas[i + 1] = p[1];
+            canvas[i + 2] = p[0];
+            canvas[i + 3] = p[3];
         }
     }
-    lock_timer::draw_text_centred(
-        &mut scratch,
-        w2,
-        h2,
-        clock_font().unwrap_or(fallback),
-        &hhmm(),
-        lock_timer::TEXT_PX * s,
-    );
-    blit_panel(
+    draw_text_centred_in(
         canvas,
         bw,
         bh,
-        &scratch,
+        x0,
+        y0,
         w2,
         h2,
-        (pox * s).round() as i32,
-        (poy * s).round() as i32,
+        clock_font().unwrap_or(font),
+        &hhmm(),
+        lock_timer::text_px(ph as f32) * s,
     );
+    for (i, (cx, cy)) in workspace_disc_centres().iter().enumerate() {
+        draw_workspace_disc_flat_2x(
+            canvas,
+            bw,
+            bh,
+            font,
+            *cx * s,
+            *cy * s,
+            (i + 1) as u8 == active_tag,
+            &(i + 1).to_string(),
+        );
+    }
+    crate::tray::draw_tray_cluster_2x(canvas, bw, bh, font, s);
 }
 
-/// Draw the collapsed clock pill at its home position on top of the
-/// stage (iter30 a3c): while a menu is open the pill stays visible
-/// above the panel instead of being swallowed by it. The pill is its
-/// own 76x24 render (flat fill + clock) at panel_origin(Collapsed);
-/// the menu panel hangs 4 px below it.
+/// `lock_timer::draw_text_centred` into a device-pixel window of the
+/// canvas: same line-box centring, same max() white composite (over
+/// the already-drawn capsule).
+fn draw_text_centred_in(
+    canvas: &mut [u8],
+    bw: u32,
+    bh: u32,
+    ox: i32,
+    oy: i32,
+    w: u32,
+    h: u32,
+    font: &fontdue::Font,
+    text: &str,
+    px: f32,
+) {
+    if text.is_empty() || w == 0 || h == 0 {
+        return;
+    }
+    let (wf, hf) = (w as f32, h as f32);
+    let mut glyphs: Vec<(fontdue::Metrics, std::sync::Arc<[u8]>)> = Vec::new();
+    let mut width = 0.0f32;
+    for ch in text.chars() {
+        let (m, cov) = lock_timer::rasterize_cached(font, ch, px);
+        width += m.advance_width;
+        glyphs.push((m, cov));
+    }
+    let Some(lm) = font.horizontal_line_metrics(px) else { return };
+    let height = lm.ascent - lm.descent;
+    let baseline = (hf - height) / 2.0 + lm.ascent;
+    let mut pen = (wf - width) / 2.0;
+    for (m, cov) in &glyphs {
+        let gx0 = ox + (pen + m.xmin as f32).round() as i32;
+        let gy0 = oy + (baseline - m.ymin as f32 - m.height as f32).round() as i32;
+        for gy in 0..m.height as i32 {
+            for gx in 0..m.width as i32 {
+                let (px_x, px_y) = (gx0 + gx, gy0 + gy);
+                if px_x < 0 || px_y < 0 || px_x >= bw as i32 || px_y >= bh as i32 {
+                    continue;
+                }
+                let c = cov[(gy as usize) * m.width + gx as usize] as f32 / 255.0;
+                if c <= 0.0 {
+                    continue;
+                }
+                let i = (((px_y as u32) * bw + px_x as u32) * 4) as usize;
+                let v = (c * 255.0) as u8;
+                canvas[i] = canvas[i].max(v);
+                canvas[i + 1] = canvas[i + 1].max(v);
+                canvas[i + 2] = canvas[i + 2].max(v);
+                canvas[i + 3] = 255;
+            }
+        }
+        pen += m.advance_width;
+    }
+}
+
+/// One workspace disc at device resolution, FLAT (F-G): plain fill, no
+/// drop shadow, no lit rim. AA is a 4x4 supersampled SDF edge so the
+/// 32 px disc is round without a halo. The label uses the clock's font
+/// and the same alpha-over treatment as the clock.
+fn draw_workspace_disc_flat_2x(
+    canvas: &mut [u8],
+    bw: u32,
+    bh: u32,
+    font: &fontdue::Font,
+    cx: f32,
+    cy: f32,
+    active: bool,
+    label: &str,
+) {
+    const SS: usize = 4;
+    let s = RENDER_SCALE as f32;
+    let r = WS_DISC_R * s;
+    let (fr, fg, fb) = if active { WS_ACTIVE_FILL } else { WS_INACTIVE_FILL };
+    let glyph_rgb = if active { WS_ACTIVE_GLYPH } else { WS_INACTIVE_GLYPH };
+    let x0 = ((cx - r - 1.0).floor() as i32).max(0);
+    let x1 = ((cx + r + 1.0).ceil() as i32).min(bw as i32);
+    let y0 = ((cy - r - 1.0).floor() as i32).max(0);
+    let y1 = ((cy + r + 1.0).ceil() as i32).min(bh as i32);
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let mut a_sum = 0.0f32;
+            for sub_y in 0..SS {
+                for sub_x in 0..SS {
+                    let ox = (sub_x as f32 + 0.5) / SS as f32 - 0.5;
+                    let oy = (sub_y as f32 + 0.5) / SS as f32 - 0.5;
+                    let px = x as f32 + 0.5 + ox;
+                    let py = y as f32 + 0.5 + oy;
+                    let d = ((px - cx).powi(2) + (py - cy).powi(2)).sqrt();
+                    a_sum += (r + 0.5 - d).clamp(0.0, 1.0);
+                }
+            }
+            let cov = a_sum / (SS * SS) as f32;
+            if cov <= 0.0 {
+                continue;
+            }
+            let i = (((y as u32) * bw + x as u32) * 4) as usize;
+            let inv = 1.0 - cov;
+            // Premultiplied source (fill is opaque): out = c*cov + dst*inv.
+            canvas[i] = (fb as f32 * cov + canvas[i] as f32 * inv) as u8;
+            canvas[i + 1] = (fg as f32 * cov + canvas[i + 1] as f32 * inv) as u8;
+            canvas[i + 2] = (fr as f32 * cov + canvas[i + 2] as f32 * inv) as u8;
+            canvas[i + 3] = ((cov + canvas[i + 3] as f32 / 255.0 * inv) * 255.0) as u8;
+        }
+    }
+    let row = layout_text(clock_font().unwrap_or(font), label, WS_NUMBER_PX * s);
+    let baseline = cy - row.height / 2.0 + row.ascent;
+    let mut pen = cx - row.width / 2.0;
+    for (gm, cov) in &row.glyphs {
+        let gx0 = (pen + gm.xmin as f32).round() as i32;
+        let gy0 = (baseline - gm.ymin as f32 - gm.height as f32).round() as i32;
+        for gy in 0..gm.height as i32 {
+            for gx in 0..gm.width as i32 {
+                let (px_x, px_y) = (gx0 + gx, gy0 + gy);
+                if px_x < 0 || px_y < 0 || px_x >= bw as i32 || px_y >= bh as i32 {
+                    continue;
+                }
+                let cc = cov[(gy as usize) * gm.width + gx as usize] as f32 / 255.0;
+                if cc <= 0.0 {
+                    continue;
+                }
+                let i = (((px_y as u32) * bw + px_x as u32) * 4) as usize;
+                let inv = 1.0 - cc;
+                canvas[i] = (glyph_rgb.2 as f32 * cc + canvas[i] as f32 * inv) as u8;
+                canvas[i + 1] = (glyph_rgb.1 as f32 * cc + canvas[i + 1] as f32 * inv) as u8;
+                canvas[i + 2] = (glyph_rgb.0 as f32 * cc + canvas[i + 2] as f32 * inv) as u8;
+                canvas[i + 3] = 255;
+            }
+        }
+        pen += gm.advance_width;
+    }
+}
+
 fn draw_pill_over_stage(
     canvas: &mut [u8],
     w: u32,
@@ -2283,24 +2638,44 @@ fn draw_pill_over_stage(
     lock_wallpaper: Option<&[u8]>,
 ) {
     let (pw, ph) = IslandState::Collapsed.size();
-    let mut scratch = vec![0u8; (pw * ph * 4) as usize];
     let (ox, oy) = panel_origin(IslandState::Collapsed);
     let (sox, soy) = stage_screen_origin();
-    draw_panel_into(
-        &mut scratch,
-        pw,
-        ph,
-        IslandState::Collapsed,
-        font,
-        icon_font,
-        lock_data,
-        lock_wallpaper,
-        (sox + ox, soy + oy),
-        0,
-        0,
-        0,
-    );
-    blit_panel(canvas, w, h, &scratch, pw, ph, ox as i32, oy as i32);
+    with_panel_scratch((pw * ph * 4) as usize, |scratch| {
+        draw_panel_into(
+            scratch,
+            pw,
+            ph,
+            IslandState::Collapsed,
+            font,
+            icon_font,
+            lock_data,
+            lock_wallpaper,
+            (sox + ox, soy + oy),
+            0,
+            0,
+            0,
+        );
+        blit_panel(canvas, w, h, scratch, pw, ph, ox as i32, oy as i32);
+    });
+}
+
+thread_local! {
+    /// One grow-only panel scratch for the draw path (F-B): the old
+    /// `vec![0u8; pw*ph*4]` allocated up to 1.1 MB per frame and handed
+    /// it straight back to the allocator.
+    static PANEL_SCRATCH: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn with_panel_scratch<R>(need: usize, f: impl FnOnce(&mut [u8]) -> R) -> R {
+    PANEL_SCRATCH.with(|cell| {
+        let mut buf = cell.borrow_mut();
+        if buf.len() < need {
+            buf.resize(need, 0);
+        } else {
+            buf[..need].fill(0);
+        }
+        f(&mut buf[..need])
+    })
 }
 
 /// Stage draw (iter24): the canvas is the fixed STAGE_W x STAGE_H
@@ -2327,27 +2702,29 @@ fn draw(
         return;
     }
     debug_assert_eq!((w, h), (STAGE_W, STAGE_H));
-    canvas.fill(0);
+    // No full fill: draw_if_ready clears exactly the damage rect, so a
+    // settled frame touches ~0.5 MB instead of 3 MB of stage scratch.
     let (pw, ph) = state.size();
-    let mut scratch = vec![0u8; (pw * ph * 4) as usize];
     let (ox, oy) = panel_origin(state);
     let (sox, soy) = stage_screen_origin();
     let (cal_offset, wall_selected, theme_selected) = *SELECTION.read().unwrap();
-    draw_panel_into(
-        &mut scratch,
-        pw,
-        ph,
-        state,
-        font,
-        icon_font,
-        lock_data,
-        lock_wallpaper,
-        (sox + ox, soy + oy),
-        cal_offset,
-        wall_selected,
-        theme_selected,
-    );
-    blit_panel(canvas, w, h, &scratch, pw, ph, ox as i32, oy as i32);
+    with_panel_scratch((pw * ph * 4) as usize, |scratch| {
+        draw_panel_into(
+            scratch,
+            pw,
+            ph,
+            state,
+            font,
+            icon_font,
+            lock_data,
+            lock_wallpaper,
+            (sox + ox, soy + oy),
+            cal_offset,
+            wall_selected,
+            theme_selected,
+        );
+        blit_panel(canvas, w, h, scratch, pw, ph, ox as i32, oy as i32);
+    });
     if MENU_CYCLE.contains(&state) {
         // Panel drop shadow (iter26) — after the blit so the
         // (1 - dst alpha) gate keeps it outside the panel silhouette.
@@ -2927,7 +3304,7 @@ fn draw_nav_disc(canvas: &mut [u8], w: u32, h: u32, cx: f32, cy: f32, dir: f32) 
 // reused across frames (see Island::morph_scratch_*); draw() additionally
 // allocates one panel-sized scratch per call (transient, allocator-reused
 // across frames — the price of the stage blit).
-// The outgoing collapsed clock is rasterized at TEXT_PX * outgoing_scale
+// The outgoing collapsed clock is rasterized at text_px(pill_h) * outgoing_scale
 // (design doc section 2.3 clock scale-out); other contents fade with
 // opacity only (incoming_scale is ignored in v1, design doc section 4).
 // ---------------------------------------------------------------------------
@@ -2951,19 +3328,20 @@ fn draw_state_into(
         // middle of the stage, not in the 76x24 pill). No capsule
         // fill — the caller owns the capsule. The scratch starts
         // zeroed, so the text composites cleanly onto it.
-        let px = lock_timer::TEXT_PX * content_scale;
         let (pw, ph) = state.size();
-        let mut scratch = vec![0u8; (pw * ph * 4) as usize];
-        lock_timer::draw_text_centred(
-            &mut scratch,
-            pw,
-            ph,
-            clock_font().unwrap_or(font),
-            &hhmm(),
-            px,
-        );
-        let (ox, oy) = panel_origin(state);
-        blit_panel(canvas, w, h, &scratch, pw, ph, ox as i32, oy as i32);
+        let px = lock_timer::text_px(ph as f32) * content_scale;
+        with_panel_scratch((pw * ph * 4) as usize, |scratch| {
+            lock_timer::draw_text_centred(
+                scratch,
+                pw,
+                ph,
+                clock_font().unwrap_or(font),
+                &hhmm(),
+                px,
+            );
+            let (ox, oy) = panel_origin(state);
+            blit_panel(canvas, w, h, scratch, pw, ph, ox as i32, oy as i32);
+        });
     } else {
         draw(
             canvas,
@@ -3320,6 +3698,26 @@ struct Island {
     /// across frames; stage-sized (1176x636x4 ~ 3 MB), lockscreen-sized
     /// at most (1504x1002x4 ~ 6 MB) — far under the 100 MB PSS budget.
     scale_scratch: Vec<u8>,
+    /// F-A: pinned 2-slot shm ring. `SlotPool::create_buffer` added a
+    /// new slot per commit (the pool grew to 4-6 slots and 68 MB);
+    /// exactly two slots are reused, and a draw is skipped while the
+    /// compositor still holds the slot we would use.
+    slots: Vec<Slot>,
+    slot_bytes: usize,
+    /// Round-robin index for the two slots. Alternating (instead of always
+    /// taking slot 0 while it is free) makes both slots reach their final
+    /// touched-page footprint inside the first few commits, so RSS does not
+    /// step up by a whole slab minutes later when timing first puts a frame
+    /// in flight.
+    slot_rr: usize,
+    /// Set after a commit that requested `wl_surface.frame`; cleared by
+    /// CompositorHandler::frame. This is the back-pressure: nothing
+    /// draws while the frame callback is outstanding.
+    frame_pending: Option<std::time::Instant>,
+    /// A draw was requested while a frame callback was outstanding.
+    redraw_wanted: bool,
+    /// Content rect of the last committed frame (stage-logical).
+    last_rect: Option<(i32, i32, i32, i32)>,
     configured_size: (u32, u32),
     drawn_size: (u32, u32),
     /// Backdrop factor (0..1, iter30 a3b) the last draw used — the
@@ -4123,6 +4521,14 @@ impl Island {
         if let Some(tok) = self.morph_token.take() {
             let _ = loop_handle.remove(tok);
         }
+        // Witness line for the stress harness: entering the preview does
+        // not morph (it swaps geometry wholesale), but it is still a
+        // top-level state change and the harness confirms effects from
+        // these lines.
+        eprintln!(
+            "dynamite-rust: DBG morph {:?} -> Lockscreen (morph_running=false)",
+            self.state
+        );
         self.morph = None;
         self.state = IslandState::Lockscreen;
         self.sync_keyboard_interactivity();
@@ -4252,8 +4658,22 @@ impl Island {
         // adds a second scratch field for ~0 retained gain.)
         if self.scale_scratch.capacity() > 0 {
             self.scale_scratch = Vec::new();
-            unsafe { libc::malloc_trim(0) };
         }
+        // F-A step 3: the lockscreen-sized ring (two 24 MB slots) must
+        // not outlive the preview. Dropping it here makes the next draw
+        // allocate exactly two stage-sized slots; if a configure has
+        // not landed yet the size check in draw_if_ready recreates it
+        // again, so this can only ever shrink.
+        if self.configured_size != LOCKSCREEN_SIZE {
+            self.pool = None;
+            self.slots.clear();
+            self.slot_bytes = 0;
+            self.last_rect = None;
+        }
+        // F-B: the morph scratch pair is freed on every exit path, not
+        // only the morph-into-Collapsed arm.
+        Self::free_morph_scratches(&mut self.morph_scratch_from, &mut self.morph_scratch_to);
+        unsafe { libc::malloc_trim(0) };
         if let Some(layer) = &self.layer {
             layer.set_margin(stage_margin_top(), 0, 0, 0);
         }
@@ -4278,6 +4698,15 @@ impl Island {
         if self.state != IslandState::Lockscreen {
             return;
         }
+        // Witness line for the stress harness (same contract as
+        // enter_lockscreen): the unlock-out animation is not a geometry
+        // morph, but it does change the top-level state. Logged before
+        // the mid-animation early return so a repeated command while the
+        // exit is already running still confirms.
+        eprintln!(
+            "dynamite-rust: DBG morph Lockscreen -> {:?} (morph_running=true)",
+            target
+        );
         if let Some(run) = self.lock_anim {
             if run.kind == LockAnimKind::UnlockOut {
                 self.lock_exit_target = target;
@@ -4698,6 +5127,18 @@ impl Island {
         if self.configured_size == (0, 0) {
             return;
         }
+        // F-A back-pressure: one frame callback per commit. A request
+        // that lands while the callback is outstanding only records the
+        // wish; CompositorHandler::frame repaints then. The 250 ms cap
+        // is a safety net for a compositor that never acks a hidden
+        // surface (otherwise the island would freeze mid-morph).
+        if let Some(at) = self.frame_pending {
+            if at.elapsed() < std::time::Duration::from_millis(250) {
+                self.redraw_wanted = true;
+                return;
+            }
+            self.frame_pending = None;
+        }
         // iter30 a3b: tell the backdrop probe whether a morph is
         // running — its pill-flanking strips are covered by the
         // growing capsule mid-morph, so captures taken then are
@@ -4760,25 +5201,75 @@ impl Island {
         let lock_wallpaper = self.lock_wallpaper.as_deref();
         // iter108: the shm buffer is RENDER_SCALE x the logical size.
         let (bw, bh) = (w * RENDER_SCALE, h * RENDER_SCALE);
-        if self.pool.is_none() {
-            self.pool = SlotPool::new((bw * bh * 4) as usize, &self.shm).ok();
-        }
-        let Some(pool) = &mut self.pool else { return };
-        // SlotPool is sized for the first state; recreate when outgrown.
+        // F-A: exactly two pinned slots, recreated only when the
+        // surface size changes (lockscreen <-> stage). Never grow.
         let needed = (bw * bh * 4) as usize;
-        if pool.len() < needed {
-            self.pool = SlotPool::new(needed, &self.shm).ok();
+        // Ring size 2 is the safe minimum: one buffer on screen while
+        // the next is drawn. `pool.canvas(&slot)` returning None for the
+        // in-flight slot is the back-pressure, so neither is ever written
+        // while the compositor owns it.
+        if self.slots.len() != SLOT_RING || self.slot_bytes != needed {
+            // Drop the frame we attached before the pool goes away:
+            // holding a Buffer of the old pool keeps its whole memfd
+            // referenced (a full slab, seen as a late RSS step) until
+            // the next successful commit.
+            self.buffer = None;
+            self.pool = None;
+            self.slots.clear();
+            self.last_rect = None;
+            // Fresh slots are zero-filled memfds: outside the damage
+            // rect the buffer is transparent, which is exactly what the
+            // compositor shows for an undamaged area. No full-frame
+            // damage (and no 12 MB of resident slots) is needed.
+            if let Ok(mut fresh) = SlotPool::new(needed * SLOT_RING, &self.shm) {
+                for _ in 0..SLOT_RING {
+                    match fresh.new_slot(needed) {
+                        Ok(slot) => self.slots.push(slot),
+                        Err(_) => {
+                            self.slots.clear();
+                            break;
+                        }
+                    }
+                }
+                if self.slots.len() == SLOT_RING {
+                    self.slot_bytes = needed;
+                    self.pool = Some(fresh);
+                }
+            }
         }
         let Some(pool) = &mut self.pool else { return };
-        let (buffer, canvas) = match pool.create_buffer(
-            bw as i32,
-            bh as i32,
-            (bw * 4) as i32,
-            Format::Argb8888,
-        ) {
-            Ok(v) => v,
-            Err(_) => return,
+        let mut picked = None;
+        let n = self.slots.len();
+        for off in 0..n.max(1) {
+            let i = (self.slot_rr + off) % n;
+            if pool.canvas(&self.slots[i]).is_some() {
+                picked = Some(i);
+                break;
+            }
+        }
+        let Some(si) = picked else {
+            // Both slots are still in flight; the frame callback will
+            // call again as soon as one is released.
+            self.redraw_wanted = true;
+            return;
         };
+        self.slot_rr = (si + 1) % n;
+        let slot = self.slots[si].clone();
+        let morph_frame = self
+            .morph
+            .as_ref()
+            .map(|m| m.frame_at(std::time::Instant::now()));
+        let frame_running = morph_frame.map(|f| !f.done).unwrap_or(false);
+        // F-A step 4: damage only what this frame can change — the
+        // union of the new content rect and the last committed one.
+        // Untouched shm pages stay non-resident (Pss counts pages).
+        let full = (0, 0, w as i32, h as i32);
+        let mut rect = if frame_running || self.state == IslandState::Lockscreen {
+            full
+        } else {
+            content_rect(self.state)
+        };
+        let dmg = clip_rect(union_rect(rect, self.last_rect.unwrap_or(rect)), w, h);
         // iter108: the stage is drawn at logical 1x into this reused
         // scratch (grow-only, same pattern as the morph scratches) and
         // upscaled 2x into the shm buffer after the match below.
@@ -4800,10 +5291,11 @@ impl Island {
         // resizes now, so there is no configure lag to compensate for
         // and no presented width to invert — frame_at(now) is the frame
         // being drawn. (morph.rs keeps raw_for_eased for its own tests.)
-        let morph_frame = self
-            .morph
-            .as_ref()
-            .map(|m| m.frame_at(std::time::Instant::now()));
+        if frame_running {
+            stage_1x.fill(0);
+        } else {
+            clear_rect(stage_1x, w, h, dmg);
+        }
         match morph_frame {
             Some(frame) if !frame.done => {
                 let from_state = self.morph_from_state;
@@ -4846,19 +5338,15 @@ impl Island {
             _ => {
                 if morph_frame.map(|f| f.done).unwrap_or(false) {
                     self.morph = None;
-                    if self.state == IslandState::Collapsed {
-                        // iter125: morph completed into Collapsed —
-                        // the settled draw below needs only
-                        // scale_scratch, so free the ~5.9 MB morph
-                        // pair now (re-grown on the next expand).
-                        // Freed here, not mid-morph: an interrupted /
-                        // restarted morph never reaches this arm, so
-                        // no frame can observe the freed buffers.
-                        Self::free_morph_scratches(
-                            &mut self.morph_scratch_from,
-                            &mut self.morph_scratch_to,
-                        );
-                    }
+                    // iter125/F-B: any completed morph can free the
+                    // ~5.9 MB pair — the settled draw needs only
+                    // scale_scratch (re-grown on the next expand). An
+                    // instant switch back to Collapsed also frees via
+                    // apply_state_instant, so no path keeps it.
+                    Self::free_morph_scratches(
+                        &mut self.morph_scratch_from,
+                        &mut self.morph_scratch_to,
+                    );
                 }
                 draw(
                     stage_1x,
@@ -4875,8 +5363,18 @@ impl Island {
             }
         }
         // iter108: upscale the 1x stage into the 2x shm buffer
-        // (RENDER_SCALE) — the discs leave here at 32 buffer px.
-        upscale_canvas_2x_into(&self.scale_scratch, w, h, canvas);
+        // (RENDER_SCALE). Settled frames upscale only their damage rect;
+        // a morph/lockscreen frame is a full repaint.
+        let Some(pool) = &mut self.pool else { return };
+        let Some(canvas) = pool.canvas(&slot) else {
+            self.redraw_wanted = true;
+            return;
+        };
+        if frame_running {
+            upscale_canvas_2x_into(&self.scale_scratch, w, h, canvas);
+        } else {
+            upscale_canvas_2x_region(&self.scale_scratch, w, h, canvas, dmg);
+        }
         // A1: every settled frame whose topmost element is the collapsed
         // pill (bare, or over an open menu) replaces that rect with a
         // 2x-rendered copy, so the clock glyphs skip one resample. Morph
@@ -4884,8 +5382,18 @@ impl Island {
         let pill_on_top = matches!(self.state, IslandState::Collapsed | IslandState::TrayMenu)
             || MENU_CYCLE.contains(&self.state);
         if self.morph.is_none() && pill_on_top {
-            draw_collapsed_pill_2x(canvas, bw, bh, &self.font);
+            draw_top_row_2x(canvas, bw, bh, &self.font, active_tag_cached());
         }
+        let buffer = match pool.create_buffer_in(
+            &slot,
+            bw as i32,
+            bh as i32,
+            (bw * 4) as i32,
+            Format::Argb8888,
+        ) {
+            Ok(b) => b,
+            Err(_) => return,
+        };
         let surface = layer.wl_surface();
         // The buffer is RENDER_SCALE x the logical surface size, so
         // advertise buffer_scale 2 (applies on this commit, before the
@@ -4895,11 +5403,25 @@ impl Island {
         // (which would display the island twice as large).
         surface.set_buffer_scale(RENDER_SCALE as i32);
         surface.attach(Some(buffer.wl_buffer()), 0, 0);
-        surface.damage_buffer(0, 0, bw as i32, bh as i32);
+        surface.damage_buffer(
+            dmg.0 * RENDER_SCALE as i32,
+            dmg.1 * RENDER_SCALE as i32,
+            (dmg.2 - dmg.0) * RENDER_SCALE as i32,
+            (dmg.3 - dmg.1) * RENDER_SCALE as i32,
+        );
         surface.commit();
+        // F-A step 1: ask for the release notification; the next draw
+        // waits for it (or for the 250 ms safety cap).
+        surface.frame(&self.qh, surface.clone());
+        self.frame_pending = Some(std::time::Instant::now());
+        self.redraw_wanted = false;
+        self.last_rect = Some(rect);
         self.last_backdrop_factor = wallpaper_blur::backdrop_factor();
         self.buffer = Some(buffer);
         self.drawn_size = (w, h);
+        {
+            static ONCE: std::sync::Once = std::sync::Once::new();
+        }
     }
 }
 
@@ -4927,6 +5449,14 @@ impl CompositorHandler for Island {
         _surface: &WlSurface,
         _time: u32,
     ) {
+        // The compositor released the buffer we committed: another draw
+        // may proceed. Only redraw if a timer/event asked while this
+        // callback was outstanding — idle stays at zero commits.
+        self.frame_pending = None;
+        if self.redraw_wanted {
+            self.redraw_wanted = false;
+            self.draw_if_ready();
+        }
     }
     fn surface_enter(
         &mut self,
@@ -5705,7 +6235,19 @@ fn send_command(word: &str) -> std::io::Result<()> {
     Ok(())
 }
 
+
 fn main() {
+    // F-A/F-B: pin glibc's large-allocation policy. With the default
+    // dynamic threshold a single ~10 MB free raises the mmap threshold
+    // to 32 MB, so every later large buffer (wallpaper decode ~10 MB,
+    // lockscreen slabs, scale_scratch) is carved from the brk heap and
+    // malloc_trim can never return it: steady state sat ~13 MB high.
+    // Explicit mmap for anything >=128 KiB (munmapped on free) and a
+    // 128 KiB trim threshold makes the big transients disappear.
+    unsafe {
+        libc::mallopt(libc::M_MMAP_THRESHOLD, 128 * 1024);
+        libc::mallopt(libc::M_TRIM_THRESHOLD, 128 * 1024);
+    }
     let args: Vec<String> = std::env::args().collect();
     if args.len() > 1 {
         let word = args[1].as_str();
@@ -5744,8 +6286,7 @@ fn main() {
     // Surface 12 Nov 2026 ~23:55 via fontTools), with fallback to
     // Quicksand.ttf (Light, default instance wght 300) if the Bold file
     // is missing or unparseable. Bold keeps cap height 700/1000 em, so
-    // every px size in the panels is unchanged (lock_timer TEXT_PX 17.0
-    // still gives digit height 12.0 logical, ratio 0.50).
+    // every px size in the panels is unchanged.
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
     let font = ["Quicksand-Bold.ttf", "Quicksand.ttf"]
         .iter()
@@ -5779,15 +6320,9 @@ fn main() {
     layer.set_size(STAGE_W, STAGE_H);
     layer.wl_surface().commit();
 
-    // iter108: the shm buffer is RENDER_SCALE x the logical stage
-    // (draw_if_ready still recreates the pool when outgrown, e.g. for
-    // the lockscreen) — size it 2x up front so the first frame does not
-    // pay a recreate.
-    let pool = SlotPool::new(
-        (STAGE_W * RENDER_SCALE * STAGE_H * RENDER_SCALE * 4) as usize,
-        &shm,
-    )
-    .expect("shm pool");
+    // F-A: the 2-slot shm ring is created on the first draw for the
+    // exact surface size; no up-front pool (it would be an unused
+    // 23.9 MB mapping).
 
     let mut event_loop: EventLoop<Island> = EventLoop::try_new().expect("calloop");
     let loop_handle = event_loop.handle();
@@ -5989,7 +6524,6 @@ fn main() {
                     match sock.recv(&mut buf) {
                         Ok(n) => {
                             let word = String::from_utf8_lossy(&buf[..n]).trim().to_string();
-                            eprintln!("dynamite-rust: DBG socket word={:?}", word);
                             if let Some(rest) = word.strip_prefix("dictation_bars:") {
                                 let mut bars = [0.0f32; 27];
                                 for (slot, tok) in rest.split_whitespace().enumerate().take(27) {
@@ -6093,14 +6627,17 @@ fn main() {
                                     }
                                 }
                                 set_selection(state.cal_offset, state.wall_selected, state.theme_selected);
-                                if state.state == IslandState::Collapsed {
-                                    if let Some(layer) = &state.layer {
-                                        layer.set_margin(stage_margin_top(), 0, 0, 0);
-                                        layer.set_exclusive_zone(pill_strip_px());
-                                    }
-                                    state.apply_state_instant(IslandState::Collapsed);
-                                    state.draw_if_ready();
+                                // Unconditional (F-C): a gap/height edit
+                                // must land even while a menu is open,
+                                // else the old reserved strip stays.
+                                if let Some(layer) = &state.layer {
+                                    layer.set_margin(stage_margin_top(), 0, 0, 0);
+                                    layer.set_exclusive_zone(pill_strip_px());
                                 }
+                                if state.state == IslandState::Collapsed {
+                                    state.apply_state_instant(IslandState::Collapsed);
+                                }
+                                state.draw_if_ready();
                             } else if let Some(new_state) = IslandState::from_word(&word) {
                                 if state.state == IslandState::Lockscreen {
                                     // Leaving the preview is always
@@ -6145,7 +6682,7 @@ fn main() {
         shm,
         layer_shell,
         layer: Some(layer),
-        pool: Some(pool),
+        pool: None,
         buffer: None,
         font,
         icon_font: std::sync::OnceLock::new(),
@@ -6164,6 +6701,12 @@ fn main() {
         morph_scratch_from: Vec::new(),
         morph_scratch_to: Vec::new(),
         scale_scratch: Vec::new(),
+        slots: Vec::new(),
+        slot_bytes: 0,
+        slot_rr: 0,
+        frame_pending: None,
+        redraw_wanted: false,
+        last_rect: None,
         configured_size: (0, 0),
         drawn_size: (0, 0),
         last_backdrop_factor: 1.0,
@@ -6317,12 +6860,12 @@ mod iter26_tests {
     #[test]
     fn shadows_fit_inside_stage() {
         // Tallest panel (ControlCenter, 525) bottom + shadow tail.
-        // Panel top is PANEL_TOP_MENU (31) since iter30 a3c.
-        let bottom = PANEL_TOP_MENU + 525.0 + PANEL_SHADOW_OFF.1 + PANEL_SHADOW_BLUR;
+        // Panel top is panel_top_menu() (31) since iter30 a3c.
+        let bottom = panel_top_menu() + 525.0 + PANEL_SHADOW_OFF.1 + PANEL_SHADOW_BLUR;
         assert!(bottom < STAGE_H as f32, "panel shadow bottom {bottom} >= {STAGE_H}");
         // Morph overshoot: CC grows ~10% past target (EaseOutBack) —
         // the overshoot shadow bottom must fit too.
-        let over_bottom = PANEL_TOP_MENU + 525.0 * 1.10 + PANEL_SHADOW_OFF.1 + PANEL_SHADOW_BLUR;
+        let over_bottom = panel_top_menu() + 525.0 * 1.10 + PANEL_SHADOW_OFF.1 + PANEL_SHADOW_BLUR;
         assert!(over_bottom < STAGE_H as f32, "overshoot shadow bottom {over_bottom} >= {STAGE_H}");
         // Widest panel (Wallpaper, 1008) right edge + blur.
         let right = (STAGE_W as f32 + 1008.0) / 2.0 + PANEL_SHADOW_BLUR;
@@ -6980,13 +7523,13 @@ mod iter30_tests {
         assert!((ox - 550.0).abs() < 1e-4, "pill ox {ox}");
         assert!((oy - STAGE_PAD_TOP).abs() < 1e-4, "pill oy {oy}");
         assert!((pw - 76.0).abs() < 1e-4 && (ph - 28.0).abs() < 1e-4);
-        // Menus: panel top PANEL_TOP_MENU (33) -> screen 0 + 33 = 33,
+        // Menus: panel top panel_top_menu() (33) -> screen 0 + 33 = 33,
         // i.e. 2 px below the pill bottom (3 + 28 = 31).
         for state in MENU_CYCLE {
             let (_, moy, _, _) = panel_rect_stage(state);
-            assert!((moy - PANEL_TOP_MENU).abs() < 1e-4, "{state:?} oy {moy}");
+            assert!((moy - panel_top_menu()).abs() < 1e-4, "{state:?} oy {moy}");
         }
-        assert!((PANEL_TOP_MENU - (STAGE_PAD_TOP + 28.0 + 2.0)).abs() < 1e-4);
+        assert!((panel_top_menu() - (STAGE_PAD_TOP + 28.0 + 2.0)).abs() < 1e-4);
     }
 
     // iter90 a8: workspace circles — geometry, hit-test (incl. the
@@ -7003,12 +7546,12 @@ mod iter30_tests {
         // Exact centres, left to right (tag 1..4).
         assert_eq!(
             centres,
-            [(478.0, 15.0), (498.0, 15.0), (518.0, 15.0), (538.0, 15.0)]
+            [(478.0, 17.0), (498.0, 17.0), (518.0, 17.0), (538.0, 17.0)]
         );
         // Ø16 on the pill centre line; 20 px centre-to-centre
         // (= 16 diameter + 4 gap) between neighbours.
         for (cx, cy) in centres {
-            assert!((cy - 15.0).abs() < 1e-4, "cy {cy}");
+            assert!((cy - 17.0).abs() < 1e-4, "cy {cy}");
             assert!((cx - 478.0) % 20.0 == 0.0, "cx {cx}");
         }
         for w in centres.windows(2) {
@@ -7022,7 +7565,7 @@ mod iter30_tests {
         // strictly above the panel top (29).
         let (rx, ry, rw, rh) = workspace_cluster_rect();
         assert!((rx - 470.0).abs() < 1e-4, "cluster x {rx}");
-        assert!((ry - 7.0).abs() < 1e-4, "cluster y {ry}");
+        assert!((ry - 9.0).abs() < 1e-4, "cluster y {ry}");
         assert!((rw - 80.0).abs() < 1e-4, "cluster w {rw}");
         assert!((rh - 16.0).abs() < 1e-4, "cluster h {rh}");
         // Circles-only span (no bridge): exactly 76, the pill's width.
@@ -7031,10 +7574,10 @@ mod iter30_tests {
         assert!(rx >= 0.0 && ry >= 0.0);
         assert!(ry >= STAGE_PAD_TOP, "cluster top must stay in the reserved strip");
         assert!(
-            ry + rh <= STAGE_PAD_TOP + 24.0,
+            ry + rh <= STAGE_PAD_TOP + pill_h(),
             "cluster bottom must stay in the reserved strip"
         );
-        assert!(ry + rh < PANEL_TOP_MENU, "cluster must stay above the panel top");
+        assert!(ry + rh < panel_top_menu(), "cluster must stay above the panel top");
         assert!(rx + rw <= STAGE_W as f32);
         // No circle overlaps the pill or any panel top edge.
         for (cx, _) in centres {
@@ -7045,16 +7588,16 @@ mod iter30_tests {
     #[test]
     fn workspace_hit_stage_coords() {
         // Centre hits return the tag; gaps and the pill do not.
-        assert_eq!(workspace_hit_stage((478.0, 15.0)), Some(1));
-        assert_eq!(workspace_hit_stage((498.0, 15.0)), Some(2));
-        assert_eq!(workspace_hit_stage((518.0, 15.0)), Some(3));
-        assert_eq!(workspace_hit_stage((538.0, 15.0)), Some(4));
+        assert_eq!(workspace_hit_stage((478.0, 17.0)), Some(1));
+        assert_eq!(workspace_hit_stage((498.0, 17.0)), Some(2));
+        assert_eq!(workspace_hit_stage((518.0, 17.0)), Some(3));
+        assert_eq!(workspace_hit_stage((538.0, 17.0)), Some(4));
         // Circle edge still hits (radius 8 + 1 slack = 9).
-        assert_eq!(workspace_hit_stage((486.0, 15.0)), Some(1));
+        assert_eq!(workspace_hit_stage((486.0, 17.0)), Some(1));
         // Mid-gap between circles 1 and 2 (x 488): no hit.
-        assert_eq!(workspace_hit_stage((488.0, 15.0)), None);
+        assert_eq!(workspace_hit_stage((488.0, 17.0)), None);
         // Pill centre (588, 15) is not a workspace hit.
-        assert_eq!(workspace_hit_stage((588.0, 15.0)), None);
+        assert_eq!(workspace_hit_stage((588.0, 17.0)), None);
         // Stage-vs-screen: the stage origin is x=164 on screen, so a
         // driver click at SCREEN (789, 176) arrives as STAGE (625, 176)
         // — inside the pill, not on a circle — and the hit fn takes
@@ -7066,7 +7609,7 @@ mod iter30_tests {
         assert!((stage.0 - 625.0).abs() < 1e-4);
         assert_eq!(workspace_hit_stage(stage), None);
         // A screen click on circle 4: screen x = 538 + 164 = 702.
-        assert_eq!(workspace_hit_stage((702.0 - sox as f64, 15.0)), Some(4));
+        assert_eq!(workspace_hit_stage((702.0 - sox as f64, 17.0)), Some(4));
     }
 
     #[test]
@@ -7139,19 +7682,19 @@ mod iter30_tests {
     fn classify_press_workspace_tag() {
         // Circles work collapsed and in a menu, and never swallow the pill.
         assert_eq!(
-            classify_press((538.0, 15.0), IslandState::Collapsed, false, 0, 0, 0),
+            classify_press((538.0, 17.0), IslandState::Collapsed, false, 0, 0, 0),
             PressAction::WorkspaceTag(4)
         );
         assert_eq!(
-            classify_press((478.0, 15.0), IslandState::Music, false, 0, 0, 0),
+            classify_press((478.0, 17.0), IslandState::Music, false, 0, 0, 0),
             PressAction::WorkspaceTag(1)
         );
         assert_eq!(
-            classify_press((588.0, 15.0), IslandState::Collapsed, false, 0, 0, 0),
+            classify_press((588.0, 17.0), IslandState::Collapsed, false, 0, 0, 0),
             PressAction::OpenMusic
         );
         assert_eq!(
-            classify_press((588.0, 15.0), IslandState::Music, false, 0, 0, 0),
+            classify_press((588.0, 17.0), IslandState::Music, false, 0, 0, 0),
             PressAction::Collapse
         );
     }
@@ -7165,19 +7708,19 @@ mod iter30_tests {
         assert!((pw as f32 - 76.0).abs() < 1e-4, "pill w {pw}");
         // Icon centres: first 638, step 20, cy 15 (pill centre line).
         assert_eq!(tray_icon_centres(0), vec![]);
-        assert_eq!(tray_icon_centres(1), vec![(638.0, 15.0)]);
+        assert_eq!(tray_icon_centres(1), vec![(638.0, 17.0)]);
         assert_eq!(
             tray_icon_centres(2),
-            vec![(638.0, 15.0), (658.0, 15.0)]
+            vec![(638.0, 17.0), (658.0, 17.0)]
         );
         assert_eq!(
             tray_icon_centres(3),
-            vec![(638.0, 15.0), (658.0, 15.0), (678.0, 15.0)]
+            vec![(638.0, 17.0), (658.0, 17.0), (678.0, 17.0)]
         );
         for n in 1..=3usize {
             let centres = tray_icon_centres(n);
             for (cx, cy) in &centres {
-                assert!((cy - 15.0).abs() < 1e-4, "tray cy {cy}");
+                assert!((cy - 17.0).abs() < 1e-4, "tray cy {cy}");
                 // 4 px gap between the pill's right edge and icon 0.
                 assert!(*cx - TRAY_ICON_R >= px + pw as f32 + TRAY_GAP_PILL - 1e-4);
             }
@@ -7188,9 +7731,9 @@ mod iter30_tests {
         // Cluster rects: (626, 7, 20n, 16) — left edge is the pill's
         // right edge (the 4 px bridge is inside the rect width).
         assert_eq!(tray_cluster_rect(0), None);
-        assert_eq!(tray_cluster_rect(1), Some((626.0, 7.0, 20.0, 16.0)));
-        assert_eq!(tray_cluster_rect(2), Some((626.0, 7.0, 40.0, 16.0)));
-        assert_eq!(tray_cluster_rect(3), Some((626.0, 7.0, 60.0, 16.0)));
+        assert_eq!(tray_cluster_rect(1), Some((626.0, crate::ws_cy() - 8.0, 20.0, 16.0)));
+        assert_eq!(tray_cluster_rect(2), Some((626.0, crate::ws_cy() - 8.0, 40.0, 16.0)));
+        assert_eq!(tray_cluster_rect(3), Some((626.0, crate::ws_cy() - 8.0, 60.0, 16.0)));
         // Top-row content span (the "stage width" that grows right):
         // 156 / 176 / 196 / 216 for 0 / 1 / 2 / 3 tray items.
         assert_eq!(top_row_span(0), (470.0, 626.0));
@@ -7210,19 +7753,19 @@ mod iter30_tests {
 
     #[test]
     fn tray_inside_reserved_strip() {
-        // iter108-C: the tray row (y 7..23) sits inside the a3d
-        // reserved strip (gap_top 3..27) with 4 px spare top/bottom,
+        // iter108-C: the tray row (y 9..25) sits inside the a3d
+        // reserved strip (gap_top 3..31) with 2 px spare top/bottom,
         // strictly above the panel top (29) — for any item count.
         assert_eq!(pill_strip_px(), 31);
         for n in [1usize, 2, 3, 27] {
             let (rx, ry, rw, rh) = tray_cluster_rect(n).unwrap();
             assert!(ry >= STAGE_PAD_TOP, "tray top {ry} n={n}");
             assert!(
-                ry + rh <= STAGE_PAD_TOP + 24.0,
+                ry + rh <= STAGE_PAD_TOP + pill_h(),
                 "tray bottom {} n={n}",
                 ry + rh
             );
-            assert!(ry + rh < PANEL_TOP_MENU, "tray under panel top n={n}");
+            assert!(ry + rh < panel_top_menu(), "tray under panel top n={n}");
             assert!(rx >= 0.0 && rx + rw <= STAGE_W as f32, "n={n} overflows stage");
             // Icons-only span: 16n + 4(n-1) = 20n - 4.
             let centres = tray_icon_centres(n);
@@ -7232,7 +7775,7 @@ mod iter30_tests {
         // Sheet bound: 27 icons fit (right edge 1166 < 1176); a 28th
         // would overflow the fixed stage (1186) — the SNI host must
         // never need that many, but the geometry says so honestly.
-        assert_eq!(tray_cluster_rect(27), Some((626.0, 7.0, 540.0, 16.0)));
+        assert_eq!(tray_cluster_rect(27), Some((626.0, crate::ws_cy() - 8.0, 540.0, 16.0)));
         let (rx, _, rw, _) = tray_cluster_rect(28).unwrap();
         assert!(rx + rw > STAGE_W as f32, "28 icons must overflow");
     }
@@ -7241,79 +7784,79 @@ mod iter30_tests {
     fn tray_hit_stage_coords() {
         // Centre hits return the 0-based slot; edges, gaps, the bridge
         // and the pill do not.
-        assert_eq!(tray_hit_stage((638.0, 15.0), 3), Some(0));
-        assert_eq!(tray_hit_stage((658.0, 15.0), 3), Some(1));
-        assert_eq!(tray_hit_stage((678.0, 15.0), 3), Some(2));
+        assert_eq!(tray_hit_stage((638.0, 17.0), 3), Some(0));
+        assert_eq!(tray_hit_stage((658.0, 17.0), 3), Some(1));
+        assert_eq!(tray_hit_stage((678.0, 17.0), 3), Some(2));
         // Icon edge still hits (radius 8 + 1 slack = 9).
-        assert_eq!(tray_hit_stage((647.0, 15.0), 3), Some(0));
-        assert_eq!(tray_hit_stage((669.0, 15.0), 3), Some(2));
+        assert_eq!(tray_hit_stage((647.0, 17.0), 3), Some(0));
+        assert_eq!(tray_hit_stage((669.0, 17.0), 3), Some(2));
         // Mid-gap between icons 0 and 1 (x 648): no hit.
-        assert_eq!(tray_hit_stage((648.0, 15.0), 3), None);
+        assert_eq!(tray_hit_stage((648.0, 17.0), 3), None);
         // 4 px bridge to the pill (x 626..630): no hit.
-        assert_eq!(tray_hit_stage((628.0, 15.0), 3), None);
+        assert_eq!(tray_hit_stage((628.0, 17.0), 3), None);
         // Pill centre is not a tray hit.
-        assert_eq!(tray_hit_stage((588.0, 15.0), 3), None);
+        assert_eq!(tray_hit_stage((588.0, 17.0), 3), None);
         // Workspace circle 4 is not a tray hit.
-        assert_eq!(tray_hit_stage((538.0, 15.0), 3), None);
+        assert_eq!(tray_hit_stage((538.0, 17.0), 3), None);
         // Empty tray: nothing hits anywhere on the row.
-        assert_eq!(tray_hit_stage((638.0, 15.0), 0), None);
-        assert_eq!(tray_hit_stage((658.0, 15.0), 0), None);
+        assert_eq!(tray_hit_stage((638.0, 17.0), 0), None);
+        assert_eq!(tray_hit_stage((658.0, 17.0), 0), None);
         // Fewer items than slots: slot 2 does not exist with n=2.
-        assert_eq!(tray_hit_stage((678.0, 15.0), 2), None);
-        assert_eq!(tray_hit_stage((658.0, 15.0), 2), Some(1));
+        assert_eq!(tray_hit_stage((678.0, 17.0), 2), None);
+        assert_eq!(tray_hit_stage((658.0, 17.0), 2), Some(1));
         // Stage-vs-screen: a driver click at SCREEN (802, 15) arrives
         // as STAGE (638, 15) — tray slot 0.
         let (sox, soy) = stage_screen_origin();
-        assert_eq!(tray_hit_stage((802.0 - sox as f64, 15.0 - soy as f64), 3), Some(0));
+        assert_eq!(tray_hit_stage((802.0 - sox as f64, 17.0 - soy as f64), 3), Some(0));
         // Screen click on icon 2: screen x = 678 + 164 = 842.
-        assert_eq!(tray_hit_stage((842.0 - sox as f64, 15.0), 3), Some(2));
+        assert_eq!(tray_hit_stage((842.0 - sox as f64, 17.0), 3), Some(2));
     }
 
     #[test]
     fn classify_press_tray_icon() {
         // Slots work collapsed and in a menu, and never swallow the pill.
         assert_eq!(
-            classify_press((638.0, 15.0), IslandState::Collapsed, false, 0, 0, 1),
+            classify_press((638.0, 17.0), IslandState::Collapsed, false, 0, 0, 1),
             PressAction::TrayActivate(0)
         );
         assert_eq!(
-            classify_press((658.0, 15.0), IslandState::Music, false, 0, 0, 2),
+            classify_press((658.0, 17.0), IslandState::Music, false, 0, 0, 2),
             PressAction::TrayActivate(1)
         );
         assert_eq!(
-            classify_press((678.0, 15.0), IslandState::ControlCenter, false, 0, 0, 3),
+            classify_press((678.0, 17.0), IslandState::ControlCenter, false, 0, 0, 3),
             PressAction::TrayActivate(2)
         );
         // Gaps and the bridge are NoOp — never Collapse, in any state.
         assert_eq!(
-            classify_press((648.0, 15.0), IslandState::Collapsed, false, 0, 0, 3),
+            classify_press((648.0, 17.0), IslandState::Collapsed, false, 0, 0, 3),
             PressAction::NoOp
         );
         assert_eq!(
-            classify_press((648.0, 15.0), IslandState::Music, false, 0, 0, 3),
+            classify_press((648.0, 17.0), IslandState::Music, false, 0, 0, 3),
             PressAction::NoOp
         );
         assert_eq!(
-            classify_press((628.0, 15.0), IslandState::Music, false, 0, 0, 3),
+            classify_press((628.0, 17.0), IslandState::Music, false, 0, 0, 3),
             PressAction::NoOp
         );
         // Empty tray: the same point is NoOp (outside the pill, D2).
         assert_eq!(
-            classify_press((638.0, 15.0), IslandState::Collapsed, false, 0, 0, 0),
+            classify_press((638.0, 17.0), IslandState::Collapsed, false, 0, 0, 0),
             PressAction::NoOp
         );
         // The pill still opens / collapses with a tray present.
         assert_eq!(
-            classify_press((588.0, 15.0), IslandState::Collapsed, false, 0, 0, 3),
+            classify_press((588.0, 17.0), IslandState::Collapsed, false, 0, 0, 3),
             PressAction::OpenMusic
         );
         assert_eq!(
-            classify_press((588.0, 15.0), IslandState::Music, false, 0, 0, 3),
+            classify_press((588.0, 17.0), IslandState::Music, false, 0, 0, 3),
             PressAction::Collapse
         );
         // Workspace circles still win on their side with a tray present.
         assert_eq!(
-            classify_press((538.0, 15.0), IslandState::Collapsed, false, 0, 0, 3),
+            classify_press((538.0, 17.0), IslandState::Collapsed, false, 0, 0, 3),
             PressAction::WorkspaceTag(4)
         );
     }
@@ -8399,6 +8942,7 @@ mod iter108_tray_tests {
             title: format!("Item {id}"),
             status: "Active".to_string(),
             icon: Some(vec![255u8; 16 * 16 * 4]),
+            icon32: Some(vec![255u8; 32 * 32 * 4]),
             icon_name: String::new(),
             has_menu: false,
             menu_path: None,
@@ -8425,16 +8969,16 @@ mod iter108_tray_tests {
         // the first tray icon centre is (638, 15).
         let (pill_x, _, pill_w, _) = panel_rect_stage(IslandState::Collapsed);
         assert_eq!((pill_x, pill_w), (550.0, 76.0));
-        let action = classify_press((638.0, 15.0), IslandState::Collapsed, false, 0, 0, 1);
+        let action = classify_press((638.0, 17.0), IslandState::Collapsed, false, 0, 0, 1);
         assert_eq!(action, PressAction::TrayActivate(0));
         // Same in a menu state (icons ride above every panel).
-        let action = classify_press((638.0, 15.0), IslandState::Music, false, 0, 0, 1);
+        let action = classify_press((638.0, 17.0), IslandState::Music, false, 0, 0, 1);
         assert_eq!(action, PressAction::TrayActivate(0));
         // The gap between pill and icon is a no-op, not a tray hit.
-        let action = classify_press((628.0, 15.0), IslandState::Collapsed, false, 0, 0, 1);
+        let action = classify_press((628.0, 17.0), IslandState::Collapsed, false, 0, 0, 1);
         assert_eq!(action, PressAction::NoOp);
         // Workspace circles still win on the left.
-        let action = classify_press((478.0, 15.0), IslandState::Collapsed, false, 0, 0, 1);
+        let action = classify_press((478.0, 17.0), IslandState::Collapsed, false, 0, 0, 1);
         assert_eq!(action, PressAction::WorkspaceTag(1));
         crate::tray::set_snapshot_for_test(vec![]);
     }
@@ -8444,13 +8988,13 @@ mod iter108_tray_tests {
         let _g = TRAY_TEST_LOCK.lock().unwrap();
         crate::tray::set_snapshot_for_test(vec![fake_item("7"), fake_item("8")]);
         set_tray_count(2); // merge: mirror the 1 s timer sync in production
-        assert!(point_in_state_region((638.0, 15.0), IslandState::Collapsed));
-        assert!(point_in_state_region((658.0, 15.0), IslandState::Collapsed));
-        assert!(!point_in_state_region((700.0, 15.0), IslandState::Collapsed));
+        assert!(point_in_state_region((638.0, 17.0), IslandState::Collapsed));
+        assert!(point_in_state_region((658.0, 17.0), IslandState::Collapsed));
+        assert!(!point_in_state_region((700.0, 17.0), IslandState::Collapsed));
         crate::tray::set_snapshot_for_test(vec![]);
         set_tray_count(0); // merge: store follows the snapshot
         // Empty snapshot: no tray rect anywhere.
-        assert!(!point_in_state_region((638.0, 15.0), IslandState::Collapsed));
+        assert!(!point_in_state_region((638.0, 17.0), IslandState::Collapsed));
     }
 
     #[test]

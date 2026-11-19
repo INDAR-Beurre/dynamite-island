@@ -103,8 +103,6 @@ const DOT_R: f32 = 0.80; // ref dots ~1.1% W: 1.60px core + AA ≈ 1.8px
 const DOT_A: f32 = 255.0; // leader-dot peak alpha — the reference dots are
                           // opaque marks; the whisper ramp carries their dimness.
 const VIS_FLOOR: f32 = 26.0; // hue-preserving channel floor for dim whisper dots
-const BLUE_BIAS: f32 = 1.15; // right-shoulder blue boost (peaks B-G +46..+56 at 60..72% W)
-const DOT_BLUE_BIAS: f32 = 1.15; // smooth continuation across the right flank
 const _DOT_A_OLD: f32 = 100.0;
 
 /// Reference whisper ramp (council r3): continuous monotonic ramp across the
@@ -125,11 +123,11 @@ fn whisper(tbl: &[f32; 8], t: f32) -> f32 {
 }
 const GLOW_K: f32 = 3.2; // soft jewel halo kernel at v=1, logical px
 const GLOW_REACH: f32 = 22.0; // halo cut-off (~22px)
-const BLOOM: f32 = 0.32; // luminous teal aura inside mound while keeping bar gaps distinct
+const BLOOM: f32 = 0.0; // F-H: bloom halo removed (flat accent only)
 const GLOW_TEAL: f32 = 1.05; // teal green/blue halo gain
 const GLOW_A: f32 = 200.0;
 /// Idle halo hum (C11): dim teal hum on the posed silence, breathing with v.
-const GLOW_IDLE: f32 = 0.18;
+const GLOW_IDLE: f32 = 0.0; // F-H: no breathing idle halo
 // 27 bars at pitch 2·0.60·74/27 ≈ 3.29 logical px (2.22% of 148px capsule W).
 const ELEM_R_MAX: f32 = 0.90; // slim bars (~1.8px core + AA ≈ 2.1px, ~1.4% W like ref)
 /// Tallest-bar span as a fraction of capsule height: 0.46 matches the
@@ -157,29 +155,16 @@ const SHADOW2_TINT: (f32, f32, f32) = (10.0, 20.0, 35.0);
 /// Measured palette (verbatim from the reference spec).
 const BG: (f32, f32, f32) = (16.0, 20.0, 30.0); // near-black navy cast (dark desktop)
 const TWIN: (f32, f32, f32) = (31.0, 30.0, 29.0); // #1F1E1D clock-pill twin
-const GRAD_L: (f32, f32, f32) = (125.0, 165.0, 165.0); // teal, left end
-const GRAD_C: (f32, f32, f32) = (140.0, 220.0, 220.0); // peak teal, center (B == G)
-const GRAD_R: (f32, f32, f32) = (80.0, 118.0, 178.0); // blue, right flank/tail
+// F-H: one accent. The old three-stop teal -> cyan -> blue gradient is
+// gone; the bars are a single flat teal (B == G, so nothing reads blue).
+const GRAD_C: (f32, f32, f32) = (140.0, 220.0, 220.0);
 
-/// Wave gradient along the span (u: 0 left → 1 right): teal → peak cyan → blue.
+/// F-H: one flat accent for the whole waveform. The old teal→cyan→blue
+/// ramp was the codebase's only multi-stop gradient and read as slop;
+/// the loudness ramp (WHISPER_L/R) still carries the shape.
 #[inline]
-fn wave_color(u: f32) -> (f32, f32, f32) {
-    let u = clamp01(u);
-    if u <= 0.5 {
-        let t = u * 2.0;
-        (
-            GRAD_L.0 + (GRAD_C.0 - GRAD_L.0) * t,
-            GRAD_L.1 + (GRAD_C.1 - GRAD_L.1) * t,
-            GRAD_L.2 + (GRAD_C.2 - GRAD_L.2) * t,
-        )
-    } else {
-        let t = (u - 0.5) * 2.0;
-        (
-            GRAD_C.0 + (GRAD_R.0 - GRAD_C.0) * t,
-            GRAD_C.1 + (GRAD_R.1 - GRAD_C.1) * t,
-            GRAD_C.2 + (GRAD_R.2 - GRAD_C.2) * t,
-        )
-    }
+fn wave_color(_u: f32) -> (f32, f32, f32) {
+    GRAD_C
 }
 
 /// 4×4 Bayer matrix, normalized to [-0.4375, 0.4375].
@@ -405,10 +390,10 @@ pub fn render_pill(
             } else {
                 whisper(&WHISPER_R, (u - 0.5) * 2.0)
             };
-            // Right-shoulder blue accent: ramps in only past the hot mound
-            // (u > 0.56) and stays off hot-snapped pixels so apex stays teal.
-            let blue_t = smooth(clamp01((u - 0.56) / 0.18));
-            let bluew = 1.0 + BLUE_BIAS * blue_t * (1.0 - wmix);
+            // F-H: the right-shoulder BLUE_BIAS accent is gone with the
+            // teal→cyan→blue gradient. The whisper ramp already shades
+            // the tail; no second hue is introduced past the hot mound.
+            let bluew = 1.0f32;
             let shimmer = 1.0 + 0.01 * (1.0 - (t * 3.2 + i as f32 * 1.05).cos());
             let gw = smooth(clamp01((v - 0.18) / 0.72))
                 .max(GLOW_IDLE * smooth(clamp01((field - 0.72) / 0.25)) * (1.0 - v));
@@ -610,12 +595,9 @@ pub fn render_pill(
                             } else {
                                 whisper(&WHISPER_R, fpos)
                             };
-                            let end = ((u - 0.56) / 0.44).clamp(0.0, 1.0);
-                            let blue = if u > 0.56 {
-                                1.0 + DOT_BLUE_BIAS * (1.0 - 0.5 * end)
-                            } else {
-                                1.0
-                            };
+                            // F-H: no blue shoulder (see wave_color's
+                            // note) — the dots keep the single accent.
+                            let blue = 1.0f32;
                             let floor_r = VIS_FLOOR * 0.70;
                             let floor_g = VIS_FLOOR;
                             let floor_b = if u > 0.56 {
@@ -805,8 +787,10 @@ mod tests {
     }
 
     #[test]
-    fn wave_gradient_matches_spec_stops() {
-        // Element color interpolates teal → peak teal → blue along the span.
+    fn wave_single_accent_end_to_end() {
+        // Element colour is ONE accent along the whole span (F-H): the
+        // whisper ramp still dims bars toward the row ends, but no hue
+        // interpolation teal → blue survives.
         // Slot layout at g=1 (hw_c = 74): span BAR_SPAN_FRAC·74 ≈ 44.4,
         // slot ≈ 3.29, sampled at y = 21 (wave centerline).
         let c = frame(&[1.0; N27], 0.0, 1.0);
@@ -834,17 +818,18 @@ mod tests {
         assert!((r - 172).abs() <= tol, "center teal R {r} vs 172");
         assert!((g - 240).abs() <= tol, "center teal G {g} vs 240");
         assert!((b - 239).abs() <= tol, "center teal B {b} vs 239");
-        // Right bar (i=26): whisper-dim blue-steel ~(49,72,128), B highest.
+        // Right bar (i=26): whisper-dim, still the SAME teal hue — the
+        // blue shoulder is gone (F-H), so B tracks G instead of
+        // towering over it (~128 vs ~72 before).
         let (r, g, b) = (
             chan(&c, cx_at(26), 21, 2) as i32,
             chan(&c, cx_at(26), 21, 1) as i32,
             chan(&c, cx_at(26), 21, 0) as i32,
         );
-        assert!((r - 49).abs() <= tol, "right whisper-dim blue R {r} vs 49");
-        assert!((g - 72).abs() <= tol, "right whisper-dim blue G {g} vs 72");
+        assert!(r < g, "right whisper-dim R {r} must stay below G {g}");
         assert!(
-            (b - 128).abs() <= tol,
-            "right whisper-dim blue B {b} vs 128"
+            (b - g).abs() <= 14,
+            "right tail must share the teal hue: rgb({r},{g},{b}) has B {b} vs G {g}"
         );
     }
 
@@ -1295,15 +1280,14 @@ mod tests {
     }
 
     #[test]
-    fn bloom_half_excess_radius_matches_reference_halo() {
-        // Spec: bloom halo r≈15px at the 676px reference capsule width;
-        // rescaled to our capsule that is ≈3px logical (≈6.5px @2x) of
-        // half-excess below a tall bar's core bottom (±30%). Render a one-hot
-        // tall-bar frame at scale 2 and measure the VERTICAL excess-over-bg
-        // profile downward from the tallest bar's core, at the bar's center
-        // column (clear of the idle-dot / leader-dot row). Baseline is a
-        // zero-bars frame (empty bars would add idle dots at that column).
-        let n = crate::pill::vecmentor::NUM_BARS;
+    fn flat_bars_have_no_halo() {
+        // F-H: the 22 px glow halo / bloom is gone — it was the loudest
+        // slop tell in the project. A tall bar must now end at its own
+        // AA edge: excess-over-background below the core has to reach
+        // ~zero within a couple of device rows instead of decaying over
+        // a ~6.5px @2x halo. Rendered at scale 2 against a zero-bars
+        // baseline so the idle-dot row cancels out.
+        let n = N27;
         let (w, h) = (SURF_W * 2, SURF_H * 2);
         let mut bars = vec![0.0; n];
         bars[n / 2] = 1.0;
@@ -1322,82 +1306,53 @@ mod tests {
             }
         }
         let excess = |y: u32| g(&big, y) - g(&bg, y);
-        let v0 = excess(core_bottom + 2); // first sample clear of the core AA band
+        let v0 = excess(core_bottom + 1); // core AA band
+        let v1 = excess(core_bottom + 3);
         assert!(
-            v0 > 40.0,
-            // Re-measured at council-r1: first clear row excess = 53 G.
-            "tall-bar bloom must remain visible below the core: {v0}"
+            v1 <= v0 * 0.6 + 4.0,
+            "bar core must fall off, not glow: {v0} -> {v1} G"
         );
-        let mut r = 0.0f32;
-        for y in (core_bottom + 3)..h {
-            let v = excess(y);
-            if v <= v0 * 0.5 {
-                let vp = excess(y - 1);
-                let frac = ((vp - v0 * 0.5) / (vp - v0).max(1e-6)).clamp(0.0, 1.0);
-                r = (y - 1 - core_bottom) as f32 + frac;
-                break;
-            }
-        }
         assert!(
-            (4.0..=14.0).contains(&r),
-            "bloom half-excess {r}px @2x, want ≈6.5 (spec 15px at the 676px reference width)"
+            v1 <= 12.0,
+            "halo removed: 3 rows below the core must be within AA noise \
+             of the background, got {v1} G"
         );
     }
 
     #[test]
-    fn third_peak_colors_track_spec_stops_on_tall_bars() {
-        // Third-peak sampling on the GROWN capsule: tall bars at u ≈ 1/6 and
-        // 5/6 must land within dRGB ≤ 60 of the palette stop at their x
-        // (bloom is lifted under full cores, so the core carries the exact
-        // gradient); the CENTER third is the hot-teal peak (rgb ≈ 173,241,240
-        // vs stop (140,220,222)) — no white tip per ref-deep-measure, so it
-        // asserts the hot-teal signature rather than the stop.
-        let n = crate::pill::vecmentor::NUM_BARS;
+    fn third_peaks_share_the_single_accent() {
+        // F-H flattening: the teal→cyan→blue multi-stop gradient is gone
+        // (the codebase's only one, and an AI-slop tell). Every tall bar
+        // now carries the single accent, so the three thirds must be the
+        // same colour — no hue ramp left-to-right.
+        let n = N27;
         let idx = [n / 6, n / 2, 5 * n / 6];
         let mut bars = vec![0.0; n];
         for &i in &idx {
             bars[i] = 1.0;
         }
         let c = frame(&bars, 0.0, 1.0);
-        let mut gs = [0.0f32; 3];
+        let mut cols = [(0f32, 0f32, 0f32); 3];
         for (k, &i) in idx.iter().enumerate() {
-            let u = i as f32 / (n as f32 - 1.0).max(1.0);
             let x = cx_of(i, n).round() as u32;
-            let (r, g, b) = (
+            cols[k] = (
                 chan(&c, x, 21, 2) as f32,
                 chan(&c, x, 21, 1) as f32,
                 chan(&c, x, 21, 0) as f32,
             );
-            // The CENTER third is the hot-teal peak by design; outer thirds
-            // carry the council-r3 unified 37-slot whisper ramp:
-            // i=4 → ~(109, 158, 160), i=22 → ~(52, 84, 119).
-            if k == 1 {
-                // Center: hot teal — G-dominant, R/G ≈ 0.72, B at/below G.
-                assert!(
-                    g >= 225.0 && r < g && b <= g + 3.0 && r / g >= 0.70,
-                    "center third not hot teal: rgb({r},{g},{b})"
-                );
-            } else {
-                let want: (i32, i32, i32) = if k == 0 {
-                    (109, 158, 160)
-                } else {
-                    (52, 84, 119)
-                };
-                let d = ((r as i32 - want.0).abs()
-                    + (g as i32 - want.1).abs()
-                    + (b as i32 - want.2).abs()) as f32;
-                assert!(
-                    d <= 30.0,
-                    "third {k} (i={i}, u={u:.3}): rgb({r},{g},{b}) vs measured {want:?}, d {d}"
-                );
-            }
-            gs[k] = g;
         }
-        assert!(
-            gs[0] < gs[1] && gs[2] < gs[1],
-            "gradient must read teal→hot-teal→blue: g at thirds = {:?}",
-            gs
-        );
+        // Bars taper toward the capsule ends and full cores get a small
+        // brightness lift, so absolute RGB varies along the row. What
+        // must NOT vary is the hue: every bar now sits in the one teal
+        // family (B/B≈1, R well below G). The old blue right end
+        // (52,84,119 → B/G ≈ 1.4) fails this.
+        for k in 0..3 {
+            let (r, g, b) = cols[k];
+            assert!(
+                (b / g.max(1.0) - 1.0).abs() <= 0.12 && r / g.max(1.0) < 0.80,
+                "third {k} left the single teal accent: ({r},{g},{b})"
+            );
+        }
     }
 
     #[test]

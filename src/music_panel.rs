@@ -1472,7 +1472,7 @@ fn fill_triangle(
 // main.rs's helpers are private and this module must stay drop-in).
 // ---------------------------------------------------------------------------
 struct TextRow {
-    glyphs: Vec<(fontdue::Metrics, Vec<u8>)>,
+    glyphs: Vec<(fontdue::Metrics, std::sync::Arc<[u8]>)>,
     width: f32,
 }
 
@@ -1480,7 +1480,7 @@ fn layout_text(font: &fontdue::Font, text: &str, px: f32) -> TextRow {
     let mut glyphs = Vec::new();
     let mut width = 0.0f32;
     for ch in text.chars() {
-        let (m, cov) = font.rasterize(ch, px);
+        let (m, cov) = crate::lock_timer::rasterize_cached(font, ch, px);
         width += m.advance_width;
         glyphs.push((m, cov));
     }
@@ -1587,7 +1587,7 @@ fn truncate_to_width(font: &fontdue::Font, text: &str, px: f32, max_w: f32) -> S
     let mut out = String::new();
     let mut w = 0.0f32;
     for ch in text.chars() {
-        let adv = font.rasterize(ch, px).0.advance_width;
+        let adv = crate::lock_timer::rasterize_cached(font, ch, px).0.advance_width;
         if w + adv + ell_w > max_w {
             break;
         }
@@ -1610,7 +1610,7 @@ fn draw_icon_glyph(
     cy: f32,
     rgb: [u8; 3],
 ) {
-    let (m, cov) = icon.rasterize(ch, px);
+    let (m, cov) = crate::lock_timer::rasterize_cached(icon, ch, px);
     if m.width == 0 || m.height == 0 {
         return;
     }
@@ -2217,7 +2217,7 @@ mod tests {
     #[test]
     fn truncate_to_width_fits_and_ellipsis() {
         let font = load_test_font();
-        let (m, _) = font.rasterize('\u{2026}', TRACK_PX);
+        let (m, _) = crate::lock_timer::rasterize_cached(&font, '\u{2026}', TRACK_PX);
         assert!(m.width > 0, "ellipsis glyph missing from Quicksand");
         let long = "A very long track title that certainly does not fit before the tile at all";
         let t = truncate_to_width(&font, long, TRACK_PX, 150.0);

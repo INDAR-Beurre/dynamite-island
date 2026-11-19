@@ -2530,7 +2530,7 @@ fn blend_pixel(canvas: &mut [u8], w: u32, x: i32, y: i32, rgb: (u8, u8, u8), cov
 // because main.rs is not edited to share them).
 // ---------------------------------------------------------------------------
 struct TextRow {
-    glyphs: Vec<(fontdue::Metrics, Vec<u8>)>,
+    glyphs: Vec<(fontdue::Metrics, std::sync::Arc<[u8]>)>,
     width: f32,
     ascent: f32,
     height: f32,
@@ -2540,7 +2540,7 @@ fn layout_text(font: &Font, text: &str, px: f32) -> TextRow {
     let mut glyphs = Vec::new();
     let mut width = 0.0f32;
     for ch in text.chars() {
-        let (m, cov) = font.rasterize(ch, px);
+        let (m, cov) = crate::lock_timer::rasterize_cached(font, ch, px);
         width += m.advance_width;
         glyphs.push((m, cov));
     }
@@ -2549,7 +2549,7 @@ fn layout_text(font: &Font, text: &str, px: f32) -> TextRow {
 }
 
 fn text_width(font: &Font, text: &str, px: f32) -> f32 {
-    text.chars().map(|ch| font.rasterize(ch, px).0.advance_width).sum()
+    text.chars().map(|ch| crate::lock_timer::rasterize_cached(font, ch, px).0.advance_width).sum()
 }
 
 /// Draw `text` with its left edge at `x`, top of the line box at `y_top`.
@@ -2627,7 +2627,7 @@ fn draw_icon(
     rgb: (u8, u8, u8),
 ) {
     if let (Some(font), Some(ch)) = (icon_font, icon_char(name)) {
-        let (m, cov) = font.rasterize(ch, px);
+        let (m, cov) = crate::lock_timer::rasterize_cached(font, ch, px);
         // Glyph top row, same formula as main.rs:
         //   top = baseline - ymin - height, centre = baseline - ymin - height/2
         // so baseline = cy + ymin + height/2, and top simplifies to cy - height/2.

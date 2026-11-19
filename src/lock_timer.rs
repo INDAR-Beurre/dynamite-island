@@ -76,10 +76,11 @@
 //!   critic's ±0.5 tolerance (sub-logical nudges quantise to physical rows
 //!   at scale 1.5, so do not chase it).
 //!
-//! => `CLOCK_PX` / `TEXT_PX` must be **17.0**, not 13.0.
-//! (Weight-independence note: the calc is for the default Light-300
-//! instance fontdue loads; switching to a Bold static file keeps cap
-//! height 700, so 17.0 still holds.)
+//! => the size is a function of the pill: `text_px(pill_h)` =
+//! pill_h * 0.357 * (2048/1510) (0.357 = reference cap/pill ratio,
+//! 1510/2048 = Inter's digit cap in em). At 24 that is 11.6, at 28
+//! 13.56; the old fixed 17.0/14.4 was tuned to one pill height and
+//! measured 0.39 instead of 0.357 once the pill grew.
 //!
 //! # (c) Wiring into main.rs
 //!
@@ -99,7 +100,8 @@
 //! // no 1 s tick — the clock needs no per-second redraw.
 //! ```
 //!
-//! CLOCK_PX: 13.0 -> lock_timer::TEXT_PX (17.0).
+//! The clock now uses `text_px(pill_h)` and the static Inter-Medium
+//! instance (wght 550) from assets/fonts; the old fixed const is gone.
 
 // ---------------------------------------------------------------------------
 // Sizes
@@ -109,12 +111,12 @@
 pub const LOCK_W: u32 = 54;
 pub const LOCK_H: u32 = 24;
 
-/// Clock size for the collapsed pill (A2/A3): Inter's digit cap is
-/// 1510/2048 em, so 14.4 puts the clock cap at 10.6 logical px =
-/// 0.379 of the 28 px pill (target 0.375).
-pub const TEXT_PX: f32 = 14.4;
-/// Alias kept so call sites can name the intent.
-pub const CLOCK_PX: f32 = TEXT_PX;
+/// Clock size DERIVED from the pill height (F-E): reference cap/pill
+/// ratio 0.357, Inter digit cap 1510/2048 em. Linear, so a 2x canvas
+/// can pass its doubled height and get the doubled size.
+pub fn text_px(pill_h: f32) -> f32 {
+    pill_h * 0.357 * (2048.0 / 1510.0)
+}
 
 /// Expected lock-icon bbox in design-space px (54x24 canvas), for the
 /// geometry measurer / harsh critics: (x0, y0, x1, y1).
@@ -205,23 +207,31 @@ pub fn draw_lock_icon(canvas: &mut [u8], w: u32, h: u32) {
     }
 }
 
-/// Rasterised glyphs, keyed on (char, px bits): glyph bitmaps depend on
-/// nothing else, so the pill's five glyphs stop re-rasterising per frame.
+/// Rasterised glyphs, keyed on (FONT identity, char, px bits). The font
+/// id is essential: icon fonts and text fonts share codepoints at the
+/// same px, and a shared cache without it renders the wrong symbol.
+/// Value is Arc so a hit is a refcount bump, not a memcpy.
 static GLYPHS: std::sync::LazyLock<
-    std::sync::Mutex<std::collections::HashMap<(char, u32), (fontdue::Metrics, Vec<u8>)>>,
+    std::sync::Mutex<
+        std::collections::HashMap<(usize, char, u32), (fontdue::Metrics, std::sync::Arc<[u8]>)>,
+    >,
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
 pub(crate) fn rasterize_cached(
     font: &fontdue::Font,
     ch: char,
     px: f32,
-) -> (fontdue::Metrics, Vec<u8>) {
-    let key = (ch, px.to_bits());
+) -> (fontdue::Metrics, std::sync::Arc<[u8]>) {
+    // Fonts here are process-lifetime (Island field / OnceLocks), so the
+    // address is a stable identity; a dropped-and-reallocated Font at the
+    // same address would alias, which cannot happen for these callers.
+    let key = (font as *const fontdue::Font as usize, ch, px.to_bits());
     if let Ok(mut cache) = GLYPHS.lock() {
         if let Some((m, cov)) = cache.get(&key) {
             return (*m, cov.clone());
         }
         let (m, cov) = font.rasterize(ch, px);
+        let cov: std::sync::Arc<[u8]> = cov.into();
         // Bounded: the pill/menu sets are tiny, but a dynamic label must
         // never grow this map forever.
         if cache.len() >= 512 {
@@ -230,7 +240,8 @@ pub(crate) fn rasterize_cached(
         cache.insert(key, (m, cov.clone()));
         return (m, cov);
     }
-    font.rasterize(ch, px)
+    let (m, cov) = font.rasterize(ch, px);
+    (m, cov.into())
 }
 
 /// Centre `text` in the canvas at `px` size, Quicksand via fontdue.
@@ -251,7 +262,7 @@ pub fn draw_text_centred(
     let (wf, hf) = (w as f32, h as f32);
     // Layout: total advance width + line metrics (duplicated from main.rs
     // on purpose — this module must stay drop-in with no cross-refs).
-    let mut glyphs: Vec<(fontdue::Metrics, Vec<u8>)> = Vec::new();
+    let mut glyphs: Vec<(fontdue::Metrics, std::sync::Arc<[u8]>)> = Vec::new();
     let mut width = 0.0f32;
     for ch in text.chars() {
         let (m, cov) = rasterize_cached(font, ch, px);
@@ -301,5 +312,5 @@ pub fn draw_collapsed(
     font: &fontdue::Font,
     clock_text: &str,
 ) {
-    draw_text_centred(canvas, w, h, font, clock_text, TEXT_PX)
+    draw_text_centred(canvas, w, h, font, clock_text, text_px(h as f32))
 }

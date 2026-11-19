@@ -621,7 +621,7 @@ fn stroke_rounded_rect(
     }
 }
 
-fn fill_rect(canvas: &mut [u8], w: u32, h: u32, x0: f32, y0: f32, x1: f32, y1: f32, rgb: (u8, u8, u8)) {
+fn fill_rect(canvas: &mut [u8], w: u32, _h: u32, x0: f32, y0: f32, x1: f32, y1: f32, rgb: (u8, u8, u8)) {
     for y in (y0.floor() as i32)..(y1.ceil() as i32) {
         for x in (x0.floor() as i32)..(x1.ceil() as i32) {
             blend_pixel(canvas, w, x, y, rgb, 1.0);
@@ -629,7 +629,7 @@ fn fill_rect(canvas: &mut [u8], w: u32, h: u32, x0: f32, y0: f32, x1: f32, y1: f
     }
 }
 
-fn fill_circle(canvas: &mut [u8], w: u32, h: u32, cx: f32, cy: f32, r: f32, rgb: (u8, u8, u8)) {
+fn fill_circle(canvas: &mut [u8], w: u32, _h: u32, cx: f32, cy: f32, r: f32, rgb: (u8, u8, u8)) {
     let x0 = (cx - r - 1.0).floor() as i32;
     let x1 = (cx + r + 1.0).ceil() as i32;
     let y0 = (cy - r - 1.0).floor() as i32;
@@ -794,7 +794,7 @@ fn fill_triangle(
 // (private helpers duplicated here because main.rs is not edited).
 // ---------------------------------------------------------------------------
 struct TextRow {
-    glyphs: Vec<(fontdue::Metrics, Vec<u8>)>,
+    glyphs: Vec<(fontdue::Metrics, std::sync::Arc<[u8]>)>,
     width: f32,
     ascent: f32,
 }
@@ -803,7 +803,7 @@ fn layout_text(font: &Font, text: &str, px: f32) -> TextRow {
     let mut glyphs = Vec::new();
     let mut width = 0.0f32;
     for ch in text.chars() {
-        let (m, cov) = font.rasterize(ch, px);
+        let (m, cov) = crate::lock_timer::rasterize_cached(font, ch, px);
         width += m.advance_width;
         glyphs.push((m, cov));
     }
@@ -820,7 +820,7 @@ fn layout_text(font: &Font, text: &str, px: f32) -> TextRow {
 
 fn text_width(font: &Font, text: &str, px: f32) -> f32 {
     text.chars()
-        .map(|ch| font.rasterize(ch, px).0.advance_width)
+        .map(|ch| crate::lock_timer::rasterize_cached(font, ch, px).0.advance_width)
         .sum()
 }
 
@@ -836,7 +836,7 @@ fn truncate_to_width(font: &Font, text: &str, px: f32, max_w: f32) -> String {
     let mut w = 0.0f32;
     let mut cut = false;
     for ch in text.chars() {
-        let cw = font.rasterize(ch, px).0.advance_width;
+        let cw = crate::lock_timer::rasterize_cached(font, ch, px).0.advance_width;
         if w + cw + ellipsis_w > max_w {
             cut = true;
             break;
@@ -935,7 +935,7 @@ fn draw_font_glyph(
     cy: f32,
     rgb: (u8, u8, u8),
 ) {
-    let (m, cov) = icon.rasterize(ch, px);
+    let (m, cov) = crate::lock_timer::rasterize_cached(icon, ch, px);
     if m.width == 0 || m.height == 0 {
         return;
     }

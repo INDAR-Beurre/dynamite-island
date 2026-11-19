@@ -344,18 +344,25 @@ fn wallpaper_path() -> PathBuf {
     PathBuf::from(home).join(".config/mango/wallpaper/wallpaper.png")
 }
 
-/// Blurred wallpaper in logical screen coords: RGB, LOGICAL_W x LOGICAL_H.
+/// Blurred wallpaper in logical screen coords: RGB. Stored at half
+/// logical resolution (`w` x `h`, 1.1 MB) because it is only ever
+/// sampled as a BLURRED colour: the extra 3.4 MB of a full-resolution
+/// copy bought nothing visible and Pss is gated.
 pub struct BlurredWallpaper {
     pub data: Vec<u8>,
+    pub w: usize,
+    pub h: usize,
 }
 
 impl BlurredWallpaper {
     /// Nearest sample at logical screen coords (clamped to the screen).
     /// The buffer is already blurred, so nearest is smooth enough.
     pub fn sample(&self, sx: f32, sy: f32) -> [u8; 3] {
-        let x = (sx.floor() as i32).clamp(0, LOGICAL_W as i32 - 1) as usize;
-        let y = (sy.floor() as i32).clamp(0, LOGICAL_H as i32 - 1) as usize;
-        let i = (y * LOGICAL_W + x) * 3;
+        let fx = sx * self.w as f32 / LOGICAL_W as f32;
+        let fy = sy * self.h as f32 / LOGICAL_H as f32;
+        let x = (fx.floor() as i32).clamp(0, self.w as i32 - 1) as usize;
+        let y = (fy.floor() as i32).clamp(0, self.h as i32 - 1) as usize;
+        let i = (y * self.w + x) * 3;
         [self.data[i], self.data[i + 1], self.data[i + 2]]
     }
 
@@ -475,7 +482,16 @@ fn probe_loop() {
                 }
             }
         }
-        std::thread::sleep(std::time::Duration::from_millis(1000));
+        // Idle cost (F-H): a full-frame probe is a grim fork plus a
+        // ~10 MB PPM read and a 752x501 blur. At 1 s that alone held
+        // the panel at ~2.5% average CPU against a <1.5% gate, and a
+        // 2 s sample kept catching the burst. The frozen frame only
+        // feeds the collapsed pill's frost, which itself only redraws
+        // on the minute boundary / a fingerprint change, so probing
+        // once a minute keeps the frost fresh for the draw that uses
+        // it at a ~1/30 duty cycle. reload and tag changes refresh
+        // eagerly through the other paths.
+        std::thread::sleep(std::time::Duration::from_millis(60_000));
     }
 }
 
@@ -756,7 +772,31 @@ fn load_and_blur(path: &Path) -> Option<BlurredWallpaper> {
         scratch.clear();
         scratch.shrink_to_fit();
     }
-    Some(BlurredWallpaper { data: logical })
+    Some(halve_rgb(&logical, w, h))
+}
+
+/// 2x2 box-average an RGB buffer (dims must be even), halving both
+/// axes. Used once on the blurred wallpaper: the frost sampler only
+/// needs a smooth colour field, not logical-pixel fidelity.
+fn halve_rgb(src: &[u8], w: usize, h: usize) -> BlurredWallpaper {
+    debug_assert_eq!(w % 2, 0);
+    debug_assert_eq!(h % 2, 0);
+    let (hw, hh) = (w / 2, h / 2);
+    let mut out = vec![0u8; hw * hh * 3];
+    for y in 0..hh {
+        for x in 0..hw {
+            for c in 0..3 {
+                let i = (y * 2) * w * 3 + (x * 2) * 3 + c;
+                let j = i + w * 3;
+                let sum = src[i] as u32
+                    + src[i + 3] as u32
+                    + src[j] as u32
+                    + src[j + 3] as u32;
+                out[(y * hw + x) * 3 + c] = ((sum + 2) / 4) as u8;
+            }
+        }
+    }
+    BlurredWallpaper { data: out, w: hw, h: hh }
 }
 
 /// Decode a JPEG wallpaper straight to logical screen size (iter88):
@@ -1261,6 +1301,8 @@ mod tests {
     fn sample_clamps_to_screen() {
         let bw = BlurredWallpaper {
             data: vec![9u8; LOGICAL_W * LOGICAL_H * 3],
+            w: LOGICAL_W,
+            h: LOGICAL_H,
         };
         assert_eq!(bw.sample(-5.0, -5.0), [9, 9, 9]);
         assert_eq!(bw.sample(99999.0, 99999.0), [9, 9, 9]);
@@ -1387,7 +1429,11 @@ mod tests {
             px[1] = 180;
             px[2] = 150;
         }
-        let bw = BlurredWallpaper { data };
+        let bw = BlurredWallpaper {
+            data,
+            w: LOGICAL_W,
+            h: LOGICAL_H,
+        };
         assert_eq!(bw.sample_frost(752.0, 27.0), neutralise_sample([210, 180, 150]));
     }
 
@@ -1433,7 +1479,8 @@ mod tests {
         std::fs::write(&path, include_bytes!("test-assets/tiny-4x3.jpg")).unwrap();
         assert_eq!(file_format(&path), Some(ImgFormat::Jpeg));
         let bw = load_and_blur(&path).expect("JPEG bytes in wallpaper.png must load");
-        assert_eq!(bw.data.len(), LOGICAL_W * LOGICAL_H * 3);
+        assert_eq!(bw.data.len(), (LOGICAL_W / 2) * (LOGICAL_H / 2) * 3);
+        assert_eq!((bw.w, bw.h), (LOGICAL_W / 2, LOGICAL_H / 2));
         let bad = dir.join("wallpaper.bin");
         std::fs::write(&bad, b"not an image at all").unwrap();
         assert_eq!(file_format(&bad), None);

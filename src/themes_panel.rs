@@ -720,14 +720,14 @@ fn fade_thumb_left(canvas: &mut [u8], w: u32, h: u32) {
 // (private helpers duplicated here because main.rs is not edited).
 // ---------------------------------------------------------------------------
 struct TextRow {
-    glyphs: Vec<(fontdue::Metrics, Vec<u8>)>,
+    glyphs: Vec<(fontdue::Metrics, std::sync::Arc<[u8]>)>,
     ascent: f32,
 }
 
 fn layout_text(font: &Font, text: &str, px: f32) -> TextRow {
     let mut glyphs = Vec::new();
     for ch in text.chars() {
-        let (m, cov) = font.rasterize(ch, px);
+        let (m, cov) = crate::lock_timer::rasterize_cached(font, ch, px);
         glyphs.push((m, cov));
     }
     let ascent = font
@@ -739,7 +739,7 @@ fn layout_text(font: &Font, text: &str, px: f32) -> TextRow {
 
 fn text_width(font: &Font, text: &str, px: f32) -> f32 {
     text.chars()
-        .map(|ch| font.rasterize(ch, px).0.advance_width)
+        .map(|ch| crate::lock_timer::rasterize_cached(font, ch, px).0.advance_width)
         .sum()
 }
 
@@ -975,7 +975,7 @@ fn truncate_to_width(font: &Font, text: &str, px: f32, max_w: f32) -> String {
     let mut out = String::new();
     let mut w = 0.0f32;
     for ch in text.chars() {
-        let cw = font.rasterize(ch, px).0.advance_width;
+        let cw = crate::lock_timer::rasterize_cached(font, ch, px).0.advance_width;
         if w + cw + ellipsis_w > max_w {
             break;
         }

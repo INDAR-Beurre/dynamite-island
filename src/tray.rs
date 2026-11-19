@@ -90,6 +90,10 @@ pub struct TrayItemSnapshot {
     pub title: String,
     pub status: String,
     pub icon: Option<Vec<u8>>,
+    /// Native 32x32 variant for the 2x top row (F-G). The old path
+    /// box-averaged the app's 44x44 IconPixmap down to 16 px and then
+    /// upscaled it, which is why the tray glyph read as a muddy blob.
+    pub icon32: Option<Vec<u8>>,
     pub icon_name: String,
     pub has_menu: bool,
     pub menu_path: Option<String>,
@@ -338,6 +342,15 @@ pub fn pick_pixmap(pixmaps: &[(i32, i32, Vec<u8>)]) -> Option<&(i32, i32, Vec<u8
 /// alpha. Sources already 16x16 convert directly; anything else is
 /// box-averaged down.
 pub fn pixmap_to_rgba16(p: &(i32, i32, Vec<u8>)) -> Option<Vec<u8>> {
+    pixmap_to_rgba(p, 16)
+}
+
+/// 32x32 variant for the 2x top row (F-G).
+pub fn pixmap_to_rgba32(p: &(i32, i32, Vec<u8>)) -> Option<Vec<u8>> {
+    pixmap_to_rgba(p, 32)
+}
+
+fn pixmap_to_rgba(p: &(i32, i32, Vec<u8>), n: usize) -> Option<Vec<u8>> {
     let (w, h) = (p.0 as usize, p.1 as usize);
     if w == 0 || h == 0 || p.2.len() < w * h * 4 {
         return None;
@@ -357,10 +370,10 @@ pub fn pixmap_to_rgba16(p: &(i32, i32, Vec<u8>)) -> Option<Vec<u8>> {
         rgba[i * 4 + 2] = b;
         rgba[i * 4 + 3] = a;
     }
-    if w == 16 && h == 16 {
+    if w == n && h == n {
         return Some(rgba);
     }
-    Some(downscale_rgba(&rgba, w, h, 16, 16))
+    Some(downscale_rgba(&rgba, w, h, n, n))
 }
 
 /// Box-average downscale of straight-alpha RGBA8 to (dw, dh).
@@ -714,9 +727,11 @@ fn register_item(
         .unwrap_or_default();
     // Icon: IconPixmap first (authoritative), IconName lookup second.
     let mut icon = None;
+    let mut icon32 = None;
     if let Ok(pixmaps) = proxy.get_property::<Vec<(i32, i32, Vec<u8>)>>("IconPixmap") {
         if let Some(p) = pick_pixmap(&pixmaps) {
             icon = pixmap_to_rgba16(p);
+            icon32 = pixmap_to_rgba32(p);
         }
     }
     let icon_name: String = proxy.get_property("IconName").unwrap_or_default();
@@ -738,6 +753,7 @@ fn register_item(
         title,
         status,
         icon,
+        icon32,
         icon_name,
         has_menu,
         menu_path: if has_menu { Some(menu) } else { None },
@@ -972,21 +988,23 @@ fn tray_run(
                 let status: Result<String, _> = p.get_property("Status");
                 let title: Result<String, _> = p.get_property("Title");
                 let icon_name: Result<String, _> = p.get_property("IconName");
-                let mut new_icon: Option<Option<Vec<u8>>> = None;
+                let mut new_icon: Option<(Option<Vec<u8>>, Option<Vec<u8>>)> = None;
                 if let Ok(n) = &icon_name {
                     if *n != old_icon_name {
                         let mut icon = None;
+                        let mut icon32 = None;
                         if let Ok(pix) =
                             p.get_property::<Vec<(i32, i32, Vec<u8>)>>("IconPixmap")
                         {
                             if let Some(px) = pick_pixmap(&pix) {
                                 icon = pixmap_to_rgba16(px);
+                                icon32 = pixmap_to_rgba32(px);
                             }
                         }
                         if icon.is_none() && !n.is_empty() {
                             icon = lookup_theme_icon(n, &mut icon_cache);
                         }
-                        new_icon = Some(icon);
+                        new_icon = Some((icon, icon32));
                     }
                 }
                 let mut st = tray_state().write().unwrap();
@@ -1014,8 +1032,9 @@ fn tray_run(
                             changed = true;
                         }
                     }
-                    if let Some(icon) = new_icon {
+                    if let Some((icon, icon32)) = new_icon {
                         it.icon = icon;
+                        it.icon32 = icon32;
                         changed = true;
                     }
                     if changed {
@@ -1149,6 +1168,176 @@ fn draw_placeholder_disc(
             }
         }
         pen += gm.advance_width;
+    }
+}
+
+/// Flat two-tone composite of a square RGBA icon at device
+/// resolution (F-G): the source colour is discarded, alpha becomes
+/// coverage, and one near-white ink is laid over the background. The
+/// tray glyph then matches the clock's monochrome treatment instead of
+/// introducing a second, painted look.
+fn blit_rgba_flat(
+    canvas: &mut [u8],
+    bw: u32,
+    bh: u32,
+    x0: i32,
+    y0: i32,
+    rgba: &[u8],
+    n: usize,
+) {
+    const INK: (f32, f32, f32) = (232.0, 234.0, 237.0);
+    if rgba.len() < n * n * 4 {
+        return;
+    }
+    for sy in 0..n as i32 {
+        let y = y0 + sy;
+        if y < 0 || y >= bh as i32 {
+            continue;
+        }
+        for sx in 0..n as i32 {
+            let x = x0 + sx;
+            if x < 0 || x >= bw as i32 {
+                continue;
+            }
+            let si = (sy as usize * n + sx as usize) * 4;
+            let sa = rgba[si + 3] as f32 / 255.0;
+            if sa <= 0.0 {
+                continue;
+            }
+            let i = ((y as u32 * bw + x as u32) * 4) as usize;
+            let inv = 1.0 - sa;
+            canvas[i] = (INK.2 * sa + canvas[i] as f32 * inv) as u8;
+            canvas[i + 1] = (INK.1 * sa + canvas[i + 1] as f32 * inv) as u8;
+            canvas[i + 2] = (INK.0 * sa + canvas[i + 2] as f32 * inv) as u8;
+            canvas[i + 3] = 255;
+        }
+    }
+}
+
+/// 16 px theme icon scaled to device resolution by nearest sample —
+/// only used when a theme lookup (not a native IconPixmap) supplied
+/// the icon.
+fn blit_rgba16_scaled(canvas: &mut [u8], bw: u32, bh: u32, x0: i32, y0: i32, rgba: &[u8], s: f32) {
+    if rgba.len() < 16 * 16 * 4 {
+        return;
+    }
+    let n = (16.0 * s).round() as i32;
+    for dy in 0..n {
+        for dx in 0..n {
+            let sx = ((dx as f32 / s) as usize).min(15);
+            let sy = ((dy as f32 / s) as usize).min(15);
+            let si = (sy * 16 + sx) * 4;
+            let sa = rgba[si + 3] as f32 / 255.0;
+            if sa <= 0.0 {
+                continue;
+            }
+            let x = x0 + dx;
+            let y = y0 + dy;
+            if x < 0 || y < 0 || x >= bw as i32 || y >= bh as i32 {
+                continue;
+            }
+            let i = ((y as u32 * bw + x as u32) * 4) as usize;
+            let inv = 1.0 - sa;
+            canvas[i] = (232.0 * sa + canvas[i] as f32 * inv) as u8;
+            canvas[i + 1] = (234.0 * sa + canvas[i + 1] as f32 * inv) as u8;
+            canvas[i + 2] = (237.0 * sa + canvas[i + 2] as f32 * inv) as u8;
+            canvas[i + 3] = 255;
+        }
+    }
+}
+
+/// Placeholder at device resolution: flat Ø16 disc (no shadow, no rim)
+/// with the item's initial, same treatment as the workspace numbers.
+fn draw_placeholder_disc_scaled(
+    canvas: &mut [u8],
+    bw: u32,
+    bh: u32,
+    cx: f32,
+    cy: f32,
+    font: &fontdue::Font,
+    label: &str,
+    s: f32,
+) {
+    let r = 8.0 * s;
+    let (fr, fg, fb) = (28u8, 30u8, 34u8);
+    let x0 = ((cx - r - 1.0).floor() as i32).max(0);
+    let x1 = ((cx + r + 1.0).ceil() as i32).min(bw as i32);
+    let y0 = ((cy - r - 1.0).floor() as i32).max(0);
+    let y1 = ((cy + r + 1.0).ceil() as i32).min(bh as i32);
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
+            let d = ((px - cx).powi(2) + (py - cy).powi(2)).sqrt();
+            let a = (r + 0.5 - d).clamp(0.0, 1.0);
+            if a <= 0.0 {
+                continue;
+            }
+            let i = ((y as u32 * bw + x as u32) * 4) as usize;
+            let inv = 1.0 - a;
+            canvas[i] = (fb as f32 * a + canvas[i] as f32 * inv) as u8;
+            canvas[i + 1] = (fg as f32 * a + canvas[i + 1] as f32 * inv) as u8;
+            canvas[i + 2] = (fr as f32 * a + canvas[i + 2] as f32 * inv) as u8;
+            canvas[i + 3] = ((a + canvas[i + 3] as f32 / 255.0 * inv) * 255.0) as u8;
+        }
+    }
+    let initial: String = label.chars().next().unwrap_or('?').to_uppercase().collect();
+    let row = crate::layout_text(font, &initial, 11.0 * s);
+    let baseline = cy - row.height / 2.0 + row.ascent;
+    let mut pen = cx - row.width / 2.0;
+    for (gm, cov) in &row.glyphs {
+        let gx0 = (pen + gm.xmin as f32).round() as i32;
+        let gy0 = (baseline - gm.ymin as f32 - gm.height as f32).round() as i32;
+        for gy in 0..gm.height as i32 {
+            for gx in 0..gm.width as i32 {
+                let (px_x, px_y) = (gx0 + gx, gy0 + gy);
+                if px_x < 0 || px_y < 0 || px_x >= bw as i32 || px_y >= bh as i32 {
+                    continue;
+                }
+                let cc = cov[(gy as usize) * gm.width + gx as usize] as f32 / 255.0;
+                if cc <= 0.0 {
+                    continue;
+                }
+                let i = ((px_y as u32 * bw + px_x as u32) * 4) as usize;
+                let inv = 1.0 - cc;
+                canvas[i] = (237.0 * cc + canvas[i] as f32 * inv) as u8;
+                canvas[i + 1] = (234.0 * cc + canvas[i + 1] as f32 * inv) as u8;
+                canvas[i + 2] = (232.0 * cc + canvas[i + 2] as f32 * inv) as u8;
+                canvas[i + 3] = 255;
+            }
+        }
+        pen += gm.advance_width;
+    }
+}
+
+/// Device-resolution tray cluster for the settled top row (F-G): the
+/// same centres as draw_tray_cluster_stage, at `scale` device px per
+/// logical px, with the native 32x32 IconPixmap when available.
+pub fn draw_tray_cluster_2x(canvas: &mut [u8], bw: u32, bh: u32, font: &fontdue::Font, scale: f32) {
+    let items = snapshot();
+    if items.is_empty() {
+        return;
+    }
+    for (i, (cx, cy)) in crate::tray_icon_centres(items.len()).iter().enumerate() {
+        let it = &items[i];
+        let (dcx, dcy) = (cx * scale, cy * scale);
+        let (x0, y0) = (
+            (cx - 8.0).round() as i32 * 2,
+            (cy - 8.0).round() as i32 * 2,
+        );
+        match (&it.icon32, &it.icon) {
+            (Some(rgba), _) => blit_rgba_flat(canvas, bw, bh, x0, y0, rgba, 32),
+            (None, Some(rgba)) => blit_rgba16_scaled(canvas, bw, bh, x0, y0, rgba, scale),
+            (None, None) => draw_placeholder_disc_scaled(
+                canvas,
+                bw,
+                bh,
+                dcx,
+                dcy,
+                font,
+                if it.title.is_empty() { &it.id } else { &it.title },
+                scale,
+            ),
+        }
     }
 }
 
@@ -1291,14 +1480,19 @@ mod tests {
         // (merge iter108: C's rect includes the 4 px bridge to the
         // pill — B's old (630, 7, 56, 16) omitted it). Centres/rect
         // come from main.rs (iter108-C), the single source of truth.
+        let cy = crate::ws_cy();
         let centres = crate::tray_icon_centres(3);
-        assert_eq!(centres, vec![(638.0, 15.0), (658.0, 15.0), (678.0, 15.0)]);
+        assert_eq!(
+            centres,
+            vec![(638.0, cy), (658.0, cy), (678.0, cy)]
+        );
         let rect = crate::tray_cluster_rect(3).unwrap();
-        assert_eq!(rect, (626.0, 7.0, 60.0, 16.0));
+        assert_eq!(rect, (626.0, cy - 8.0, 60.0, 16.0));
         assert_eq!(crate::tray_cluster_rect(0), None);
-        // y 7..23 sits inside the reserved strip (3..27) like the
-        // workspace cluster.
-        assert!(rect.1 >= 3.0 && rect.1 + rect.3 <= 27.0);
+        // The cluster sits inside the reserved strip (pill_h tall, from
+        // STAGE_PAD_TOP) like the workspace cluster.
+        let strip = crate::STAGE_PAD_TOP + crate::pill_h();
+        assert!(rect.1 >= crate::STAGE_PAD_TOP && rect.1 + rect.3 <= strip);
     }
 
     #[test]
@@ -1309,14 +1503,17 @@ mod tests {
         // holds: all eight points are on-axis, where square and
         // circular agree (the corner case is what differs, and the
         // circular form is the specified one).
-        assert_eq!(crate::tray_hit_stage((638.0, 15.0), 2), Some(0));
-        assert_eq!(crate::tray_hit_stage((658.0, 15.0), 2), Some(1));
-        assert_eq!(crate::tray_hit_stage((647.0, 15.0), 2), Some(0)); // +9 slack edge
-        assert_eq!(crate::tray_hit_stage((648.0, 15.0), 2), None); // gap between icons
-        assert_eq!(crate::tray_hit_stage((700.0, 15.0), 2), None);
-        assert_eq!(crate::tray_hit_stage((638.0, 15.0), 0), None);
-        assert_eq!(crate::tray_hit_stage((638.0, 24.0), 2), Some(0)); // slack edge, inclusive
-        assert_eq!(crate::tray_hit_stage((638.0, 25.0), 2), None); // below icon+slack
+        let cy = crate::ws_cy();
+                let cy = crate::ws_cy();
+        let cy64 = cy as f64;
+assert_eq!(crate::tray_hit_stage((638.0, cy64), 2), Some(0));
+        assert_eq!(crate::tray_hit_stage((658.0, cy64), 2), Some(1));
+        assert_eq!(crate::tray_hit_stage((647.0, cy64), 2), Some(0)); // +9 slack edge
+        assert_eq!(crate::tray_hit_stage((648.0, cy64), 2), None); // gap between icons
+        assert_eq!(crate::tray_hit_stage((700.0, cy64), 2), None);
+        assert_eq!(crate::tray_hit_stage((638.0, cy64), 0), None);
+        assert_eq!(crate::tray_hit_stage((638.0, cy64 + 9.0), 2), Some(0)); // slack edge, inclusive
+        assert_eq!(crate::tray_hit_stage((638.0, cy64 + 10.0), 2), None); // below icon+slack
     }
 
     #[test]
