@@ -1716,3 +1716,32 @@ is reported as what it is instead of being folded into "growth".
 **`leak_shape_selftest.py` now 11/11**, including the real i49 curve as a
 fixture: flat, one-time step, and reloads of 2/5/25/60/100 samples all PASS;
 linear +0.25, slow +0.08, and steps at i110/i170 all FAIL.
+
+## Two implementation children on DISJOINT file sets (deliberate)
+The skill's default is one fixer owning the tree. The owner asked for far more
+parallelism, and the lock-screen material work touches exactly one file that
+the panel/motion fixer never opens. Split rather than serialise:
+
+| child | model | scope | forbidden |
+|---|---|---|---|
+| r1d `c91d640c` | logfare/glm-5.3 | main.rs, morph.rs, power/themes/launcher/wallpaper panels, tools/dictation | src/lockscreen.rs, scripts/ |
+| lockscreen `8fb8a00d` | fasfas-ai/deepseek-v4.1-flash | **src/lockscreen.rs only** | every file the other owns |
+
+Both briefs name the other's files explicitly. Parent verifies the union diff
+after both report, and re-runs the full suite on the merged tree — a green
+build in each child is not a green build together.
+
+### Lockscreen spec handed over (brief §9, parent-verified)
+- Veil is **vertical**, not radial: reference transmits ≈.78 at BOTH x100 and
+  x2400 at y720. Fitted recipe reproduces all nine measured patch alphas with
+  **mean abs error 0.0037, max 0.0105**; plateau .224, top .430, bottom .507.
+  Our centre alpha .22 was already right — only the shape is wrong.
+- Backdrop is **sharp** (best-fit global Gaussian radius 0.6 device px, a
+  compression artefact). A 20-24 px global blur belongs to the OLD design.
+- Clock is **wallpaper-sampled frosting inside the glyphs**, per-channel
+  affine over a 24 px-blurred registered wallpaper, RGB RMSE **2.39/255** over
+  114,924 interior pixels. The white base + cyan specular at
+  `src/lockscreen.rs:1000-1009` must both go.
+- Reference stems 76-77 px on a 279 px cap = **stroke/cap .272-.276**, much
+  heavier than Quicksand-Bold. Author states SF Compact Display. Report the
+  gap; do not claim a font ID from shape correlation (tried and retracted).
