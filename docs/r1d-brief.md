@@ -667,3 +667,29 @@ disc centre y  0.5175 of panel height
 Express all of these as **fractions of the panel**, not pixel constants, so
 they survive the width change and any future `expanded_height` edit.
 `src/power_panel.rs:91-98` currently produces pitch 90/99/99/90 — non-uniform.
+
+---
+
+## 18. HARD SAFETY CONSTRAINT — the owner is away; never lock him out
+
+Owner, verbatim intent: he is going to school and cannot recover the machine
+if it locks. **A lockout is the one unrecoverable failure in this run.**
+
+Verified present state — preserve all of it:
+- `src/main.rs:2620` — "no ext-session-lock surface, no PAM". Keep it true.
+- No PAM crate in `Cargo.toml`. **Do not add one.**
+- No `ext-session-lock-v1` binding. **Do not add one.**
+- `sync_keyboard_interactivity` (`src/main.rs:4472`) returns
+  `KeyboardInteractivity::None` for `Lockscreen`; `Exclusive` only for
+  `MENU_CYCLE` + `TrayMenu`. **Do not make Lockscreen Exclusive.**
+
+Proven live: with `lockscreen` active, `mmsg get all-clients` still returned
+the owner's window and `mmsg get all-tags` still answered. Input and focus
+stay with the compositor. `unlock` → `collapsed` recovered cleanly.
+
+`swaylock` is installed and bound to **SUPER+CTRL+l** in
+`~/.config/mango/bind.conf:13`. That is the owner's real locker with his own
+password. **Never invoke it, rebind it, or wire the panel to it.**
+
+Testing the lock visual: socket words `lockscreen` / `unlock` only, and
+always finish with `collapsed`.
