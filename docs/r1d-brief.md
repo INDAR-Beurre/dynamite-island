@@ -693,3 +693,100 @@ password. **Never invoke it, rebind it, or wire the panel to it.**
 
 Testing the lock visual: socket words `lockscreen` / `unlock` only, and
 always finish with `collapsed`.
+
+---
+
+## 19. BLOCKER (owner-reported) — square-cornered wallpaper hole in every open panel
+
+The owner sent a screenshot and said: *"these halos are real … when I close it,
+instead of having something round, it's cubic and it doesn't even fit the
+theme."* **I had earlier dismissed these as composite paste artefacts. That
+was wrong. Retracted.** Reproduced on the live desktop, unscaled.
+
+### Evidence
+
+`/tmp/settled_themes.png` (Themes fully settled, 1.5 s after the word):
+wallpaper-coloured pixels **inside** the panel form a hard-edged rectangle
+
+```
+x [954, 1211]   y [22, 56]      258 x 35 device px
+```
+
+Same x-extent on **every** row 22..56 ⇒ square corners, not a capsule.
+Edges are a **single-pixel step**, no AA:
+
+```
+y=40:  x953 (0,0,0) | x954 (106,135,149)   <- wallpaper
+       x1211 (103,133,145) | x1212 (0,0,0)
+x1100: y55 (0,0,0) | y56 (21,27,29) | y57 (103,132,138)
+```
+
+Surrounding panel is correctly `(0,0,0)`. The collapsed state is clean
+(no hole) — this only appears when a panel is open.
+
+### Mechanism
+
+`src/main.rs:5839-5842`:
+
+```rust
+let pill_on_top = matches!(self.state, IslandState::Collapsed | IslandState::TrayMenu)
+    || MENU_CYCLE.contains(&self.state);
+if self.morph.is_none() && pill_on_top {
+    draw_top_row_2x(canvas, bw, bh, self.font, active_tag_cached());
+}
+```
+
+`draw_top_row_2x` (`src/main.rs:2700`) begins by **zeroing its whole rect**
+(`src/main.rs:2716-2720`):
+
+```rust
+let row = top_row_rect();
+let drow = clip_rect((row.0*2, row.1*2, row.2*2, row.3*2), bw, bh);
+for y in drow.1..drow.3 {
+    let i = ((y as usize) * bw as usize + drow.0 as usize) * 4;
+    canvas[i..i + ((drow.2 - drow.0) as usize) * 4].fill(0);
+}
+```
+
+Zeroing BGRA sets **alpha = 0**, i.e. fully transparent — it punches a
+rectangular hole straight through the panel that was just upscaled into
+`canvas`. It then repaints only the **collapsed pill capsule** plus the
+workspace discs and tray icons. Everything else in that rect stays
+transparent, so the wallpaper shows through with square corners.
+
+`top_row_rect()` spans workspace-disc-left → tray-right, which is **wider
+than the pill**, so the hole is wider than the capsule that covers part of it.
+
+### Why it survived r1d §0
+
+Before §0 the pill hung **above** the panel, so the cleared strip sat over
+wallpaper anyway and the hole was invisible. §0 made the panel grow **out of
+the pill** (shared top edge), so that same strip now lies **inside** the
+panel. The clear became a hole the moment the geometry changed.
+
+### Fix shape
+
+The 2× top-row repaint must not clear where a panel is underneath. Options,
+pick one and justify it:
+
+1. Only run `draw_top_row_2x` when the top row is genuinely over wallpaper
+   (`Collapsed`, and `TrayMenu` if it keeps the hang-below origin). For
+   `MENU_CYCLE` states the panel already owns those pixels — the migrating
+   clock is drawn by the morph/panel path.
+2. Keep the 2× path for menu states but **composite over** instead of
+   clearing: replace the `fill(0)` with a per-pixel alpha-over of the newly
+   rendered glyphs/discs onto the existing canvas, so nothing is punched out.
+
+Option 1 is smaller and matches §0's intent. Whichever you choose, the
+requirement is: **no pixel inside an open panel's rounded rect may have
+alpha < the panel's own fill alpha.**
+
+### Test to add
+
+A settled-frame assertion: for each `MENU_CYCLE` state, capture, locate the
+panel rect, and assert that no interior pixel shows wallpaper. The detector
+already exists in this section — wallpaper is `B > R + 20 && mean > 60`
+against a panel fill of `(0,0,0)`. Assert the count is **0**.
+
+Note the existing `iter109_tests` suite passes with this bug present, so a
+new test is required, not just a re-run.
