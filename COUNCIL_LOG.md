@@ -925,3 +925,8 @@ While re-running the mutation gate the control kept failing. Root cause is **not
 **Conclusion: the fixer's in-flight build is in a broken intermediate state.** Every screen-based measurement taken since ~01:38 is invalid, and the mutation-gate control failures after that point are environment, not product. Earlier measurements (scorecard rows, the 1207-test PASS, the profiler table) predate it and stand.
 **Harness gap this exposed:** the suite asserts socket liveness but never asserts **surface presence**. Added to the r1c brief as a required gate: a run is INVALID unless `mmsg get all-layers` lists the panel.
 **Config drift noted:** the fixer set `collapsed_width=67` (log line at 01:31:31), not the 74 the parent derived for a 111-device-px pill. 67×1.5 ≈ 100 px. Must be re-measured once a working binary is back.
+
+### r1 panel extension (parent, chain 4t)
+Two more slots dispatched on surfaces the in-flight fixer is not touching:
+- **#24 expanded-panel pixel match**, `magpie/group/gemini-4-hydrogen` (vision-confirmed 5/5), thinking high — uuid `588d73cf`. First critic ever to compare an OPENED panel to the reference; every prior slot scored only the collapsed pill. Briefed with the parent-measured panel table and told to re-verify it, told the accent hallucination story so it does not repeat it, and told to check `mmsg get all-layers` before trusting any screenshot.
+- **#25 Rust idiom + panic safety**, `magpie/fasfas-ai/deepseek-v4.1-flash` (a third DeepSeek route, unused so far), thinking high — uuid `32961825`. Retry of the twice-RPM-failed #19. Lens chosen because `panic = "abort"` makes any reachable unwrap a desktop-killing bug, not a style nit. Told to skip cargo while another build holds the target lock.
