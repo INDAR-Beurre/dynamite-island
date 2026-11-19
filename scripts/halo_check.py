@@ -81,16 +81,29 @@ def check(state, settle=1.5):
         return {"state": state, "error": "no panel found"}
     x0, y0, x1, y1 = bb
     # Inset past the rounded corners so the capsule's own AA is not counted.
-    r = max(4, (y1 - y0) // 8)
+    # Inset past the rounded corners AND the panel's own content margin.
+    r = 12
     sub = a[y0 + r:y1 - r + 1, x0 + r:x1 - r + 1]
-    wall = (sub[:, :, 2] > sub[:, :, 0] + 20) & (sub.mean(axis=2) > 60)
-    n = int(wall.sum())
-    out = {"state": state, "panel": [x0, y0, x1, y1], "hole_px": n}
-    if n:
-        ys, xs = np.where(wall)
-        out["hole_bbox"] = [int(xs.min() + x0 + r), int(ys.min() + y0 + r),
-                            int(xs.max() + x0 + r), int(ys.max() + y0 + r)]
-    return out
+    lum = sub.mean(axis=2)
+    # Threshold alone cannot work: the frost blur desaturates the leaked
+    # wallpaper to (129,131,135) and the cloud behind it reaches 215, so it
+    # overlaps both the accent icons and the white glyphs. Shape separates
+    # them instead -- glyphs are thin strokes and die under a 7x7 erosion,
+    # while a 258x35 hole survives it.
+    from scipy import ndimage
+    er = ndimage.binary_erosion(lum > 40, np.ones((7, 7)))
+    lab, nlab = ndimage.label(er)
+    blobs = []
+    for i, sl in enumerate(ndimage.find_objects(lab)):
+        size = int((lab[sl] == i + 1).sum())
+        if size > 150:
+            blobs.append({
+                "px": size,
+                "bbox": [int(sl[1].start + x0 + r), int(sl[0].start + y0 + r),
+                         int(sl[1].stop + x0 + r), int(sl[0].stop + y0 + r)],
+            })
+    return {"state": state, "panel": [x0, y0, x1, y1],
+            "hole_px": sum(b["px"] for b in blobs), "blobs": blobs}
 
 
 def main():
