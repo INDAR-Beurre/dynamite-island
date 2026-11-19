@@ -108,9 +108,13 @@ class App:
 
     # -- process -----------------------------------------------------
     def socket_owner(self):
-        """PID that currently owns the bound socket path (via `ss`)."""
+        """PID that currently owns the bound socket path.
+
+        `ss -xa` (ALL, not -l): a bound SOCK_DGRAM has no LISTEN state, so
+        `ss -xlp` never showed it and this returned None on a healthy panel.
+        """
         try:
-            out = subprocess.run(["ss", "-xlp"], capture_output=True,
+            out = subprocess.run(["ss", "-xap"], capture_output=True,
                                  text=True, timeout=5).stdout
         except Exception:
             return None
@@ -122,15 +126,22 @@ class App:
         return None
 
     def socket_kind(self):
-        """'dgram' | 'stream' | None, read from ss."""
+        """'dgram' | 'stream' | None.
+
+        Read /proc/net/unix, not `ss -xlp`: -l lists only LISTEN sockets and a
+        bound SOCK_DGRAM has no LISTEN state, so it never appeared and this
+        returned None on a perfectly healthy panel. Column 4 of /proc/net/unix
+        is the socket type (0002 = SOCK_DGRAM, 0001 = SOCK_STREAM).
+        """
         try:
-            out = subprocess.run(["ss", "-xlp"], capture_output=True,
-                                 text=True, timeout=5).stdout
-        except Exception:
+            for line in open("/proc/net/unix").read().splitlines():
+                if not line.endswith("dynamite-rust.sock"):
+                    continue
+                f = line.split()
+                if len(f) >= 5:
+                    return {"0002": "dgram", "0001": "stream"}.get(f[4])
+        except OSError:
             return None
-        for line in out.splitlines():
-            if "dynamite-rust.sock" in line:
-                return "dgram" if line.startswith("u_dgr") else "stream"
         return None
 
     def refresh(self, wait=0.0):

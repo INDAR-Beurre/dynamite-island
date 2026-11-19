@@ -1446,3 +1446,17 @@ fails loudly instead of silently changing the span.
 Also fixed a stale call site: `draw_workspace_disc` gained an `occupied: bool`
 parameter (the fixer's client_count work) and the test still passed 8 args.
 **`cargo test --release --offline`: 304 passed, 0 failed.**
+
+## Instrument repair #13 — `ss -xlp` cannot see a bound datagram socket
+Two failures in the 04:26 full run (`RESULT FAIL: liveness, protocol_fuzz`,
+tests=1207 asserts=6179 fails=2) were **the harness, not the panel**:
+`socket kind is None, expected dgram` and `socket is no longer a datagram socket`.
+**Cause**: `ss -xlp` — the `-l` flag lists only **LISTEN** sockets, and a bound
+`SOCK_DGRAM` has no LISTEN state. It never appeared. `ss -xa` shows it plainly:
+`u_dgr ESTAB … /run/user/1000/dynamite-rust.sock`. `/proc/net/unix` had it all along.
+This also silently broke `socket_owner()` (same `-xlp`), so the harness could not
+identify the process it was driving — it fell back to `pgrep`.
+**Fix**: `socket_kind()` reads `/proc/net/unix` column 4 (`0002`=dgram, `0001`=stream);
+`socket_owner()` uses `ss -xap`. Verified both against the live pid (28880).
+**Why it only surfaced now**: the earlier runs used a panel started before the
+single-instance guard; the restart changed which socket state `ss` reported.
