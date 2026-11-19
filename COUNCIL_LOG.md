@@ -1851,3 +1851,49 @@ a single live capture. Also: measuring the live clock needs the capsule's
 bright wallpaper in the corners and reported cap 36 in a 36 px pill.
 
 Still open: morph pose count 2–3 vs reference 14; halo §19; lock material.
+
+## r1d — HALO FIXED (owner-reported blocker §19), verified
+
+Fixer excluded MENU_CYCLE from the `draw_top_row_2x` path
+(`src/main.rs:5844`: `pill_on_top = Collapsed | TrayMenu`). Verified live:
+- former hole region x[954,1212] y[22,57] now p10/p50/p90 luminance
+  **0.0 / 1.7 / 8.3**, max 12.0, **zero pixels above 40** (was wallpaper
+  at 103-135 with hard single-pixel edges).
+- `python3 scripts/halo_check.py` → **holes: 0, RESULT PASS** across all
+  8 menu states; `collapsed` negative control PASS.
+- Evidence committed: `docs/reference/halo-fix.png` (before/after).
+
+**Instrument repair #21 — the halo detector had two false positives.**
+ControlCenter's slider thumb is solid (243,243,243), 212 eroded px; a
+wallpaper thumbnail is a photo, 2092 px. Both are legitimate CONTENT.
+A hole is where the wallpaper itself shows through, so the detector now
+compares each blob against the same pixels in a collapsed-state capture.
+Measured separation: **real hole diff ~1, thumb 65.9, thumbnail 133.8**;
+threshold 12. Without this the gate would have failed a correct build.
+
+## r1d — critic #24 expanded panels: score 4
+
+Two blockers, four majors. Verified against the tree by the parent:
+- **stale**: pill-hangs-below blocker (panel now starts y=20, same as
+  reference y=19) and the unequal power pitches (BTN_CX now
+  [61.35,109.7,158,206.3,254.7] → pitches 48.35/48.30/48.30/48.40, uniform).
+- **live**: `src/main.rs:5830-5834` — both branches of `if frame_running`
+  call `upscale_canvas_2x_region`; every expanded panel is 1×-rasterised
+  then bilinearly doubled. Laplacian variance Power "Lock" 1609 vs
+  reference 10222 (6.4×).
+- **live**: `C_HIGHLIGHT = (5,22,60)` #05163C in themes/launcher/clipboard
+  vs reference neutral (25,26,31).
+- **live**: panel fill 6-8 grey vs reference pure 0; `FROST_ALPHA_MENU 0.92`
+  + `FROST_FLOOR 2.5`.
+- **live**: Power 400 logical = 26.6% W vs reference 21.0%; label 251 vs 222.
+
+## r1d — TREE STATE AT BLOCK END (important)
+
+**38 test failures** (`cargo test --release --offline`, 278 passed).
+All are the fixer mid-flight: the frost tests still assert the OLD 0.92
+alpha while the code now returns pure black; geometry tests still assert
+`panel_top_menu() == STAGE_PAD_TOP + pill_h + 2` (=33) while §0 landed
+oy=3; `library::tests::accent_is_fixed_periwinkle_for_any_theme` expects
+(124,162,245) while the measured reference value (121,161,245) was applied.
+Build: **0 errors, 66 warnings**. Fixer r1d still running (glm-5.3, max).
+Do NOT score this tree until those tests are reconciled.
