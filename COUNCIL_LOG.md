@@ -1395,3 +1395,13 @@ instances exist must be discarded**.
 **Action for the next round**: the harnesses should refuse to measure when more than one
 instance is live, exactly as they already refuse when none is. Filing that as an
 instrument gap rather than silently re-running.
+**Instrument repair #12 (commit after `030dd54`)**: both harnesses now refuse an
+ambiguous target, not just an absent one.
+- `scripts/stress/stress.py::surface_present()` counts `"name":"dynamite-rust"` entries;
+  returns True only for exactly 1, and the INVALID message names the real reason
+  ("2 dynamite instances are live; they share one socket path…").
+- `scripts/measure.py::pid()` switched from `pgrep -n -x` (newest) to `pgrep -x` and
+  returns `None` when more than one matches, so RSS/CPU are never attributed to the
+  wrong process.
+Stubbed self-test: none → False/0, one → True/1, two → False/2. All three PASS.
+Existing self-tests still PASS (measure 5, witness 10, stress detector 7).
