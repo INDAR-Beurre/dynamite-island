@@ -514,3 +514,48 @@ the collapsed size.
 
 Date and weather content fades in later in the morph (visible from frame 174),
 i.e. content opacity lags geometry. That is a second, slower track.
+
+---
+
+## 15. MAJOR (RAM) — the stage is sized for panels you are about to shrink
+
+`STAGE_W = 1176, STAGE_H = 636` (`src/main.rs:457`) is derived from the widest
+panel (Wallpaper 1008) and tallest (ControlCenter 447), plus nav discs and
+shadow slack. **Every buffer in the process is sized from it:**
+
+| buffer | formula | now |
+|---|---|---|
+| `scale_scratch` (stage_1x) | `w*h*4` | 2.99 MB |
+| shm pool, 2 slots | `2 * (2w)*(2h)*4` | **23.93 MB** |
+| morph scratch pair | `2 * w*h*4` | 5.98 MB |
+
+Measured live, idle, single instance: **Pss 28.5 MB** (anon 24.8, file 3.4,
+shmem 0.3), VmRSS 31.7 MB, heap 13.3 MB. The shm mapping is 23.9 MB reserved
+but only **616 kB resident** — the pool is reservation, not cost, until touched.
+
+After §1 shrinks the panels the stage no longer needs to be this big:
+
+```
+widest  Wallpaper 853   tallest ControlCenter 447
+STAGE_W = 853 + 2*38 = 929      (was 1176)
+STAGE_H = 447 + 3 + 60 = 510    (was 636)
+```
+
+| buffer | now | at 929×510 | saved |
+|---|---|---|---|
+| stage_1x | 2.99 MB | 1.90 MB | 1.09 MB |
+| shm pool (2 slots) | 23.93 MB | 15.16 MB | **8.77 MB** |
+| morph pair | 5.98 MB | 3.79 MB | 2.19 MB |
+
+**Do this after §1, not before** — the stage must still contain the largest
+panel plus nav discs (`NAV_DISC_R 14 + NAV_DISC_GAP 8` = 36 beyond each edge,
+`STAGE_PAD_X 38`) and the panel-shadow tails. §0 removes the `+28` pill offset,
+which also frees vertical space.
+
+**Verify, do not assume**: `src/main.rs:7202-7207` computes an input-region
+bottom from `panel_top_menu() + 525.0` — a hardcoded 525 that must be revisited
+when the stage shrinks, or clicks will land outside the surface.
+
+`free_morph_scratches` (`src/main.rs:4202`) already returns the morph pair with
+`malloc_trim(0)` on collapse; keep that. Do not drop `SLOT_RING` to 1 — the
+`pool.canvas(&slot) -> None` case *is* the frame back-pressure.
