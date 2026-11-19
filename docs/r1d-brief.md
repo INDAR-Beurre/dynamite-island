@@ -600,3 +600,34 @@ is a fixed #BCD6FF (§11). **They are different materials — do not unify them.
 
 Clock geometry here: ink 220×70 on a 640×360 frame = **0.344 of screen width**,
 0.194 of height. Matches the 0.34 measured on the first video.
+
+### 16a. Lock clock material — challenged, then CONFIRMED as frosting
+
+I nearly retracted §9. The reasoning and why it was wrong, so you do not
+repeat it:
+
+- 89.5 % of interior clock pixels sit within **3/255** of a flat (87,235,206);
+  p5..p95 is R 87..101, G 232..235, B 204..208. That looks like a flat colour.
+- The 3.6 % outliers are confined to **x[905,982]** — the left edge.
+- Fitting alpha-over there gave α≈0.69 from G and B, but the flat region needs
+  α=1.0. **A single alpha cannot satisfy both**, so "semi-transparent flat
+  colour" is ruled out.
+- Cropping that region (`/tmp/q_lockleft.png`) shows the **red bird and brown
+  pole bleeding through, blurred, inside the "1" glyph**. That is frosting.
+- The flat majority is simply because most of the clock sits over flat teal sky.
+
+**Fit comparison on 112,574 interior pixels:**
+
+| model | RGB RMSE |
+|---|---|
+| flat #57EBCE | **15.101** |
+| §9 affine over blurred wallpaper | **5.281** |
+
+§9 stands. (5.281 here vs 2.39 in the original spec because I used the
+unlocked frame `l20.png` as the wallpaper source rather than a registered
+copy — the registration matters. Use the registered wallpaper.)
+
+**Correction to §16's framing:** the two videos use the **same wallpaper**
+(overall means 21.9/84.3/71.5 vs 20.8/84.1/70.0). The veil and sharpness
+confirmations are still independent captures, but the clock-colour
+comparison is **not** an independent wallpaper test. Do not claim it as one.
