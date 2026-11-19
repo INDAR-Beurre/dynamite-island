@@ -644,31 +644,129 @@ pub(crate) fn upscale_canvas_2x_region(
     let dx1 = (r.2 as usize) * 2;
     let dy0 = (r.1 as usize) * 2;
     let dy1 = (r.3 as usize) * 2;
+    let row_bytes = bw * 4;
+    // r1f: destination rows are independent, so the region is split into
+    // row bands. Banding is bit-exact by construction (each band runs the
+    // same per-pixel math on its own rows, and the source rows are read
+    // only). At 6 threads a 504x366 panel union went from 24.2 ms to
+    // 7.6 ms against a 16.7 ms frame budget; that is what let the morph
+    // keep one pose per vblank.
+    //
+    // Small regions stay sequential: the pill's ~18k px cost 0.03 ms to
+    // begin with, and thread startup would be the whole cost.
+    let work = (dy1 - dy0) as u64 * (dx1 - dx0) as u64;
+    let threads = if work < 150_000 {
+        1
+    } else {
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+            .min(6)
+            .min((dy1 - dy0) / 8 + 1)
+    };
+    if threads < 2 {
+        upscale_rows(src, wu, hu, dst, dy0, dy1, dx0, dx1, row_bytes);
+        return;
+    }
+    let band = (dy1 - dy0).div_ceil(threads);
+    std::thread::scope(|scope| {
+        let mut off = 0usize;
+        let mut bands = dst[(dy0 * row_bytes)..(dy1 * row_bytes)].chunks_mut(band * row_bytes);
+        while off < dy1 - dy0 {
+            let a = dy0 + off;
+            let b = (a + band).min(dy1);
+            off += band;
+            if let Some(slice) = bands.next() {
+                let src = &src[..];
+                scope.spawn(move || {
+                    // Absolute destination index: `slice` starts at row `a`.
+                    upscale_rows_band(src, wu, hu, slice, a, b, dx0, dx1, row_bytes);
+                });
+            }
+        }
+    });
+}
+
+/// One band of `upscale_canvas_2x_region` rows, writing at ABSOLUTE
+/// destination indices into a stage-sized `dst` (sequential path).
+fn upscale_rows(
+    src: &[u8],
+    wu: usize,
+    hu: usize,
+    dst: &mut [u8],
+    dy0: usize,
+    dy1: usize,
+    dx0: usize,
+    dx1: usize,
+    row_bytes: usize,
+) {
     for dy in dy0..dy1 {
-        let j = dy / 2;
-        let (y0, y1, wy0, wy1) = if dy % 2 == 0 {
-            (j.saturating_sub(1), j, 1u32, 3u32)
-        } else {
-            (j, (j + 1).min(hu - 1), 3u32, 1u32)
-        };
+        let (y0, y1, wy0, wy1) = upscale_row_blend(dy, hu);
+        let rb0 = y0 * wu * 4;
+        let rb1 = y1 * wu * 4;
         for dx in dx0..dx1 {
-            let i = dx / 2;
-            let (x0, x1, wx0, wx1) = if dx % 2 == 0 {
-                (i.saturating_sub(1), i, 1u32, 3u32)
-            } else {
-                (i, (i + 1).min(wu - 1), 3u32, 1u32)
-            };
-            let di = (dy * bw + dx) * 4;
+            let (x0, x1, wx0, wx1) = upscale_col_blend(dx, wu);
+            let di = dy * row_bytes + dx * 4;
+            let (top_i, bot_i) = ((rb0 + x0 * 4), (rb0 + x1 * 4));
+            let (top_j, bot_j) = ((rb1 + x0 * 4), (rb1 + x1 * 4));
             for c in 0..4 {
-                let s00 = src[(y0 * wu + x0) * 4 + c] as u32;
-                let s01 = src[(y0 * wu + x1) * 4 + c] as u32;
-                let s10 = src[(y1 * wu + x0) * 4 + c] as u32;
-                let s11 = src[(y1 * wu + x1) * 4 + c] as u32;
-                let top = (wx0 * s00 + wx1 * s01 + 2) / 4;
-                let bot = (wx0 * s10 + wx1 * s11 + 2) / 4;
+                let top = (wx0 * src[top_i + c] as u32 + wx1 * src[bot_i + c] as u32 + 2) / 4;
+                let bot = (wx0 * src[top_j + c] as u32 + wx1 * src[bot_j + c] as u32 + 2) / 4;
                 dst[di + c] = ((wy0 * top + wy1 * bot + 2) / 4) as u8;
             }
         }
+    }
+}
+
+/// Same math, writing into a dst slice whose row 0 IS band row `a`.
+fn upscale_rows_band(
+    src: &[u8],
+    wu: usize,
+    hu: usize,
+    band: &mut [u8],
+    a: usize,
+    b: usize,
+    dx0: usize,
+    dx1: usize,
+    row_bytes: usize,
+) {
+    let mut k = 0usize;
+    for dy in a..b {
+        let (y0, y1, wy0, wy1) = upscale_row_blend(dy, hu);
+        let rb0 = y0 * wu * 4;
+        let rb1 = y1 * wu * 4;
+        for dx in dx0..dx1 {
+            let (x0, x1, wx0, wx1) = upscale_col_blend(dx, wu);
+            let di = k * row_bytes + dx * 4;
+            let (t0, t1) = (rb0 + x0 * 4, rb0 + x1 * 4);
+            let (b0, b1) = (rb1 + x0 * 4, rb1 + x1 * 4);
+            for c in 0..4 {
+                let top = (wx0 * src[t0 + c] as u32 + wx1 * src[t1 + c] as u32 + 2) / 4;
+                let bot = (wx0 * src[b0 + c] as u32 + wx1 * src[b1 + c] as u32 + 2) / 4;
+                band[di + c] = ((wy0 * top + wy1 * bot + 2) / 4) as u8;
+            }
+        }
+        k += 1;
+    }
+}
+
+/// Source rows + vertical weights feeding destination row `dy`.
+fn upscale_row_blend(dy: usize, hu: usize) -> (usize, usize, u32, u32) {
+    let j = dy / 2;
+    if dy % 2 == 0 {
+        (j.saturating_sub(1), j, 1u32, 3u32)
+    } else {
+        (j, (j + 1).min(hu - 1), 3u32, 1u32)
+    }
+}
+
+/// Source columns + horizontal weights feeding destination column `dx`.
+fn upscale_col_blend(dx: usize, wu: usize) -> (usize, usize, u32, u32) {
+    let i = dx / 2;
+    if dx % 2 == 0 {
+        (i.saturating_sub(1), i, 1u32, 3u32)
+    } else {
+        (i, (i + 1).min(wu - 1), 3u32, 1u32)
     }
 }
 
@@ -2395,16 +2493,20 @@ fn load_lock_wallpaper() -> Option<Vec<u8>> {
     let home = std::env::var_os("HOME").map(PathBuf::from)?;
     let (w, h) = lockscreen_size();
     let want = w as usize * h as usize * 4;
-    match std::fs::read(
-        home.join(".cache/dynamite")
-            .join(format!("wallpaper-{w}x{h}.rgba")),
-    ) {
+    let cache = home
+        .join(".cache/dynamite")
+        .join(format!("wallpaper-{w}x{h}.rgba"));
+    match std::fs::read(&cache) {
         Ok(bytes) if bytes.len() == want => {
-            eprintln!("dynamite-rust: lock wallpaper: {want} B cache for {w}x{h}");
+            eprintln!(
+                "dynamite-rust: lock wallpaper: cache {} for {w}x{h}",
+                cache.display()
+            );
             return Some(bytes);
         }
         Ok(bytes) => eprintln!(
-            "dynamite-rust: lock wallpaper cache is {} B, want {want} for {w}x{h}",
+            "dynamite-rust: lock wallpaper: cache {} is {} B, want {want} for {w}x{h} — decoding",
+            cache.display(),
             bytes.len()
         ),
         Err(_) => {}
@@ -2425,10 +2527,21 @@ fn load_lock_wallpaper() -> Option<Vec<u8>> {
         rgba[i * 4 + 2] = px[2];
         rgba[i * 4 + 3] = 255;
     }
-    eprintln!(
-        "dynamite-rust: lock wallpaper: decoded {} at {w}x{h}",
-        src.display()
-    );
+    // Write the cache so the next lock entry is a single read. A stale
+    // or missing cache therefore self-heals instead of needing a
+    // hand-made .rgba per exact output size (r1d finding: the 1504x1002
+    // asset silently broke the moment the output became 1504x1003).
+    match std::fs::write(&cache, &rgba) {
+        Ok(()) => eprintln!(
+            "dynamite-rust: lock wallpaper: decoded {} at {w}x{h}, cached {}",
+            src.display(),
+            cache.display()
+        ),
+        Err(e) => eprintln!(
+            "dynamite-rust: lock wallpaper: decoded {} at {w}x{h} (cache write failed: {e})",
+            src.display()
+        ),
+    }
     Some(rgba)
 }
 
@@ -3048,9 +3161,75 @@ fn redraw_panel_content_2x(
             scratch[dst..dst + dw as usize * 4]
                 .copy_from_slice(&canvas[src..src + dw as usize * 4]);
         }
+        // The capsule, its frost and the drop shadow come from the
+        // upscaled copy above; every module below draws CONTENT only
+        // (Launcher and ControlCenter additionally repaint their own
+        // capsule, which is why they are the only states whose edge is
+        // natively 2x too). TrayMenu has no scale knob yet, so it keeps
+        // the 1x-upscale path.
+        let (cal_offset, wall_selected, theme_selected) = *SELECTION.read().unwrap();
+        let (sox, soy) = stage_screen_origin();
+        let bg_origin = (sox + ox, soy + oy);
         let drew = match state {
             IslandState::Power => {
                 power_panel::draw_power_panel(scratch, dw, dh, font, icon_font, "");
+                true
+            }
+            IslandState::ControlCenter => {
+                controlcenter_panel::draw_controlcenter_panel(
+                    scratch,
+                    dw,
+                    dh,
+                    font,
+                    icon_font,
+                    &controlcenter_panel::ControlCenterData::live(),
+                    bg_origin,
+                );
+                true
+            }
+            IslandState::Calendar => {
+                calendar_panel::draw_calendar_panel_with_offset(
+                    scratch, dw, dh, font, cal_offset,
+                );
+                true
+            }
+            IslandState::Music => {
+                music_panel::draw_music_panel(
+                    scratch,
+                    dw,
+                    dh,
+                    font,
+                    icon_font,
+                    &music_panel::live_cached(),
+                );
+                true
+            }
+            IslandState::Launcher => {
+                launcher_panel::live_draw_data(|data| {
+                    launcher_panel::draw_launcher_panel_with_data(
+                        scratch,
+                        dw,
+                        dh,
+                        font,
+                        icon_font,
+                        data,
+                        bg_origin,
+                    );
+                });
+                true
+            }
+            IslandState::Clipboard => {
+                clipboard_panel::draw_clipboard_panel(scratch, dw, dh, font, font);
+                true
+            }
+            IslandState::Wallpaper => {
+                wallpaper_panel::draw_wallpaper_panel_live(
+                    scratch, dw, dh, font, wall_selected,
+                );
+                true
+            }
+            IslandState::Themes => {
+                themes_panel::draw_themes_panel_live(scratch, dw, dh, font, theme_selected);
                 true
             }
             _ => false,
@@ -3061,8 +3240,17 @@ fn redraw_panel_content_2x(
         for y in 0..dh as usize {
             let dst = (((dy as usize + y) * bw as usize) + dx as usize) * 4;
             let src = y * dw as usize * 4;
-            canvas[dst..dst + dw as usize * 4]
-                .copy_from_slice(&scratch[src..src + dw as usize * 4]);
+            for x in 0..dw as usize {
+                let (si, di) = (src + x * 4, dst + x * 4);
+                // Only pixels the module actually painted. Launcher and
+                // ControlCenter own their capsule and write alpha 0 in
+                // the rounded corners; copying that back would erase the
+                // drop shadow sitting in the panel's bbox corners. Alpha
+                // 0 means "nothing here", so keep the upscaled pixel.
+                if scratch[si + 3] != 0 {
+                    canvas[di..di + 4].copy_from_slice(&scratch[si..si + 4]);
+                }
+            }
         }
         true
     })
@@ -3822,6 +4010,10 @@ fn draw_morph_frame(
     // rects (plus the previous frame's), so a morph frame costs its
     // capsule's pixels instead of the whole 1176x636 stage.
     region: (i32, i32, i32, i32),
+    // r1f: false on every frame after the first of one morph — the
+    // endpoint scratches are frame-invariant, so the caller keeps them
+    // (see Island::morph_ep_gen).
+    render_endpoints: bool,
 ) {
     let rgn = clip_rect(region, w, h);
     let wf = w as f32;
@@ -3851,30 +4043,34 @@ fn draw_morph_frame(
     // neither scratch draws it.
     let migrating_clock = (from_state == IslandState::Collapsed)
         != (to_state == IslandState::Collapsed);
-    draw_state_into(
-        scratch_from,
-        w,
-        h,
-        from_state,
-        frame.outgoing_scale,
-        font,
-        icon_from,
-        lock_data,
-        lock_wallpaper,
-        migrating_clock,
-    );
-    draw_state_into(
-        scratch_to,
-        w,
-        h,
-        to_state,
-        frame.incoming_scale,
-        font,
-        icon_to,
-        lock_data,
-        lock_wallpaper,
-        migrating_clock,
-    );
+    if render_endpoints {
+        draw_state_into(
+            scratch_from,
+            w,
+            h,
+            from_state,
+            frame.outgoing_scale,
+            font,
+            icon_from,
+            lock_data,
+            lock_wallpaper,
+            migrating_clock,
+        );
+    }
+    if render_endpoints {
+        draw_state_into(
+            scratch_to,
+            w,
+            h,
+            to_state,
+            frame.incoming_scale,
+            font,
+            icon_to,
+            lock_data,
+            lock_wallpaper,
+            migrating_clock,
+        );
+    }
     // Fake frost (iter29): the capsule base is the blurred wallpaper
     // under the interpolated flat fill (opaque interior — no sharp
     // bleed); endpoint scratches composite over it below.
@@ -3893,18 +4089,51 @@ fn draw_morph_frame(
         Some(bw) => bw.sample_frost_uniform(msox + ox + fw / 2.0, msoy + oy + fh / 2.0),
         None => [0, 0, 0],
     };
+    // r1f: the SDF was 5 of this loop's 8.5 ms per frame. Inside the
+    // flat part of the rounded rect the coverage is EXACTLY 1.0
+    // (d <= -0.5 always holds there, since the flat interior is
+    // already `fr` away from the edge), so the distance field is only
+    // needed on the four edge bands and the corner rings. Hoisting it
+    // is bit-exact, not an approximation — every other term below
+    // still runs for every pixel.
+    let cx = ox + fw * 0.5;
+    let cy = oy + fh * 0.5;
+    let inner_w = fw * 0.5 - fr - 0.5;
+    let inner_h = fh * 0.5 - fr - 0.5;
+    let (ix0, ix1) = if inner_w > 0.0 {
+        let a = ((cx - inner_w).ceil() as i32).max(rgn.0);
+        (a, ((cx + inner_w).floor() as i32 + 1).max(a).min(rgn.2))
+    } else {
+        (rgn.0, rgn.0)
+    };
+    let (iy0, iy1) = if inner_h > 0.0 {
+        let a = ((cy - inner_h).ceil() as i32).max(rgn.1);
+        (a, ((cy + inner_h).floor() as i32 + 1).max(a).min(rgn.3))
+    } else {
+        (rgn.1, rgn.1)
+    };
     for y in rgn.1..rgn.3 {
         // Bounded to the damage rect: pixels outside it are neither
         // upscaled nor damaged, so the previous frame's identical bytes
         // stay on screen. Only `dmg` is ever written here.
+        let flat_row = y >= iy0 && y < iy1;
         for x in rgn.0..rgn.2 {
-            let a = rounded_rect_alpha(
-                x as f32 + 0.5 - ox,
-                y as f32 + 0.5 - oy,
-                fw,
-                fh,
-                fr,
-            );
+            // r1f: one SDF instead of two — rounded_rect_alpha is exactly
+            // (0.5 - rounded_rect_sdf).clamp(0,1), and the blur branch
+            // below needs the same distance anyway.
+            let a = if flat_row && x >= ix0 && x < ix1 {
+                1.0
+            } else {
+                let d = rounded_rect_sdf(
+                    x as f32 + 0.5 - ox,
+                    y as f32 + 0.5 - oy,
+                    fw,
+                    fh,
+                    fr,
+                );
+                let a = (0.5 - d).clamp(0.0, 1.0);
+                a
+            };
             let i = ((y as u32 * w + x as u32) * 4) as usize;
             canvas[i] = 0;
             canvas[i + 1] = 0;
@@ -3920,14 +4149,14 @@ fn draw_morph_frame(
             }
             // Fake frost (iter29): blurred wallpaper under the
             // interpolated flat fill replaces the black base.
-            if morph_live.is_some() || morph_bg.is_some() {
-                let d = rounded_rect_sdf(
-                    x as f32 + 0.5 - ox,
-                    y as f32 + 0.5 - oy,
-                    fw,
-                    fh,
-                    fr,
-                );
+            if morph_fill_alpha >= 1.0 {
+                // menu<->menu: frost_fill_px_blur returns pure black at
+                // full tint, so the two 2D backdrop lookups per pixel
+                // would be discarded — skip them (r1f).
+                canvas[i] = 0;
+                canvas[i + 1] = 0;
+                canvas[i + 2] = 0;
+            } else if morph_live.is_some() || morph_bg.is_some() {
                 // iter103: same shared fill as the settled panels —
                 // neutralised sample + its local mean (deviation 0
                 // on the uniform fallback).
@@ -3940,7 +4169,8 @@ fn draw_morph_frame(
                 };
                 let p = frost_fill_px_blur(
                     a,
-                    d,
+                    // unused by frost_fill_px_blur (its `_d`)
+                    0.0,
                     x as f32 + 0.5 - ox,
                     y as f32 + 0.5 - oy,
                     fw,
@@ -4245,6 +4475,23 @@ struct Island {
     // while a morph runs.
     morph_scratch_from: Vec<u8>,
     morph_scratch_to: Vec<u8>,
+    /// r1f: the endpoint scratch pair is frame-invariant — `draw()` ignores
+    /// `content_scale` (only the Collapsed clock uses it, and that is
+    /// suppressed whenever a Collapsed endpoint exists), so both scratches
+    /// hold the same pixels for every frame of one morph. Rendering them
+    /// once per morph instead of once per frame is what buys the pose count
+    /// (they cost 11-15 ms each). `morph_gen` counts morphs, `morph_ep_gen`
+    /// records which one the scratches hold; equal => reuse, skip the
+    /// render and the clear.
+    morph_gen: u64,
+    morph_ep_gen: Option<u64>,
+    /// r1f: absolute deadline of the next morph tick. The chain used to
+    /// re-arm `ToDuration(16 ms)` AFTER each frame's work, so timer
+    /// lateness accumulated: 16 ms + ~19 ms of work + vblank
+    /// quantisation = 41 ms per pose (3-5 poses in 233 ms). Scheduling
+    /// the next tick on a fixed grid instead keeps the period at
+    /// max(work, 16 ms) ~= 20 ms (>=11 poses).
+    morph_tick: Option<std::time::Instant>,
     /// iter108: 1x stage scratch the frame is drawn into before the 2x
     /// upscale into the shm buffer (RENDER_SCALE). Grow-only, reused
     /// across frames; stage-sized (1176x636x4 ~ 3 MB), lockscreen-sized
@@ -5318,6 +5565,10 @@ impl Island {
             new_state,
             self.morph.is_some()
         );
+        // r1f: every new morph (retargets included) invalidates the
+        // cached endpoint scratches — the endpoints' live content may
+        // have moved on since the previous morph.
+        self.morph_gen = self.morph_gen.wrapping_add(1);
         self.morph_from_state = self.state;
         self.state = new_state;
         if new_state != IslandState::ControlCenter
@@ -5444,6 +5695,7 @@ impl Island {
         if let Some(tok) = self.morph_token.take() {
             let _ = loop_handle.remove(tok);
         }
+        self.morph_tick = Some(std::time::Instant::now() + Duration::from_millis(16));
         // 16 ms one-shot timer chain (design doc section 6.3 option (a)):
         // the callback draws the wall-clock morph frame via
         // draw_if_ready (iter24: draw-only — the stage never resizes,
@@ -5462,6 +5714,7 @@ impl Island {
                     // iter24: no set_size — the stage never resizes.
                     // Just draw the settled frame (which also rebuilds
                     // the input region for the settled geometry).
+                    state.morph_tick = None;
                     state.draw_if_ready();
                     // D8 (iter13): the timer source is dropped by this
                     // return — clear the token too, so the next
@@ -5477,7 +5730,16 @@ impl Island {
                     // surface geometry lag the morph and poisoned the
                     // hit test — see the stage note at the top.)
                     state.draw_if_ready();
-                    TimeoutAction::ToDuration(Duration::from_millis(16))
+                    // r1f: fixed 16 ms grid, so a frame's own cost does
+                    // not push every following frame back by that cost
+                    // (see morph_tick). Never schedule in the past: on a
+                    // frame slower than a grid step the next tick is a
+                    // short step ahead, not an immediate catch-up storm.
+                    let base = state.morph_tick.unwrap_or(now);
+                    let next = (base + Duration::from_millis(16))
+                        .max(std::time::Instant::now() + Duration::from_millis(2));
+                    state.morph_tick = Some(next);
+                    TimeoutAction::ToInstant(next)
                 }
             },
         ) {
@@ -5682,12 +5944,37 @@ impl Island {
         // wish; CompositorHandler::frame repaints then. The 250 ms cap
         // is a safety net for a compositor that never acks a hidden
         // surface (otherwise the island would freeze mid-morph).
+        //
+        // r1f: EXCEPT while a morph runs. Waiting for the ack costs a
+        // whole vblank on top of the frame's own ~14 ms of work, which
+        // put two vblanks (33 ms) between poses and left the 233 ms
+        // morph with 3-5 poses. A morph frame may draw ahead of the
+        // outstanding ack; the two-slot ring below is what keeps that
+        // safe (with both slots held, `picked` is None and the frame
+        // callback resumes). The 12 ms floor bounds it to one pose per
+        // vblank, so it can never commit twice into the same one.
+        // r1f: EXCEPT while a morph runs. The compositor's release
+        // arrives one vblank AFTER the frame was presented, so waiting
+        // for it makes every pose cost two vblanks (33 ms => 7 poses in
+        // the 233 ms morph). A morph frame therefore draws ahead of the
+        // outstanding ack; the two-slot ring below is what keeps that
+        // safe (both slots held => `picked` is None => the frame
+        // callback resumes) and the 16 ms tick grid bounds it to one
+        // commit per vblank. Nothing else about this mechanism changes:
+        // `redraw_wanted` still coalesces and the 250 ms cap is intact.
         if let Some(at) = self.frame_pending {
-            if at.elapsed() < std::time::Duration::from_millis(250) {
+            let morphing_now = self
+                .morph
+                .as_ref()
+                .map(|m| !m.is_done(std::time::Instant::now()))
+                .unwrap_or(false);
+            if at.elapsed() < std::time::Duration::from_millis(250) && !morphing_now {
                 self.redraw_wanted = true;
                 return;
             }
-            self.frame_pending = None;
+            if !morphing_now {
+                self.frame_pending = None;
+            }
         }
         // iter30 a3b: tell the backdrop probe whether a morph is
         // running — its pill-flanking strips are covered by the
@@ -5905,14 +6192,30 @@ impl Island {
                 if self.morph_scratch_from.len() != need_from {
                     self.morph_scratch_from.resize(need_from, 0);
                 }
-                clear_rect(&mut self.morph_scratch_from, w, h, dmg);
                 // iter24: the to-scratch is stage-sized too (w, h are
                 // the stage size; the old target-panel size is gone).
                 let need_to = (w * h * 4) as usize;
                 if self.morph_scratch_to.len() != need_to {
                     self.morph_scratch_to.resize(need_to, 0);
                 }
-                clear_rect(&mut self.morph_scratch_to, w, h, dmg);
+                // r1f: render the two endpoints ONCE per morph (see
+                // morph_ep_gen). The clear covers both endpoint content
+                // rects rather than this frame's damage, because the
+                // scratches are now READ across frames — clearing only
+                // `dmg` would erase content a later frame still needs.
+                let render_endpoints = self.morph_ep_gen != Some(self.morph_gen);
+                if render_endpoints {
+                    let ep = clip_rect(
+                        union_rect(
+                            content_rect(self.morph_from_state),
+                            content_rect(self.state),
+                        ),
+                        w,
+                        h,
+                    );
+                    clear_rect(&mut self.morph_scratch_from, w, h, ep);
+                    clear_rect(&mut self.morph_scratch_to, w, h, ep);
+                }
                 draw_morph_frame(
                     stage_1x,
                     w,
@@ -5928,7 +6231,9 @@ impl Island {
                     &lock_data,
                     lock_wallpaper,
                     dmg,
+                    render_endpoints,
                 );
+                self.morph_ep_gen = Some(self.morph_gen);
             }
             _ => {
                 if morph_frame.map(|f| f.done).unwrap_or(false) {
@@ -5970,7 +6275,7 @@ impl Island {
         // over the upscaled capsule. The morph path keeps the region
         // upscale (its frames blend two panel geometries, so there is no
         // single panel-local content to redraw).
-        if false && !frame_running && self.morph.is_none() {
+        if !frame_running && self.morph.is_none() {
             redraw_panel_content_2x(
                 canvas,
                 bw,
@@ -7343,6 +7648,9 @@ fn main() {
         lock_exit_target: IslandState::Collapsed,
         morph_scratch_from: Vec::new(),
         morph_scratch_to: Vec::new(),
+        morph_gen: 0,
+        morph_ep_gen: None,
+        morph_tick: None,
         scale_scratch: Vec::new(),
         slots: Vec::new(),
         slot_bytes: 0,
@@ -9175,6 +9483,44 @@ mod iter108_tests {
                 2.0 * cy - ty as f32,
             );
             assert_profile_close(name, &prof, &ideal, NAV_DISC_R * 2.0);
+        }
+    }
+
+    #[test]
+    fn region_upscale_matches_full_upscale() {
+        // The region path hoists the horizontal blend out of the inner
+        // loop (r1f). That is only legal if it stays bit-exact against
+        // the full-stage path, so compare them on real rect shapes:
+        // a pill, a panel union and a rect that clips at both stage
+        // edges (the clamp branches).
+        let (w, h) = (STAGE_W, STAGE_H);
+        let mut src = vec![0u8; (w * h * 4) as usize];
+        for (i, v) in src.iter_mut().enumerate() {
+            *v = ((i * 37 + i / 13) % 256) as u8;
+        }
+        let full = upscale_canvas_2x(&src, w, h);
+        for r in [
+            (552, 11, 623, 40),
+            (297, 0, 879, 408),
+            (0, 0, w as i32, h as i32),
+            (0, 0, 3, 3),
+            (w as i32 - 2, h as i32 - 2, w as i32, h as i32),
+            (0, 100, 1, 101),
+            (940, 0, 950, 8),
+        ] {
+            let r = clip_rect(r, w, h);
+            let mut dst = vec![0u8; full.len()];
+            upscale_canvas_2x_region(&src, w, h, &mut dst, r);
+            for dy in (2 * r.1 as usize)..(2 * r.3 as usize) {
+                for dx in (2 * r.0 as usize)..(2 * r.2 as usize) {
+                    let i = (dy * 2 * w as usize + dx) * 4;
+                    assert_eq!(
+                        &dst[i..i + 4],
+                        &full[i..i + 4],
+                        "region {r:?} differs at device ({dx},{dy})"
+                    );
+                }
+            }
         }
     }
 

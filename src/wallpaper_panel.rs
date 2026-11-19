@@ -326,6 +326,21 @@ fn rounded_rect_alpha(x: f32, y: f32, w: f32, h: f32, r: f32) -> f32 {
 /// Source-over blend of one opaque-colour pixel at coverage `cov` (0..1).
 /// Destination is opaque inside the panel, so alpha is forced to 255 —
 /// same shortcut as main.rs.
+thread_local! {
+    /// r1f (2x): logical -> device scale for the CURRENT draw, set by the
+    /// public entry point. Thread-local because the tests draw these
+    /// primitives at arbitrary canvas sizes in parallel: it stays 1.0
+    /// outside a draw, so w == PANEL_W is byte-identical to the 1x path.
+    static SCALE: std::cell::Cell<f32> = const { std::cell::Cell::new(1.0) };
+}
+fn scale_of(_w: u32) -> f32 {
+    SCALE.with(|s| s.get())
+}
+/// Begin a draw: set the logical -> device scale (see `SCALE`).
+fn set_scale(w: u32) {
+    SCALE.with(|c| c.set(w as f32 / PANEL_W as f32));
+}
+
 fn blend_pixel(canvas: &mut [u8], w: u32, x: i32, y: i32, rgb: (u8, u8, u8), cov: f32) {
     if x < 0 || y < 0 || x >= w as i32 {
         return;
@@ -350,6 +365,9 @@ fn fill_rounded_rect(
     radius: f32,
     rgb: (u8, u8, u8),
 ) {
+    let s = scale_of(w);
+    let rect = Rect::new(rect.x * s, rect.y * s, rect.w * s, rect.h * s);
+    let radius = radius * s;
     let x0 = rect.x.floor().max(0.0) as i32;
     let y0 = rect.y.floor().max(0.0) as i32;
     let x1 = (rect.x + rect.w).ceil().min(w as f32) as i32;
@@ -381,6 +399,9 @@ fn stroke_rounded_rect(
     t: f32,
     rgb: (u8, u8, u8),
 ) {
+    let s = scale_of(w);
+    let rect = Rect::new(rect.x * s, rect.y * s, rect.w * s, rect.h * s);
+    let (radius, t) = (radius * s, t * s);
     let inner = Rect::new(rect.x + t, rect.y + t, rect.w - 2.0 * t, rect.h - 2.0 * t);
     let x0 = rect.x.floor().max(0.0) as i32;
     let y0 = rect.y.floor().max(0.0) as i32;
@@ -418,6 +439,8 @@ fn stroke_circle(
     t: f32,
     rgb: (u8, u8, u8),
 ) {
+    let s = scale_of(w);
+    let (cx, cy, r, t) = (cx * s, cy * s, r * s, t * s);
     let x0 = (cx - r - t).floor() as i32;
     let x1 = (cx + r + t).ceil() as i32;
     let y0 = (cy - r - t).floor() as i32;
@@ -492,31 +515,38 @@ fn blit_rgba(
     rgba: &[u8],
 ) {
     debug_assert_eq!(rgba.len(), (tw * th * 4) as usize);
+    // r1f (2x): the blob is 1x, so a device canvas samples it nearest
+    // (s=1 keeps the exact 1:1 blit).
+    let s = scale_of(w) as i32;
     for sy in 0..th as i32 {
-        let y = y0 + sy;
-        if y < 0 || y >= h as i32 {
-            continue;
-        }
-        for sx in 0..tw as i32 {
-            let x = x0 + sx;
-            if x < 0 || x >= w as i32 {
+        for rep_y in 0..s {
+            let y = y0 * s + sy * s + rep_y;
+            if y < 0 || y >= h as i32 {
                 continue;
             }
-            let si = (sy as usize * tw as usize + sx as usize) * 4;
-            let sa = rgba[si + 3] as f32 / 255.0;
-            if sa <= 0.0 {
-                continue;
+            for sx in 0..tw as i32 {
+                for rep_x in 0..s {
+                    let x = x0 * s + sx * s + rep_x;
+                    if x < 0 || x >= w as i32 {
+                        continue;
+                    }
+                    let si = ((sy as usize * tw as usize) + sx as usize) * 4;
+                    let sa = rgba[si + 3] as f32 / 255.0;
+                    if sa <= 0.0 {
+                        continue;
+                    }
+                    let i = ((y as u32) * w + x as u32) as usize * 4;
+                    if i + 3 >= canvas.len() {
+                        continue;
+                    }
+                    // Source is straight-alpha RGBA; dest is BGRA, opaque.
+                    let inv = 1.0 - sa;
+                    canvas[i] = (rgba[si + 2] as f32 * sa + canvas[i] as f32 * inv) as u8; // B
+                    canvas[i + 1] = (rgba[si + 1] as f32 * sa + canvas[i + 1] as f32 * inv) as u8; // G
+                    canvas[i + 2] = (rgba[si] as f32 * sa + canvas[i + 2] as f32 * inv) as u8; // R
+                    canvas[i + 3] = 255; // A
+                }
             }
-            let i = ((y as u32) * w + x as u32) as usize * 4;
-            if i + 3 >= canvas.len() {
-                continue;
-            }
-            // Source is straight-alpha RGBA; dest is BGRA, opaque.
-            let inv = 1.0 - sa;
-            canvas[i] = (rgba[si + 2] as f32 * sa + canvas[i] as f32 * inv) as u8; // B
-            canvas[i + 1] = (rgba[si + 1] as f32 * sa + canvas[i + 1] as f32 * inv) as u8; // G
-            canvas[i + 2] = (rgba[si] as f32 * sa + canvas[i + 2] as f32 * inv) as u8; // R
-            canvas[i + 3] = 255; // A
         }
     }
 }
@@ -567,11 +597,12 @@ fn draw_text(
     if text.is_empty() {
         return;
     }
-    let row = layout_text(font, text, px);
-    let baseline = y_top + row.ascent;
+    let s = scale_of(w);
+    let row = layout_text(font, text, px * s);
+    let baseline = y_top * s + row.ascent;
     let passes = if bold { 2 } else { 1 };
     for pass in 0..passes {
-        let mut pen = x + pass as f32 * 0.75;
+        let mut pen = x * s + pass as f32 * s * 0.75;
         for (m, cov) in &row.glyphs {
             let gx0 = (pen + m.xmin as f32).round() as i32;
             let gy0 = (baseline - m.ymin as f32 - m.height as f32).round() as i32;
@@ -606,7 +637,7 @@ fn draw_text_centered(
     rgb: (u8, u8, u8),
     bold: bool,
 ) {
-    let tw = text_width(font, text, px);
+    let tw = text_width(font, text, px) * scale_of(w);
     draw_text(canvas, w, h, font, text, px, cx - tw / 2.0, y_top, rgb, bold);
 }
 
@@ -640,6 +671,7 @@ pub fn draw_wallpaper_panel_with_data(
     font: &Font,
     data: &WallpaperData,
 ) {
+    set_scale(w);
     let selected = data.selected.min(FILMSTRIP_NAMES.len() - 1);
 
     // Search line — flat, NO field fill (video wins over QS).
@@ -726,6 +758,7 @@ pub fn draw_wallpaper_panel_with_data(
 
 /// Defaults: live wallpaper selected (centre), empty search.
 pub fn draw_wallpaper_panel(canvas: &mut [u8], w: u32, h: u32, font: &Font) {
+    set_scale(w);
     draw_wallpaper_panel_with_data(canvas, w, h, font, &WallpaperData::default());
 }
 
@@ -1079,6 +1112,7 @@ pub fn draw_wallpaper_panel_live(
     font: &Font,
     selected: usize,
 ) {
+    set_scale(w);
     let Some(m) = crate::library::manifest() else {
         draw_wallpaper_panel(canvas, w, h, font);
         return;

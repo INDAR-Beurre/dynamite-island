@@ -46,6 +46,37 @@ pub fn transcribe(api_key: &str, endpoint: &str, samples: &[f32]) -> Result<Stri
     Ok(text.trim().to_string())
 }
 
+/// Persist an utterance that could not be transcribed, so a 429 or a
+/// timeout never destroys the user's speech. Returns the path on success.
+/// Best-effort: a failure here must not mask the original error.
+pub fn save_failed(samples: &[f32]) -> Option<std::path::PathBuf> {
+    if samples.is_empty() {
+        return None;
+    }
+    let dir = std::env::var_os("XDG_CACHE_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".cache")))?
+        .join("static-dictation")
+        .join("failed");
+    std::fs::create_dir_all(&dir).ok()?;
+    // Keep the newest few only: this is a recovery buffer, not an archive.
+    if let Ok(rd) = std::fs::read_dir(&dir) {
+        let mut old: Vec<_> = rd.flatten().map(|e| e.path()).collect();
+        old.sort();
+        while old.len() >= 20 {
+            let p = old.remove(0);
+            let _ = std::fs::remove_file(p);
+        }
+    }
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs();
+    let path = dir.join(format!("{stamp}.wav"));
+    std::fs::write(&path, to_wav(samples)).ok()?;
+    Some(path)
+}
+
 fn to_wav(samples: &[f32]) -> Vec<u8> {
     let data_len = samples.len() * 2;
     let mut out = Vec::with_capacity(44 + data_len);

@@ -1277,7 +1277,9 @@ mod tests {
             seen[((y * LIVE_H as i32) / PROBE_PHYS_H) as usize] = true;
         }
         assert!(seen.iter().all(|&s| s));
-        assert_eq!((0 * LIVE_H as i32) / PROBE_PHYS_H, 0);
+        // The first row is covered by the loop above; asserting 0*N == 0
+        // here was a tautology (clippy::erasing_op). Keep the boundary
+        // cases that can actually move when the constants change.
         assert_eq!((3 * LIVE_H as i32) / PROBE_PHYS_H, 0);
         assert_eq!((4 * LIVE_H as i32) / PROBE_PHYS_H, 1);
         assert_eq!((1503 * LIVE_H as i32) / PROBE_PHYS_H, 500);

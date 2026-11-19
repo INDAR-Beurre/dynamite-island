@@ -98,6 +98,9 @@ fn handle_one(
                 _ => {
                     let _ = std::io::stdout().flush();
                     let _ = std::io::stderr().flush();
+                    // Leave the island collapsed: `quit` during a recording
+                    // used to wedge it expanded with frozen bars (r2 #35b).
+                    crate::dictation_hide();
                     std::process::exit(0);
                 }
             }

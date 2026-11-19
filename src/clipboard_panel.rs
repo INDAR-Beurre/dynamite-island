@@ -1369,6 +1369,21 @@ fn rounded_rect_alpha(x: f32, y: f32, w: f32, h: f32, r: f32) -> f32 {
     (0.5 - d).clamp(0.0, 1.0)
 }
 
+thread_local! {
+    /// r1f (2x): logical -> device scale for the CURRENT draw, set by the
+    /// public entry point. Thread-local because the tests draw these
+    /// primitives at arbitrary canvas sizes in parallel: it stays 1.0
+    /// outside a draw, so w == PANEL_W is byte-identical to the 1x path.
+    static SCALE: std::cell::Cell<f32> = const { std::cell::Cell::new(1.0) };
+}
+fn scale_of(_w: u32) -> f32 {
+    SCALE.with(|s| s.get())
+}
+/// Begin a draw: set the logical -> device scale (see `SCALE`).
+fn set_scale(w: u32) {
+    SCALE.with(|c| c.set(w as f32 / PANEL_W as f32));
+}
+
 fn blend_pixel(canvas: &mut [u8], w: u32, x: i32, y: i32, rgb: (u8, u8, u8), cov: f32) {
     if x < 0 || y < 0 || x >= w as i32 {
         return;
@@ -1392,6 +1407,14 @@ fn fill_rounded_rect(
     radius: f32,
     rgb: (u8, u8, u8),
 ) {
+    let s = scale_of(w);
+    let rect = ClipRect {
+        x: rect.x * s,
+        y: rect.y * s,
+        w: rect.w * s,
+        h: rect.h * s,
+    };
+    let radius = radius * s;
     let x0 = rect.x.floor().max(0.0) as i32;
     let y0 = rect.y.floor().max(0.0) as i32;
     let x1 = (rect.x + rect.w).ceil().min(w as f32) as i32;
@@ -1422,6 +1445,14 @@ fn stroke_rounded_rect(
     t: f32,
     rgb: (u8, u8, u8),
 ) {
+    let s = scale_of(w);
+    let rect = ClipRect {
+        x: rect.x * s,
+        y: rect.y * s,
+        w: rect.w * s,
+        h: rect.h * s,
+    };
+    let (radius, t) = (radius * s, t * s);
     let inner = ClipRect {
         x: rect.x + t,
         y: rect.y + t,
@@ -1454,6 +1485,8 @@ fn stroke_rounded_rect(
 }
 
 fn fill_rect(canvas: &mut [u8], w: u32, h: u32, x0: f32, y0: f32, x1: f32, y1: f32, rgb: (u8, u8, u8)) {
+    let s = scale_of(w);
+    let (x0, y0, x1, y1) = (x0 * s, y0 * s, x1 * s, y1 * s);
     for y in (y0.floor() as i32)..(y1.ceil() as i32) {
         for x in (x0.floor() as i32)..(x1.ceil() as i32) {
             blend_pixel(canvas, w, x, y, rgb, 1.0);
@@ -1462,6 +1495,8 @@ fn fill_rect(canvas: &mut [u8], w: u32, h: u32, x0: f32, y0: f32, x1: f32, y1: f
 }
 
 fn fill_circle(canvas: &mut [u8], w: u32, h: u32, cx: f32, cy: f32, r: f32, rgb: (u8, u8, u8)) {
+    let s = scale_of(w);
+    let (cx, cy, r) = (cx * s, cy * s, r * s);
     let x0 = (cx - r - 1.0).floor() as i32;
     let x1 = (cx + r + 1.0).ceil() as i32;
     let y0 = (cy - r - 1.0).floor() as i32;
@@ -1477,6 +1512,8 @@ fn fill_circle(canvas: &mut [u8], w: u32, h: u32, cx: f32, cy: f32, r: f32, rgb:
 }
 
 fn stroke_circle(canvas: &mut [u8], w: u32, h: u32, cx: f32, cy: f32, r: f32, t: f32, rgb: (u8, u8, u8)) {
+    let s = scale_of(w);
+    let (cx, cy, r, t) = (cx * s, cy * s, r * s, t * s);
     let x0 = (cx - r - t).floor().max(0.0) as i32;
     let y0 = (cy - r - t).floor().max(0.0) as i32;
     let x1 = (cx + r + t).ceil().min(w as f32) as i32;
@@ -1504,6 +1541,8 @@ fn stroke_segment(
     t: f32,
     rgb: (u8, u8, u8),
 ) {
+    let s = scale_of(w);
+    let ((x1, y1), (x2, y2), t) = ((x1 * s, y1 * s), (x2 * s, y2 * s), t * s);
     let dx = x2 - x1;
     let dy = y2 - y1;
     let len2 = dx * dx + dy * dy;
@@ -1635,9 +1674,10 @@ fn draw_text(
     if text.is_empty() {
         return;
     }
-    let row = layout_text(font, text, px);
-    let baseline = y_top + row.ascent;
-    let mut pen = x;
+    let s = scale_of(w);
+    let row = layout_text(font, text, px * s);
+    let baseline = y_top * s + row.ascent;
+    let mut pen = x * s;
     for (m, cov) in &row.glyphs {
         let gx0 = (pen + m.xmin as f32).round() as i32;
         let gy0 = (baseline - m.ymin as f32 - m.height as f32).round() as i32;
@@ -1669,8 +1709,9 @@ fn draw_text_centered(
     y_top: f32,
     rgb: (u8, u8, u8),
 ) {
-    let tw = text_width(font, text, px);
-    draw_text(canvas, w, h, font, text, px, cx - tw / 2.0, y_top, rgb);
+    let s = scale_of(w);
+    let tw = text_width(font, text, px * s);
+    draw_text(canvas, w, h, font, text, px, cx - tw / 2.0 / s, y_top, rgb);
 }
 
 /// Search magnifier (launcher model — procedural, no guessed
@@ -1684,30 +1725,36 @@ fn draw_magnifier(canvas: &mut [u8], w: u32, h: u32, cx: f32, cy: f32, rgb: (u8,
 /// top-left at (x0, y0). Same blend as launcher_icons::blit_icon.
 fn blit_thumb(canvas: &mut [u8], w: u32, h: u32, x0: i32, y0: i32, rgba: &[u8]) {
     debug_assert_eq!(rgba.len(), THUMB_SIZE * THUMB_SIZE * 4);
+    // r1f §2x: 1x blob on a device canvas -> nearest magnification.
+    let s = scale_of(w) as i32;
     for sy in 0..THUMB_SIZE as i32 {
-        let y = y0 + sy;
-        if y < 0 || y >= h as i32 {
-            continue;
-        }
-        for sx in 0..THUMB_SIZE as i32 {
-            let x = x0 + sx;
-            if x < 0 || x >= w as i32 {
+        for rep_y in 0..s {
+            let y = y0 * s + sy * s + rep_y;
+            if y < 0 || y >= h as i32 {
                 continue;
             }
-            let si = (sy as usize * THUMB_SIZE + sx as usize) * 4;
-            let sa = rgba[si + 3] as f32 / 255.0;
-            if sa <= 0.0 {
-                continue;
+            for sx in 0..THUMB_SIZE as i32 {
+                for rep_x in 0..s {
+                    let x = x0 * s + sx * s + rep_x;
+                    if x < 0 || x >= w as i32 {
+                        continue;
+                    }
+                    let si = (sy as usize * THUMB_SIZE + sx as usize) * 4;
+                    let sa = rgba[si + 3] as f32 / 255.0;
+                    if sa <= 0.0 {
+                        continue;
+                    }
+                    let i = ((y as u32) * w + x as u32) as usize * 4;
+                    if i + 3 >= canvas.len() {
+                        continue;
+                    }
+                    let inv = 1.0 - sa;
+                    canvas[i] = (rgba[si + 2] as f32 * sa + canvas[i] as f32 * inv) as u8; // B
+                    canvas[i + 1] = (rgba[si + 1] as f32 * sa + canvas[i + 1] as f32 * inv) as u8; // G
+                    canvas[i + 2] = (rgba[si] as f32 * sa + canvas[i + 2] as f32 * inv) as u8; // R
+                    canvas[i + 3] = 255; // A
+                }
             }
-            let i = ((y as u32) * w + x as u32) as usize * 4;
-            if i + 3 >= canvas.len() {
-                continue;
-            }
-            let inv = 1.0 - sa;
-            canvas[i] = (rgba[si + 2] as f32 * sa + canvas[i] as f32 * inv) as u8; // B
-            canvas[i + 1] = (rgba[si + 1] as f32 * sa + canvas[i + 1] as f32 * inv) as u8; // G
-            canvas[i + 2] = (rgba[si] as f32 * sa + canvas[i + 2] as f32 * inv) as u8; // R
-            canvas[i + 3] = 255; // A
         }
     }
 }
@@ -1777,7 +1824,11 @@ pub fn draw_clipboard_panel(
     font: &Font,
     font_regular: &Font,
 ) {
-    debug_assert_eq!(w, PANEL_W);
+    set_scale(w);
+    debug_assert!(
+        (h as f32 - scale_of(w) * panel_height_for(visible_row_count()) as f32).abs() < 1.5,
+        "clipboard canvas {w}x{h} is not a scaled {PANEL_W} wide panel"
+    );
     // Search line: flat on black, launcher model — magnifier +
     // placeholder, or the query as plain white text (no caret, no box).
     draw_magnifier(canvas, w, h, MAGNIFIER_CX, MAGNIFIER_CY, C_SECONDARY);

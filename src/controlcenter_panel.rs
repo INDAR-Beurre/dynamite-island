@@ -2342,6 +2342,9 @@ fn fill_rounded_rect(
     radius: f32,
     rgb: (u8, u8, u8),
 ) {
+    let s = scale_of(w);
+    let rect = Rect::new(rect.x * s, rect.y * s, rect.w * s, rect.h * s);
+    let radius = radius * s;
     let x0 = rect.x.floor().max(0.0) as i32;
     let y0 = rect.y.floor().max(0.0) as i32;
     let x1 = (rect.x + rect.w).ceil().min(w as f32) as i32;
@@ -2373,6 +2376,9 @@ fn stroke_rounded_rect(
     t: f32,
     rgb: (u8, u8, u8),
 ) {
+    let s = scale_of(w);
+    let rect = Rect::new(rect.x * s, rect.y * s, rect.w * s, rect.h * s);
+    let (radius, t) = (radius * s, t * s);
     let inner = Rect::new(rect.x + t, rect.y + t, rect.w - 2.0 * t, rect.h - 2.0 * t);
     let x0 = rect.x.floor().max(0.0) as i32;
     let y0 = rect.y.floor().max(0.0) as i32;
@@ -2410,6 +2416,8 @@ fn stroke_circle(
     t: f32,
     rgb: (u8, u8, u8),
 ) {
+    let s = scale_of(w);
+    let (cx, cy, r, t) = (cx * s, cy * s, r * s, t * s);
     let x0 = (cx - r - t).floor().max(0.0) as i32;
     let y0 = (cy - r - t).floor().max(0.0) as i32;
     let x1 = (cx + r + t).ceil().min(w as f32) as i32;
@@ -2521,6 +2529,21 @@ fn fill_rounded_rect_frost(
     }
 }
 
+thread_local! {
+    /// r1f (2x): logical -> device scale for the CURRENT draw, set by the
+    /// public entry point. Thread-local because the tests draw these
+    /// primitives at arbitrary canvas sizes in parallel: it stays 1.0
+    /// outside a draw, so w == CC_W is byte-identical to the 1x path.
+    static SCALE: std::cell::Cell<f32> = const { std::cell::Cell::new(1.0) };
+}
+fn scale_of(_w: u32) -> f32 {
+    SCALE.with(|s| s.get())
+}
+/// Begin a draw: set the logical -> device scale (see `SCALE`).
+fn set_scale(w: u32) {
+    SCALE.with(|c| c.set(w as f32 / CC_W as f32));
+}
+
 fn blend_pixel(canvas: &mut [u8], w: u32, x: i32, y: i32, rgb: (u8, u8, u8), cov: f32) {
     if x < 0 || y < 0 || x >= w as i32 {
         return;
@@ -2584,11 +2607,12 @@ fn draw_text(
     if text.is_empty() {
         return;
     }
-    let row = layout_text(font, text, px);
-    let baseline = y_top + row.ascent;
+    let s = scale_of(w);
+    let row = layout_text(font, text, px * s);
+    let baseline = y_top * s + row.ascent;
     let passes = if bold { 2 } else { 1 };
     for pass in 0..passes {
-        let mut pen = x + pass as f32 * 0.75;
+        let mut pen = x * s + pass as f32 * s * 0.75;
         for (m, cov) in &row.glyphs {
             let gx0 = (pen + m.xmin as f32).round() as i32;
             let gy0 = (baseline - m.ymin as f32 - m.height as f32).round() as i32;
@@ -2623,8 +2647,9 @@ fn draw_text_centered(
     rgb: (u8, u8, u8),
     bold: bool,
 ) {
-    let tw = text_width(font, text, px);
-    draw_text(canvas, w, h, font, text, px, cx - tw / 2.0, y_top, rgb, bold);
+    let s = scale_of(w);
+    let tw = text_width(font, text, px * s);
+    draw_text(canvas, w, h, font, text, px, cx - tw / 2.0 / s, y_top, rgb, bold);
 }
 
 /// Draw one Material Symbols glyph centred on (cx, cy) at `px` size.
@@ -2706,6 +2731,8 @@ fn draw_chevron_left(
     size: f32,
     rgb: (u8, u8, u8),
 ) {
+    let s = scale_of(w);
+    let (cx, cy, size) = (cx * s, cy * s, size * s);
     let half = size / 2.0;
     let left = cx - half * 0.7;
     let right = cx + half * 0.7;
@@ -2755,6 +2782,8 @@ fn draw_chevron_right(
     size: f32,
     rgb: (u8, u8, u8),
 ) {
+    let s = scale_of(w);
+    let (cx, cy, size) = (cx * s, cy * s, size * s);
     let half = size / 2.0;
     let ax = cx - half * 0.7;
     let bx = cx + half * 0.7;
@@ -3064,7 +3093,11 @@ pub fn draw_controlcenter_panel(
     data: &ControlCenterData,
     _bg_origin: (f32, f32),
 ) {
-    debug_assert_eq!((w, h), (CC_W, CC_H));
+    set_scale(w);
+    debug_assert!(
+        (h as f32 - scale_of(w) * CC_H as f32).abs() < 1.5,
+        "controlcenter canvas {w}x{h} is not a scaled {CC_W}x{CC_H}"
+    );
     let l = cc_layout();
 
     // Opaque capsule. The old live-backdrop frost sampled a blurred
@@ -3075,7 +3108,7 @@ pub fn draw_controlcenter_panel(
         for x in 0..w {
             let px = x as f32 + 0.5;
             let py = y as f32 + 0.5;
-            let d = rounded_rect_sdf(px, py, w as f32, h as f32, CC_RADIUS);
+            let d = rounded_rect_sdf(px, py, w as f32, h as f32, CC_RADIUS * scale_of(w));
             let a = (0.5 - d).clamp(0.0, 1.0);
             let i = ((y * w + x) * 4) as usize;
             canvas[i] = 0;

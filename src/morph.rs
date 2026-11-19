@@ -103,14 +103,23 @@ pub const MORPH_DURATION_MS: u64 = 233;
 /// the target over this window (r1d §2: peak frame decays over ~9 frames =
 /// ~150 ms of the 60 fps measurement). Quadratic decay — no invented
 /// oscillator; the reference shows ONE overshoot and a smooth landing.
+///
+/// r1f measured the live build overshooting ~15% instead of the reference's
+/// ~1.1%, which reads as a bounce, so the overshoot is currently OFF. The
+/// envelope machinery (overshoot_at, settle_t, the settle tail in frame_at)
+/// is kept because the timing contract — done waits for the tail on a
+/// growing morph — still holds. To restore it set the two factors below to
+/// the measured reference values in the comments and re-check with
+/// `scripts/motion/run_all.sh`: `overshoot_frac` must land near 0.011.
 pub const SETTLE_MS: u64 = 150;
-/// Width overshoot as a fraction of the target width. Measured:
-/// peak 825 device px -> rest 816 device px in the reference capture
-/// (825/816 - 1 = 0.01103; brief §2 rounds to ~1.1%).
-pub const W_OVERSHOOT: f32 = 0.0110;
-/// Height overshoot as a fraction of the target height. Measured:
+/// Width overshoot as a fraction of the target width. Reference measured:
+/// peak 825 device px -> rest 816 device px (825/816 - 1 = 0.01103).
+/// 0.0 = disabled, see above.
+pub const W_OVERSHOOT: f32 = 0.0;
+/// Height overshoot as a fraction of the target height. Reference measured:
 /// peak 188 -> rest 186 device px (188/186 - 1 = 0.01075).
-pub const H_OVERSHOOT: f32 = 0.0108;
+/// 0.0 = disabled, see above.
+pub const H_OVERSHOOT: f32 = 0.0;
 /// Raw time progress at which the outgoing content has fully faded out
 /// (first ~56 ms of the 160 ms morph). Raw basis: the burst
 /// measurements pinned this wall-clock timing (see S-1 tests below).
@@ -578,9 +587,10 @@ mod tests {
         assert_eq!(f0.outgoing_opacity, 1.0);
         assert_eq!(f0.incoming_opacity, 0.0);
         assert!(!f0.done);
-        // r1d §2: growth tops out at the overshoot envelope peak, not at
-        // the target — measured reference peak 825x188 vs rest 816x186
-        // (+1.1% / +1.08%). W_OVERSHOOT x 342 = 3.76 px past the target.
+        // r1d §2 with r1f's overshoot disabled: the growth tops out AT the
+        // target. The assertions stay in terms of the factors so restoring
+        // the measured 1.1% needs no test edit — at 0.0 they pin the exact
+        // target, which is what a bounce-free build must render.
         let f1 = m.frame_at(at(start, MORPH_DURATION_MS));
         let approx = |got: f32, want: f32| (got - want).abs() < 0.02;
         assert!(approx(f1.width, 342.0 * (1.0 + W_OVERSHOOT)), "w {}", f1.width);
@@ -820,9 +830,11 @@ mod tests {
         assert!(mid.height > 150.0 && mid.height < 300.0);
         assert_eq!(mid.radius, 20.0);
         // r1d §2: width shrinks (no settle), height grows -> the settle
-        // tail swells HEIGHT only; done waits for the tail.
+        // tail swells HEIGHT only; done waits for the tail. r1f: the swell
+        // factor is 0, so the top-out height IS the target (was asserted
+        // strictly greater than it, which can only hold with overshoot on).
         let top = m.frame_at(at(start, MORPH_DURATION_MS));
-        assert!(top.height > 300.0, "height {} must be at overshoot peak", top.height);
+        assert!(top.height >= 300.0, "height {} must be at the top-out", top.height);
         let approx = |got: f32, want: f32| (got - want).abs() < 0.02;
         assert!(approx(top.height, 300.0 * (1.0 + H_OVERSHOOT)));
         assert_eq!(top.width, 342.0, "shrinking dim must NOT overshoot");

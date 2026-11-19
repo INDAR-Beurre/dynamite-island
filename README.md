@@ -17,13 +17,25 @@ into the focused window and the island shows a live level bar.
 
 | Need | Why | Arch/Artix package |
 |---|---|---|
-| Rust (edition 2021) | both crates | `rust` |
+| Rust **1.88+** (edition 2021) | both crates — locked deps need 1.88 | `rust` |
 | `libxkbcommon` + headers | keymap handling | `libxkbcommon` |
 | `libasound` + headers | dictation microphone capture | `alsa-lib` |
 | `pkg-config` | locating the two above | `pkgconf` |
 
-**Runtime:** a compositor implementing `wlr-layer-shell` (tested: **MangoWM
-0.18.3**; Hyprland and sway should work). `ext-session-lock-v1` is *not* used yet.
+**Runtime:** a compositor implementing `wlr-layer-shell`. **Tested on MangoWM
+0.18.3 only.** The workspace discs and the wallpaper picker are Mango-specific
+(`mmsg`, `~/.config/mango/wallpaper/`), so on Hyprland or sway expect the pill
+and panels to work and those two integrations to be empty. `ext-session-lock-v1`
+is *not* used yet.
+
+**Dictation additionally needs** evdev access to the keyboard and a writable
+`/dev/uinput` — normally the `input` group:
+
+```sh
+sudo usermod -aG input "$USER"      # then log out and back in
+```
+
+Without it push-to-talk silently does nothing. See `tools/dictation/README.md`.
 
 **Optional external tools.** Every one is invoked defensively — a missing tool
 degrades to an empty row rather than crashing, which also means **a missing tool
@@ -71,6 +83,17 @@ cd tools/dictation && cargo build --release   # -> tools/dictation/target/releas
 
 Binaries land in those two paths; the launcher scripts resolve them relative to
 the repo, so keep the checkout where you build it.
+
+## Install
+
+```sh
+./build.sh
+./deploy/install.sh          # --check to preview
+```
+
+Installs the key bindings (`SUPER+space` launcher, `SUPER+v` clipboard), the
+layer rule, and an autostart wrapper — **appending** to your existing
+`bind.conf` / `rule.conf`, never overwriting them. See `deploy/README.md`.
 
 ## Run
 

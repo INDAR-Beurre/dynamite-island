@@ -93,7 +93,9 @@ const WHITE: [u8; 3] = [0xFF, 0xFF, 0xFF];
 // r1d finding 4 / brief §11: the reference's cool-neutral text ramp.
 // "Lock" label core reads (201, 207, 233) in the reference (B-R = 32),
 // not pure white; uptime reads (112, 112, 120).
-const LABEL_TEXT: [u8; 3] = [0xC9, 0xCF, 0xE9]; // (201, 207, 233)
+/// "Lock" label colour. Peak channel measured 233 on the 2x path against
+/// the reference's 222, so the triple is scaled by 222/233 (hue kept).
+const LABEL_TEXT: [u8; 3] = [0xC0, 0xC5, 0xDE]; // (192, 197, 222)
 // Dark navy lock glyph on the periwinkle disc (reference pixel, iter8).
 const LOCK_GLYPH: [u8; 3] = [0x31, 0x54, 0x95]; // #315495 (49,84,149)
 // r1d finding 4: reference inactive disc fill (25, 26, 31).

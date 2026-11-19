@@ -496,9 +496,21 @@ fn rounded_rect_alpha(x: f32, y: f32, w: f32, h: f32, r: f32) -> f32 {
     (0.5 - d).clamp(0.0, 1.0)
 }
 
-/// Source-over blend of one opaque-colour pixel at coverage `cov` (0..1).
-/// Destination is opaque inside the panel, so alpha is forced to 255 —
-/// same shortcut as main.rs.
+thread_local! {
+    /// r1f (2x): logical -> device scale for the CURRENT draw, set by the
+    /// public entry point. Thread-local because the tests draw these
+    /// primitives at arbitrary canvas sizes in parallel: it stays 1.0
+    /// outside a draw, so w == PANEL_W is byte-identical to the 1x path.
+    static SCALE: std::cell::Cell<f32> = const { std::cell::Cell::new(1.0) };
+}
+fn scale_of(_w: u32) -> f32 {
+    SCALE.with(|s| s.get())
+}
+/// Begin a draw: set the logical -> device scale (see `SCALE`).
+fn set_scale(w: u32) {
+    SCALE.with(|c| c.set(w as f32 / PANEL_W as f32));
+}
+
 fn blend_pixel(canvas: &mut [u8], w: u32, x: i32, y: i32, rgb: (u8, u8, u8), cov: f32) {
     if x < 0 || y < 0 || x >= w as i32 {
         return;
@@ -523,6 +535,9 @@ fn fill_rounded_rect(
     radius: f32,
     rgb: (u8, u8, u8),
 ) {
+    let s = scale_of(w);
+    let rect = Rect::new(rect.x * s, rect.y * s, rect.w * s, rect.h * s);
+    let radius = radius * s;
     let x0 = rect.x.floor().max(0.0) as i32;
     let y0 = rect.y.floor().max(0.0) as i32;
     let x1 = (rect.x + rect.w).ceil().min(w as f32) as i32;
@@ -555,6 +570,8 @@ fn stroke_circle(
     t: f32,
     rgb: (u8, u8, u8),
 ) {
+    let s = scale_of(w);
+    let (cx, cy, r, t) = (cx * s, cy * s, r * s, t * s);
     let x0 = (cx - r - t).floor() as i32;
     let x1 = (cx + r + t).ceil() as i32;
     let y0 = (cy - r - t).floor() as i32;
@@ -583,6 +600,8 @@ fn stroke_segment(
     t: f32,
     rgb: (u8, u8, u8),
 ) {
+    let s = scale_of(w);
+    let ((ax, ay), (bx, by), t) = ((ax * s, ay * s), (bx * s, by * s), t * s);
     let dx = bx - ax;
     let dy = by - ay;
     let len2 = dx * dx + dy * dy;
@@ -622,6 +641,8 @@ fn fill_circle(
     r: f32,
     rgb: (u8, u8, u8),
 ) {
+    let s = scale_of(w);
+    let (cx, cy, r) = (cx * s, cy * s, r * s);
     let x0 = (cx - r - 1.0).floor() as i32;
     let x1 = (cx + r + 1.0).ceil() as i32;
     let y0 = (cy - r - 1.0).floor() as i32;
@@ -657,17 +678,23 @@ fn blit_rgba(
     rgba: &[u8],
 ) {
     debug_assert_eq!(rgba.len(), (tw * th * 4) as usize);
+    // r1f §2x: the blob is 1x, so a device canvas samples it nearest
+    // (s=1 keeps the exact 1:1 blit). A photo thumbnail does not need
+    // better than that under the compositor's 2x->1.5x resample.
+    let s = scale_of(w) as i32;
     for sy in 0..th as i32 {
-        let y = y0 + sy;
-        if y < 0 || y >= h as i32 {
-            continue;
-        }
-        for sx in 0..tw as i32 {
-            let x = x0 + sx;
-            if x < 0 || x >= w as i32 {
+        for rep_y in 0..s {
+            let y = y0 * s + sy * s + rep_y;
+            if y < 0 || y >= h as i32 {
                 continue;
             }
-            let si = (sy as usize * tw as usize + sx as usize) * 4;
+            for sx in 0..tw as i32 {
+                for rep_x in 0..s {
+                    let x = x0 * s + sx * s + rep_x;
+                    if x < 0 || x >= w as i32 {
+                        continue;
+                    }
+                    let si = ((sy as usize * tw as usize) + sx as usize) * 4;
             let sa = rgba[si + 3] as f32 / 255.0;
             if sa <= 0.0 {
                 continue;
@@ -676,12 +703,14 @@ fn blit_rgba(
             if i + 3 >= canvas.len() {
                 continue;
             }
-            // Source is straight-alpha RGBA; dest is BGRA, opaque.
-            let inv = 1.0 - sa;
-            canvas[i] = (rgba[si + 2] as f32 * sa + canvas[i] as f32 * inv) as u8; // B
-            canvas[i + 1] = (rgba[si + 1] as f32 * sa + canvas[i + 1] as f32 * inv) as u8; // G
-            canvas[i + 2] = (rgba[si] as f32 * sa + canvas[i + 2] as f32 * inv) as u8; // R
-            canvas[i + 3] = 255; // A
+                    // Source is straight-alpha RGBA; dest is BGRA, opaque.
+                    let inv = 1.0 - sa;
+                    canvas[i] = (rgba[si + 2] as f32 * sa + canvas[i] as f32 * inv) as u8; // B
+                    canvas[i + 1] = (rgba[si + 1] as f32 * sa + canvas[i + 1] as f32 * inv) as u8; // G
+                    canvas[i + 2] = (rgba[si] as f32 * sa + canvas[i + 2] as f32 * inv) as u8; // R
+                    canvas[i + 3] = 255; // A
+                }
+            }
         }
     }
 }
@@ -693,25 +722,28 @@ fn blit_rgba(
 /// opaque). `alpha` of the overlay at panel x is
 /// `FADE_MAX * (1 - t)^1.5` with `t = (x - FADE_X0)/(FADE_X1-FADE_X0)`.
 fn fade_thumb_left(canvas: &mut [u8], w: u32, h: u32) {
-    let x0 = THUMB_X.floor() as i32;
-    let x1 = (THUMB_X + THUMB_W as f32).ceil() as i32;
-    let y0 = THUMB_Y.floor() as i32;
-    let y1 = (THUMB_Y + THUMB_H as f32).ceil() as i32;
+    let s = scale_of(w);
+    let x0 = (THUMB_X * s).floor() as i32;
+    let x1 = ((THUMB_X + THUMB_W as f32) * s).ceil() as i32;
+    let y0 = (THUMB_Y * s).floor() as i32;
+    let y1 = ((THUMB_Y + THUMB_H as f32) * s).ceil() as i32;
     for y in y0..y1 {
         for x in x0..x1 {
             let px = x as f32 + 0.5;
-            if px >= FADE_X1 {
+            // r1f §2x: the constants are logical; evaluate in logical px.
+            let lx = px / s;
+            if lx >= FADE_X1 {
                 continue;
             }
-            let t = ((px - FADE_X0) / (FADE_X1 - FADE_X0)).clamp(0.0, 1.0);
+            let t = ((lx - FADE_X0) / (FADE_X1 - FADE_X0)).clamp(0.0, 1.0);
             let fade = FADE_MAX * (1.0 - t).powf(1.5);
             if fade <= 0.0 {
                 continue;
             }
             let py = y as f32 + 0.5;
             let mask = rounded_rect_alpha(
-                px - THUMB_X,
-                py - THUMB_Y,
+                lx - THUMB_X,
+                py / s - THUMB_Y,
                 THUMB_W as f32,
                 THUMB_H as f32,
                 THUMB_R,
@@ -774,11 +806,12 @@ fn draw_text(
     if text.is_empty() {
         return;
     }
-    let row = layout_text(font, text, px);
-    let baseline = y_top + row.ascent;
+    let s = scale_of(w);
+    let row = layout_text(font, text, px * s);
+    let baseline = y_top * s + row.ascent;
     let passes = if bold { 2 } else { 1 };
     for pass in 0..passes {
-        let mut pen = x + pass as f32 * 0.75;
+        let mut pen = x * s + pass as f32 * s * 0.75;
         for (m, cov) in &row.glyphs {
             let gx0 = (pen + m.xmin as f32).round() as i32;
             let gy0 = (baseline - m.ymin as f32 - m.height as f32).round() as i32;
@@ -824,6 +857,7 @@ fn draw_magnifier(canvas: &mut [u8], w: u32, h: u32, cx: f32, cy: f32, rgb: (u8,
 /// function draws content only. Defaults = the video's settled state
 /// ("anime" selected, empty search).
 pub fn draw_themes_panel(canvas: &mut [u8], w: u32, h: u32, font: &Font) {
+    set_scale(w);
     draw_themes_panel_with_data(canvas, w, h, font, &ThemesData::video_defaults());
 }
 
@@ -839,7 +873,11 @@ pub fn draw_themes_panel_with_data(
     font: &Font,
     data: &ThemesData,
 ) {
-    debug_assert_eq!((w, h), (PANEL_W, PANEL_H));
+    set_scale(w);
+    debug_assert!(
+        (h as f32 - scale_of(w) * PANEL_H as f32).abs() < 1.5,
+        "themes canvas {w}x{h} is not a scaled {PANEL_W}x{PANEL_H}"
+    );
     let selected = data.selected.min(THEMES.len() - 1);
     draw_search_line(canvas, w, h, font, &data.search_text, &data.counter_text());
     for (i, theme) in THEMES.iter().enumerate() {
@@ -1222,6 +1260,7 @@ pub fn draw_themes_panel_live(
     font: &Font,
     selected: usize,
 ) {
+    set_scale(w);
     let Some(m) = crate::library::manifest() else {
         draw_themes_panel(canvas, w, h, font);
         return;
@@ -1315,6 +1354,7 @@ mod tests {
 
     /// Render the default panel into a fresh buffer. main.rs fills the
     /// black capsule first, so the test pre-fills opaque black too.
+    ///
     fn render_default() -> (Vec<u8>, &'static Font) {
         let font = load_test_font();
         let mut canvas = vec![0u8; (PANEL_W * PANEL_H * 4) as usize];

@@ -169,6 +169,21 @@ use fontdue::Font;
 pub const PANEL_W: u32 = 504;
 pub const PANEL_H: u32 = 366;
 pub const PANEL_RADIUS: f32 = 20.0;
+
+thread_local! {
+    /// r1f (2x): logical -> device scale for the CURRENT draw, set by the
+    /// public entry point. Thread-local because the tests draw these
+    /// primitives at arbitrary canvas sizes in parallel: it stays 1.0
+    /// outside a draw, so w == PANEL_W is byte-identical to the 1x path.
+    static SCALE: std::cell::Cell<f32> = const { std::cell::Cell::new(1.0) };
+}
+fn scale_of(_w: u32) -> f32 {
+    SCALE.with(|s| s.get())
+}
+/// Begin a draw: set the logical -> device scale (see `SCALE`).
+fn set_scale(w: u32) {
+    SCALE.with(|c| c.set(w as f32 / PANEL_W as f32));
+}
 pub const PAD: f32 = 14.0; // inner padding (shell.qml innerPadding)
 pub const ROW_COUNT: usize = 6;
 
@@ -574,6 +589,9 @@ fn fill_rounded_rect(
     radius: f32,
     rgb: (u8, u8, u8),
 ) {
+    let s = scale_of(w);
+    let rect = Rect::new(rect.x * s, rect.y * s, rect.w * s, rect.h * s);
+    let radius = radius * s;
     let x0 = rect.x.floor().max(0.0) as i32;
     let y0 = rect.y.floor().max(0.0) as i32;
     let x1 = (rect.x + rect.w).ceil().min(w as f32) as i32;
@@ -605,6 +623,9 @@ fn stroke_rounded_rect(
     t: f32,
     rgb: (u8, u8, u8),
 ) {
+    let s = scale_of(w);
+    let rect = Rect::new(rect.x * s, rect.y * s, rect.w * s, rect.h * s);
+    let (radius, t) = (radius * s, t * s);
     let inner = Rect::new(rect.x + t, rect.y + t, rect.w - 2.0 * t, rect.h - 2.0 * t);
     let x0 = rect.x.floor().max(0.0) as i32;
     let y0 = rect.y.floor().max(0.0) as i32;
@@ -632,6 +653,8 @@ fn stroke_rounded_rect(
 }
 
 fn fill_rect(canvas: &mut [u8], w: u32, _h: u32, x0: f32, y0: f32, x1: f32, y1: f32, rgb: (u8, u8, u8)) {
+    let s = scale_of(w);
+    let (x0, y0, x1, y1) = (x0 * s, y0 * s, x1 * s, y1 * s);
     for y in (y0.floor() as i32)..(y1.ceil() as i32) {
         for x in (x0.floor() as i32)..(x1.ceil() as i32) {
             blend_pixel(canvas, w, x, y, rgb, 1.0);
@@ -640,6 +663,8 @@ fn fill_rect(canvas: &mut [u8], w: u32, _h: u32, x0: f32, y0: f32, x1: f32, y1: 
 }
 
 fn fill_circle(canvas: &mut [u8], w: u32, _h: u32, cx: f32, cy: f32, r: f32, rgb: (u8, u8, u8)) {
+    let s = scale_of(w);
+    let (cx, cy, r) = (cx * s, cy * s, r * s);
     let x0 = (cx - r - 1.0).floor() as i32;
     let x1 = (cx + r + 1.0).ceil() as i32;
     let y0 = (cy - r - 1.0).floor() as i32;
@@ -665,6 +690,8 @@ fn stroke_circle(
     t: f32,
     rgb: (u8, u8, u8),
 ) {
+    let s = scale_of(w);
+    let (cx, cy, r, t) = (cx * s, cy * s, r * s, t * s);
     let x0 = (cx - r - t).floor().max(0.0) as i32;
     let y0 = (cy - r - t).floor().max(0.0) as i32;
     let x1 = (cx + r + t).ceil().min(w as f32) as i32;
@@ -699,6 +726,8 @@ fn ring_segment(
     gap_half: f32,
     rgb: (u8, u8, u8),
 ) {
+    let s = scale_of(w);
+    let (cx, cy, r, thick) = (cx * s, cy * s, r * s, thick * s);
     let x0 = (cx - r - thick).floor() as i32;
     let x1 = (cx + r + thick).ceil() as i32;
     let y0 = (cy - r - thick).floor() as i32;
@@ -731,6 +760,8 @@ fn stroke_segment(
     t: f32,
     rgb: (u8, u8, u8),
 ) {
+    let s = scale_of(w);
+    let ((x1, y1), (x2, y2), t) = ((x1 * s, y1 * s), (x2 * s, y2 * s), t * s);
     let dx = x2 - x1;
     let dy = y2 - y1;
     let len2 = dx * dx + dy * dy;
@@ -771,6 +802,9 @@ fn fill_triangle(
     rgb: (u8, u8, u8),
 ) {
     // Edge-function fill, 1px AA on the boundary (same as power_panel.rs).
+    let s = scale_of(w);
+    let ((ax, ay), (bx, by), (cx, cy)) =
+        ((ax * s, ay * s), (bx * s, by * s), (cx * s, cy * s));
     let x0 = ax.min(bx).min(cx).floor() as i32 - 1;
     let x1 = ax.max(bx).max(cx).ceil() as i32 + 1;
     let y0 = ay.min(by).min(cy).floor() as i32 - 1;
@@ -887,11 +921,12 @@ fn draw_text(
     if text.is_empty() {
         return;
     }
-    let row = layout_text(font, text, px);
-    let baseline = y_top + row.ascent;
+    let s = scale_of(w);
+    let row = layout_text(font, text, px * s);
+    let baseline = y_top * s + row.ascent;
     let passes = if bold { 2 } else { 1 };
     for pass in 0..passes {
-        let mut pen = x + pass as f32 * 0.75;
+        let mut pen = x * s + pass as f32 * s * 0.75;
         for (m, cov) in &row.glyphs {
             let gx0 = (pen + m.xmin as f32).round() as i32;
             let gy0 = (baseline - m.ymin as f32 - m.height as f32).round() as i32;
@@ -926,8 +961,9 @@ fn draw_text_centered(
     rgb: (u8, u8, u8),
     bold: bool,
 ) {
-    let tw = text_width(font, text, px);
-    draw_text(canvas, w, h, font, text, px, cx - tw / 2.0, y_top, rgb, bold);
+    let s = scale_of(w);
+    let tw = text_width(font, text, px * s);
+    draw_text(canvas, w, h, font, text, px, cx - tw / 2.0 / s, y_top, rgb, bold);
 }
 
 /// Draw one Material Symbols glyph so its visual centre lands on (cx, cy).
@@ -945,12 +981,13 @@ fn draw_font_glyph(
     cy: f32,
     rgb: (u8, u8, u8),
 ) {
-    let (m, cov) = crate::lock_timer::rasterize_cached(icon, ch, px);
+    let s = scale_of(w);
+    let (m, cov) = crate::lock_timer::rasterize_cached(icon, ch, px * s);
     if m.width == 0 || m.height == 0 {
         return;
     }
-    let gx0 = (cx - m.advance_width / 2.0 + m.xmin as f32).round() as i32;
-    let gy0 = (cy - m.height as f32 / 2.0).round() as i32;
+    let gx0 = (cx * s - m.advance_width / 2.0 + m.xmin as f32).round() as i32;
+    let gy0 = (cy * s - m.height as f32 / 2.0).round() as i32;
     for gy in 0..m.height as i32 {
         for gx in 0..m.width as i32 {
             let (px_x, px_y) = (gx0 + gx, gy0 + gy);
@@ -1122,7 +1159,11 @@ pub fn draw_launcher_panel_with_data(
     // Screen-logical coords of this panel canvas's top-left (fake frost).
     bg_origin: (f32, f32),
 ) {
-    debug_assert_eq!((w, h), (PANEL_W, PANEL_H));
+    set_scale(w);
+    debug_assert!(
+        (h as f32 - scale_of(w) * PANEL_H as f32).abs() < 1.5,
+        "launcher canvas {w}x{h} is not a scaled {PANEL_W}x{PANEL_H}"
+    );
     // Iter86: the row layout follows the DRAWN row count, so a
     // filtered list stretches to fill the row block (see
     // `launcher_layout_for_count`). Computed up front so the empty
@@ -1139,9 +1180,13 @@ pub fn draw_launcher_panel_with_data(
     let live = crate::wallpaper_blur::live_backdrop();
     // iter33: ONE frost sample at the panel centre (see main.rs
     // draw_panel_into) — the panel reads flat, no stain blobs.
+    let sc = scale_of(w);
     let uniform_bg: [u8; 3] = match &bg {
         Some(bw) => {
-            bw.sample_frost_uniform(bg_origin.0 + w as f32 / 2.0, bg_origin.1 + h as f32 / 2.0)
+            bw.sample_frost_uniform(
+                bg_origin.0 + w as f32 / 2.0 / sc,
+                bg_origin.1 + h as f32 / 2.0 / sc,
+            )
         }
         None => [0, 0, 0],
     };
@@ -1149,7 +1194,7 @@ pub fn draw_launcher_panel_with_data(
         for x in 0..w {
             let px = x as f32 + 0.5;
             let py = y as f32 + 0.5;
-            let d = rounded_rect_sdf(px, py, w as f32, h as f32, PANEL_RADIUS);
+            let d = rounded_rect_sdf(px, py, w as f32, h as f32, PANEL_RADIUS * sc);
             let a = (0.5 - d).clamp(0.0, 1.0);
             let i = ((y * w + x) * 4) as usize;
             let p = match (&live, &bg) {
@@ -1167,8 +1212,8 @@ pub fn draw_launcher_panel_with_data(
                     // — the frame stored in LiveBackdrop is
                     // neutralise_sample + its BoxBlur(25) local
                     // mean, so B-R lands approx +3, not +27).
-                    lb.sample(bg_origin.0 + px, bg_origin.1 + py),
-                    lb.local_mean(bg_origin.0 + px, bg_origin.1 + py),
+                    lb.sample(bg_origin.0 + px / sc, bg_origin.1 + py / sc),
+                    lb.local_mean(bg_origin.0 + px / sc, bg_origin.1 + py / sc),
                 ),
                 (None, Some(_)) => frost_fill_px_blur(
                     a,
@@ -1316,6 +1361,7 @@ pub fn draw_launcher_panel(
     icon_font: Option<&fontdue::Font>,
     bg_origin: (f32, f32),
 ) {
+    set_scale(w);
     draw_launcher_panel_with_data(
         canvas,
         w,

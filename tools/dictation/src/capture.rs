@@ -106,9 +106,18 @@ pub fn start() -> Result<AudioIn> {
             }
         }
     });
+    // Bounded: cpal 0.15.3 under PipeWire BLOCKS on a device another client
+    // holds instead of failing, so an unbounded recv() hung the tool at
+    // login with no message (measured: 25 s, still parked). Fail loudly.
     init_rx
-        .recv()
-        .context("capture thread died before startup result")??;
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .map_err(|_| {
+            anyhow!(
+                "microphone did not open within 5 s — another process may hold \
+                 it, or the audio server is wedged (check `wpctl status`)"
+            )
+        })?
+        .context("capture thread died before startup result")?;
 
     Ok(AudioIn { rx })
 }

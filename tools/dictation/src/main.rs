@@ -38,8 +38,21 @@ fn dictation_show() {
     dynamite_send("dictation_start");
 }
 
-fn dictation_hide() {
+pub(crate) fn dictation_hide() {
     dynamite_send("dictation_end");
+}
+
+/// Every exit path leaves the island expanded if a recording was live: the
+/// panel treats dictation as a level state with no staleness timer, and the
+/// four exit sites (hotkey failure, stdin EOF, ctrl quit, collector) all
+/// bypass `dictation_hide`. Arm this once capture succeeds; it fires on
+/// normal return AND on the way out of `process::exit` is NOT covered, so
+/// the exit sites call `dictation_hide()` explicitly too (r2 #35b).
+struct EndOnDrop;
+impl Drop for EndOnDrop {
+    fn drop(&mut self) {
+        dictation_hide();
+    }
 }
 
 /// ms of silence after speech before we finalize an utterance.
@@ -73,6 +86,7 @@ fn main() {
         match hk::listen(hk_tx) {
             Err(e) => {
                 eprintln!("hotkey listener failed: {e}");
+                dictation_hide();
                 std::process::exit(1);
             }
             // stdin fallback hit EOF/"quit": hotkey source gone → shut down the whole process.
@@ -80,6 +94,7 @@ fn main() {
                 use std::io::Write;
                 let _ = std::io::stdout().flush();
                 let _ = std::io::stderr().flush();
+                dictation_hide();
                 std::process::exit(0);
             }
         }
@@ -87,7 +102,16 @@ fn main() {
 
     println!("static-dictation v1 — hold Super+D to dictate; release Super to transcribe");
 
-    let audio = capture::start().expect("no microphone available");
+    let audio = match capture::start() {
+        Ok(a) => a,
+        Err(e) => {
+            // A panic here left only a backtrace in the redirected log; the
+            // supervisor saw a crash with no diagnosable cause (r2 #35b).
+            eprintln!("static-dictation: {e:#}");
+            std::process::exit(1);
+        }
+    };
+    let _end_guard = EndOnDrop;
     let mut vad = vad::Vad::new();
     let mut ep = endpoint::EndPointer::new(SILENCE_MS);
     let mut band_analyzer = bands::Analyzer::new();
@@ -237,7 +261,17 @@ fn finalize(
     match groq::transcribe(&cfg.groq_api_key, &cfg.endpoint, utterance) {
         Ok(text) if !text.is_empty() => output::deliver(&text),
         Ok(_) => output::error("empty transcription"),
-        Err(e) => output::error(&e.to_string()),
+        Err(e) => {
+            // A 429 or a timeout must not destroy the sentence: keep the
+            // audio before the buffer is cleared (r2 #35b blocker).
+            match groq::save_failed(utterance) {
+                Some(p) => output::error(&format!(
+                    "{e} — audio kept: {}",
+                    p.display()
+                )),
+                None => output::error(&format!("{e} — audio could NOT be kept")),
+            }
+        }
     }
     utterance.clear();
     *voice_frames = 0;

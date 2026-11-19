@@ -1357,6 +1357,21 @@ fn date_text() -> String {
 // premultiplied Argb8888 canvas, BGRA byte order, src-over onto the
 // (opaque) black panel.
 // ---------------------------------------------------------------------------
+thread_local! {
+    /// r1f (2x): logical -> device scale for the CURRENT draw, set by the
+    /// public entry point. Thread-local because the tests draw these
+    /// primitives at arbitrary canvas sizes in parallel: it stays 1.0
+    /// outside a draw, so w == PANEL_W is byte-identical to the 1x path.
+    static SCALE: std::cell::Cell<f32> = const { std::cell::Cell::new(1.0) };
+}
+fn scale_of(_w: u32) -> f32 {
+    SCALE.with(|s| s.get())
+}
+/// Begin a draw: set the logical -> device scale (see `SCALE`).
+fn set_scale(w: u32) {
+    SCALE.with(|c| c.set(w as f32 / PANEL_W as f32));
+}
+
 fn blend_px(canvas: &mut [u8], w: u32, h: u32, x: i32, y: i32, rgb: [u8; 3], cov: f32) {
     if x < 0 || y < 0 || x >= w as i32 || y >= h as i32 || cov <= 0.0 {
         return;
@@ -1389,6 +1404,8 @@ fn fill_round_box(
     r: f32,
     rgb: [u8; 3],
 ) {
+    let s = scale_of(w);
+    let (cx, cy, hx, hy, r) = (cx * s, cy * s, hx * s, hy * s, r * s);
     let x0 = (cx - hx - 1.0).floor() as i32;
     let x1 = (cx + hx + 1.0).ceil() as i32;
     let y0 = (cy - hy - 1.0).floor() as i32;
@@ -1402,6 +1419,8 @@ fn fill_round_box(
 }
 
 fn fill_rect(canvas: &mut [u8], w: u32, h: u32, x0: f32, y0: f32, x1: f32, y1: f32, rgb: [u8; 3]) {
+    let s = scale_of(w);
+    let (x0, x1, y0, y1) = (x0 * s, x1 * s, y0 * s, y1 * s);
     let xa = x0.floor() as i32;
     let xb = x1.ceil() as i32;
     let ya = y0.floor() as i32;
@@ -1414,6 +1433,8 @@ fn fill_rect(canvas: &mut [u8], w: u32, h: u32, x0: f32, y0: f32, x1: f32, y1: f
 }
 
 fn fill_circle(canvas: &mut [u8], w: u32, h: u32, cx: f32, cy: f32, r: f32, rgb: [u8; 3]) {
+    let s = scale_of(w);
+    let (cx, cy, r) = (cx * s, cy * s, r * s);
     let x0 = (cx - r - 1.0).floor() as i32;
     let x1 = (cx + r + 1.0).ceil() as i32;
     let y0 = (cy - r - 1.0).floor() as i32;
@@ -1447,6 +1468,8 @@ fn fill_triangle(
     fn sign(px: f32, py: f32, ax: f32, ay: f32, bx: f32, by: f32) -> f32 {
         (px - bx) * (ay - by) - (ax - bx) * (py - by)
     }
+    let s = scale_of(w);
+    let ((ax, ay), (bx, by), (cx, cy)) = ((ax * s, ay * s), (bx * s, by * s), (cx * s, cy * s));
     let x0 = ax.min(bx).min(cx).floor() as i32;
     let x1 = ax.max(bx).max(cx).ceil() as i32;
     let y0 = ay.min(by).min(cy).floor() as i32;
@@ -1540,7 +1563,8 @@ fn draw_text_left_at(
     cy: f32,
     rgb: [u8; 3],
 ) {
-    let row = layout_text(font, text, px);
+    let s = scale_of(w);
+    let row = layout_text(font, text, px * s);
     // Anchor fix (iter13 — iter10 D1/D5 root cause): the old formula
     // `baseline = (cy - 0.36*px) + ascent` added the full line ascent
     // (Quicksand-Bold hhea ascent = 1.00em) below the cap top, so every
@@ -1550,8 +1574,8 @@ fn draw_text_left_at(
     // but only changed the constants; the code still had the old formula
     // until this edit — deploying the constants alone would have pushed
     // the clock to ~68.7.)
-    let baseline = cy + px * 0.36;
-    blit_row(canvas, w, h, &row, x, baseline, rgb);
+    let baseline = (cy + px * 0.36) * s;
+    blit_row(canvas, w, h, &row, x * s, baseline, rgb);
 }
 
 /// Draw `text` with its RIGHT edge at `x` and its cap-height centre at `cy`.
@@ -1566,10 +1590,11 @@ fn draw_text_right_at(
     cy: f32,
     rgb: [u8; 3],
 ) {
-    let row = layout_text(font, text, px);
+    let s = scale_of(w);
+    let row = layout_text(font, text, px * s);
     // Same anchor fix as draw_text_left_at (iter13, iter10 D1/D5).
-    let baseline = cy + px * 0.36;
-    blit_row(canvas, w, h, &row, x - row.width, baseline, rgb);
+    let baseline = (cy + px * 0.36) * s;
+    blit_row(canvas, w, h, &row, x * s - row.width, baseline, rgb);
 }
 
 /// Truncate `text` (already in final case) to fit `max_w` at `px`,
@@ -1696,7 +1721,11 @@ pub fn draw_music_panel(
     icon_font: Option<&fontdue::Font>,
     data: &MusicData,
 ) {
-    debug_assert_eq!((w, h), (PANEL_W, PANEL_H));
+    set_scale(w);
+    debug_assert!(
+        (h as f32 - scale_of(w) * PANEL_H as f32).abs() < 1.5,
+        "music canvas {w}x{h} is not a scaled {PANEL_W}x{PANEL_H}"
+    );
 
     // (a) LEFT — live clock, large, pure white. UNCHANGED by iter25.
     let clock_str = clock_text();

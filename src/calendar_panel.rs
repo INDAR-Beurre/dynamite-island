@@ -375,6 +375,21 @@ fn month_grid(year: i32, month: u32, today_day: u32) -> ([[CalCell; 7]; 6], (usi
 // Pixel helpers — same style as power_panel.rs / main.rs: premultiplied
 // Argb8888 canvas, BGRA byte order, src-over onto the (opaque) black panel.
 // ---------------------------------------------------------------------------
+thread_local! {
+    /// r1f (2x): logical -> device scale for the CURRENT draw, set by the
+    /// public entry point. Thread-local because the tests draw these
+    /// primitives at arbitrary canvas sizes in parallel: it stays 1.0
+    /// outside a draw, so w == PANEL_W is byte-identical to the 1x path.
+    static SCALE: std::cell::Cell<f32> = const { std::cell::Cell::new(1.0) };
+}
+fn scale_of(_w: u32) -> f32 {
+    SCALE.with(|s| s.get())
+}
+/// Begin a draw: set the logical -> device scale (see `SCALE`).
+fn set_scale(w: u32) {
+    SCALE.with(|c| c.set(w as f32 / PANEL_W as f32));
+}
+
 fn blend_px(canvas: &mut [u8], w: u32, h: u32, x: i32, y: i32, rgb: [u8; 3], cov: f32) {
     if x < 0 || y < 0 || x >= w as i32 || y >= h as i32 || cov <= 0.0 {
         return;
@@ -389,6 +404,8 @@ fn blend_px(canvas: &mut [u8], w: u32, h: u32, x: i32, y: i32, rgb: [u8; 3], cov
 }
 
 fn fill_circle(canvas: &mut [u8], w: u32, h: u32, cx: f32, cy: f32, r: f32, rgb: [u8; 3]) {
+    let s = scale_of(w);
+    let (cx, cy, r) = (cx * s, cy * s, r * s);
     let x0 = (cx - r - 1.0).floor() as i32;
     let x1 = (cx + r + 1.0).ceil() as i32;
     let y0 = (cy - r - 1.0).floor() as i32;
@@ -466,10 +483,11 @@ fn draw_text_centred_at(
     cy: f32,
     rgb: [u8; 3],
 ) {
-    let row = layout_text(font, text, px);
-    let top_y = cy - px * 0.36;
+    let s = scale_of(w);
+    let row = layout_text(font, text, px * s);
+    let top_y = (cy - px * 0.36) * s;
     let baseline = top_y + row.ascent;
-    let mut pen = cx - row.width / 2.0;
+    let mut pen = cx * s - row.width / 2.0;
     for (m, cov) in &row.glyphs {
         let gx0 = (pen + m.xmin as f32).round() as i32;
         let gy0 = (baseline - m.ymin as f32 - m.height as f32).round() as i32;
@@ -521,6 +539,7 @@ pub fn draw_calendar_panel(
     h: u32,
     font: &fontdue::Font,
 ) {
+    set_scale(w);
     draw_calendar_panel_with_offset(canvas, w, h, font, 0);
 }
 
@@ -534,7 +553,11 @@ pub fn draw_calendar_panel_with_offset(
     font: &fontdue::Font,
     offset: i32,
 ) {
-    debug_assert_eq!((w, h), (PANEL_W, PANEL_H));
+    set_scale(w);
+    debug_assert!(
+        (h as f32 - scale_of(w) * PANEL_H as f32).abs() < 1.5,
+        "calendar canvas {w}x{h} is not a scaled {PANEL_W}x{PANEL_H}"
+    );
 
     // Live date — computed at every draw, never hardcoded.
     let (cur_year, cur_month, day) = local_today();
