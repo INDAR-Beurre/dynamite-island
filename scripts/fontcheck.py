@@ -68,8 +68,14 @@ def main():
     font = sys.argv[1] if len(sys.argv) > 1 else "assets/fonts/Inter-Medium.ttf"
     px = float(sys.argv[2]) if len(sys.argv) > 2 else 25 * 0.4842
     track = float(sys.argv[3]) if len(sys.argv) > 3 else 0.0
+    # --text lets a caller compare ONE string against a reference frame.
+    # Digit identity swings ink width by ~17% ('1' is narrow, '0' is wide),
+    # so an averaged verdict cannot be compared to a single live capture.
+    strings = STRINGS
+    if "--text" in sys.argv:
+        strings = (sys.argv[sys.argv.index("--text") + 1],)
     sc, wc, caps = [], [], []
-    for s in STRINGS:
+    for s in strings:
         im = render(font, s, px, track)
         m = metrics(im) if im else None
         if m:
