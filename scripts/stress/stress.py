@@ -910,6 +910,14 @@ def group_state(app, out):
     # this the very first `collapsed` looked like a dropped command.
     if app.pill_present():
         confirmed["state"] = b"collapsed"
+    else:
+        # A failed screenshot is NOT evidence of "not collapsed" (grim fails
+        # transiently under load, and three groups reported `grim failed`).
+        # Ask the panel to collapse and read the morph line: that establishes
+        # the state from the app itself rather than from a capture.
+        rc, ms = app.command(b"collapsed", b"-> Collapsed", 2.0)
+        if rc == "ok" and ms is not None:
+            confirmed["state"] = b"collapsed"
 
     def drive(word, ctx, budget=2.0):
         """Send a state word and require the app to react within budget."""
@@ -1020,8 +1028,10 @@ def group_load(app, out):
     problems = []
     iters = 200
     rss = []
-    over_run = 0          # consecutive samples above the bound
-    transient = []        # (iteration, excess) spikes that did NOT persist
+    over_run = 0          # samples in the current excursion
+    over_start = 0
+    over_peak = 0.0
+    transient = []        # (start, length, peak) excursions that came back
     settle = 0.045
     app.refresh()
     for i in range(iters):
@@ -1066,22 +1076,31 @@ def group_load(app, out):
             base_i = statistics.median(rss[20:i + 1])
             out.asserts += 1
             excess = (kb - base_i) / 1024.0
-            # A LEAK persists; a transient does not. Iterations 50-51 spiked
-            # +11.6 MB and returned to the same 85 MB for the next 150, which
-            # is a panel reload, not growth. Require the excess to hold for
-            # three consecutive samples before calling it a failure, and
-            # report the transient so it is never silently swallowed.
+            # A LEAK never returns to its baseline; a reload does. Counting
+            # consecutive samples still failed a 5-sample wallpaper reload
+            # (i146..i150 at +11.5 MB, then flat at the SAME 85 MB for 50
+            # more iterations, growth_after_warmup=+0.0). So judge an
+            # excursion only once it has ENDED: if it came back to within
+            # 2 MB of the baseline it was transient, however long it lasted.
+            # An excursion still open at the end is judged by the tail below.
             if excess > 8.0:
+                if over_run == 0:
+                    over_start = i
                 over_run += 1
-                if over_run == 3:
+                over_peak = max(over_peak, excess)
+            elif over_run:
+                transient.append((over_start, over_run, over_peak))
+                over_run, over_peak = 0, 0.0
+            # A sustained climb that never comes back is caught here: half
+            # the post-warmup window above the bound cannot be a reload.
+            if i >= 60 and excess > 8.0:
+                recent = rss[i - 20:i + 1]
+                if statistics.median(recent) - base_i > 8.0 * 1024:
                     out.fails += 1
                     problems.append(
-                        f"iteration {i}: RSS {excess:+.1f} MB over "
-                        f"post-warmup median for 3 samples (bound 8 MB)")
-                elif over_run == 1:
-                    transient.append((i, excess))
-            else:
-                over_run = 0
+                        f"iteration {i}: RSS {excess:+.1f} MB over baseline, "
+                        f"20-sample median also over (bound 8 MB) -- sustained")
+                    break
 
     if len(rss) == iters:
         warm = rss[:20]                      # one-time lazy allocations:
@@ -1103,10 +1122,12 @@ def group_load(app, out):
         # decile curve so the shape is visible, not just two numbers
         curve = [f"{rss[j]/1024:.0f}" for j in range(0, iters, 20)]
         out.extra.append("RSS curve (every 20th iter, MB): " + " ".join(curve))
+        if over_run:
+            transient.append((over_start, over_run, over_peak))
         if transient:
-            shown = ", ".join(f"i{i}:{e:+.1f}" for i, e in transient[:6])
+            shown = ", ".join(f"i{i}x{n}:{p:+.1f}" for i, n, p in transient[:6])
             out.extra.append(
-                f"transient RSS spikes (not leaks, <3 samples): {shown}"
+                f"RSS excursions that returned to baseline (not leaks): {shown}"
                 + (f" +{len(transient)-6} more" if len(transient) > 6 else ""))
     return problems
 

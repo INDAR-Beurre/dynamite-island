@@ -1597,3 +1597,23 @@ running; its morph-rect + embedded-font work is verified in the tree.
 - `magpie/logfare/glm-5.3*` — image-blind at runtime; capacity/RPM failures.
 Remaining vision routes: `magpie/group/hy4` (65 K context) and
 `magpie/agentrouter/gpt-6.1-sol` (expensive — owner warned).
+
+## Instrument repair #18 — judge an RSS excursion by whether it RETURNS
+05:07 run still failed `load_leak` at i148 after repair #17. Curve
+`58 96 85 85 85 86 85 85 96 85`: the excursion spans i146..i150 (~5 samples,
+~1.6 s) and then sits at the **same 85 MB for 50 more iterations**,
+`growth_after_warmup=+0.0`. A 3-sample persistence rule still called it a leak.
+**A leak never returns to its baseline; a wallpaper reload does.**
+New rule: an excursion is recorded when it ENDS (returns within the bound) and
+reported as `RSS excursions that returned to baseline (not leaks)`. A failure
+requires the **20-sample median** to also be over the bound — half a second of
+spike cannot move a 20-sample median, a real climb does.
+**Mutation-tested**: flat → 0 · the real 5-sample reload → **0 fails, 1
+excursion** · linear leak → fails · persistent +25 MB step → fails.
+Known limit, stated rather than hidden: a 25-sample excursion that later
+returns is still flagged. `shortcut: 20-sample median window, widen if a real
+reload ever exceeds ~6 s`.
+
+Also: `state_machine` seeding now falls back to **asking the panel** when
+`grim` fails, instead of treating a failed capture as "not collapsed" — three
+groups logged `liveness …: grim failed` under concurrent load.
