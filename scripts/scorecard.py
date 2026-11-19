@@ -61,14 +61,17 @@ def show():
     ref = next((r["m"] for r in rows if r.get("kind") == "ref"), None)
     print(f"{'label':<16}" + "".join(f"{k[:13]:>14}" for k in keys))
     for r in rows:
+        flag = " *BUSY*" if r.get("contended") else ""
         print(f"{r['label'][:15]:<16}" +
-              "".join(f"{r['m'].get(k, '-'):>14}" for k in keys))
+              "".join(f"{r['m'].get(k, '-'):>14}" for k in keys) + flag)
 
     # Distance to the reference is the score; the trend is between LIVE rows.
     # Comparing a live row against the reference row and calling it "worse"
     # would invert the meaning of every improvement.
     if ref:
-        live = [r for r in rows if r.get("kind") != "ref"]
+        # Contended rows are excluded from the verdict: their numbers belong
+        # to whatever else was running, not to this build.
+        live = [r for r in rows if r.get("kind") != "ref" and not r.get("contended")]
         if live:
             last = live[-1]["m"]
             print("\ngap to reference (0 = pixel-identical):")
@@ -116,7 +119,13 @@ def main():
               "Recording it would put a lie in the trend. Re-capture on a "
               "quiet screen with the panel collapsed.")
         return 2
+    # A busy machine inflates CPU and latency. Recording that as a build's
+    # result would put a lie in the trend (a cargo test next door read 91%
+    # on a panel that idles at 0.5%). Mark the row instead of trusting it.
+    load = os.getloadavg()[0]
+    busy = load > 4.0
     row = {"label": args.label, "t": time.strftime("%Y-%m-%d %H:%M:%S"),
+           "loadavg": round(load, 2), "contended": busy,
            "kind": "ref" if args.ref else "live",
            "bin_mtime": (time.strftime("%H:%M", time.localtime(BIN.stat().st_mtime))
                          if BIN.exists() and not args.ref else None),
@@ -125,6 +134,10 @@ def main():
     with LEDGER.open("a") as f:
         f.write(json.dumps(row) + "\n")
     print(f"recorded {args.label}")
+    if busy:
+        print(f"WARNING: loadavg {load:.2f} — this machine is busy, so cpu_pct and\n"
+              "         any latency figure in this row are NOT the build's steady\n"
+              "         state. Re-measure in a quiet window before quoting them.")
     return show()
 
 
