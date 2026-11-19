@@ -1014,3 +1014,13 @@ Inert payloads log nothing, so `_inert_batch()` keeps the healthy path at **one 
 
 ### r1c brief drafted — `docs/r1c-brief-draft.md`
 Assembled while r1b builds, from **parent-verified** findings only. Eleven sections: morph damage rect (with the three triangulating measurements and the withdrawn over-cautious caveat), lock-pool peak, the 40×-loose perf guard, per-frame allocation table, DBG gate + `let else` holdouts, geometry **set 74×28 then MEASURE**, the 1×-paths-on-expand defect, colour with the **retracted `#F2A65A`** warning, measured expanded-panel geometry, the **corrected** lock-screen spec with the comparison-foil trap, dictation's always-on mic and dead `collapsed` literal, and the six required verification commands.
+
+### Gap closed: the owner asked for EVERY transcript — only 2 of 13 had been mined
+`ls /home/alex/Downloads/Reeldrop/*.txt` → **13 transcripts** (12 real + one Rick Astley joke file, 34 bytes). Only the Dynamic Island and Lock Screen ones had been read. The owner's brief said *"analyze the transcriptions from every video"*, so this was an open objective silently unmet. Three workers dispatched, text-only (no vision needed, so cheap routes):
+| worker | transcripts | model | uuid | output |
+|---|---|---|---|---|
+| A mechanics | Quickshell Positioning · Hidden Layout · Why Ricing Is Still Hard | group/deepseek-v4.1-flash-1017 | `914df238` | `docs/transcript-mechanics.md` |
+| B taste | Needs Minimalism · Where I Wasted Time · **This one trick** · anime wallpapers | group/hy4 | `4a9dd3e0` | `docs/transcript-taste.md` |
+| C dim/session | **Default Dim Too Strong** · GTK4 theming · no display manager | logfare/deepseek-v4.1-flash-1017 | `a614ad91` | `docs/transcript-dim-session.md` |
+**Why C is highest-value:** our lock screen needs a dark veil and we currently derive a *vertical* black veil purely from pixels, with **no stated authority for its strength**. Hyprland's `dim_strength` is exactly that concept and `docs/mango-capabilities.md` records MangoWM has no equivalent — so his number is a target we can adopt directly. Brief demands every number quoted verbatim with an explicit ambiguity flag, because auto-captions garble decimals and a wrong value would be built into the lock screen.
+All three briefs carry the **invented-`#F2A65A` lesson** and require separating *what he states* from *what the worker infers*.
