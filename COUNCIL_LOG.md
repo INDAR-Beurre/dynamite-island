@@ -1380,3 +1380,18 @@ So the memsets were **~0.6 ms/frame, not the dominant cost** — the upscale was
 attribution: the rect fix buys ~8 ms on a full-stage morph and ~0.5 ms of memset; the
 upscale is ~94 % of the saving. My earlier brief implied the memsets were co-equal; they
 were not.
+
+## ⚠️ Measurement invalidated: TWO panel instances were running (03:50)
+`mmsg get all-layers` listed **two** `dynamite-rust` overlay surfaces; pids 5649
+(`./target/release/...`, started 03:50:00) and 6456 (absolute path, 03:50:11). Both bind
+the same socket path, so socket words reach whichever bound last while `measure.py`'s
+`pgrep -n -x` picks the NEWEST pid — **the two can disagree**.
+Consequences: `scripts/stress/stress.py` returned **RESULT INVALID** (its surface gate
+correctly refused to score), and `scripts/motion/run_all.sh` failed 5 stages with a JSON
+decode error. **Neither is a product verdict.** The instruments behaved correctly.
+Cause: a fixer/child restarted the panel while another instance was already up. Not the
+parent's doing and not a code defect — but it means **any measurement taken while two
+instances exist must be discarded**.
+**Action for the next round**: the harnesses should refuse to measure when more than one
+instance is live, exactly as they already refuse when none is. Filing that as an
+instrument gap rather than silently re-running.
