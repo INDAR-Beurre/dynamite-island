@@ -549,3 +549,48 @@ committed; verify them, do not reimplement:**
   lock animation never draws on an output narrower than 1400 logical px**. Read
   `OutputState::info().logical_size` once. This is the same root cause as the
   frost-origin bug in §9c — **fix it once, in one place.**
+
+## 5b. ⛔ RETRACTION — "stroke weight is +15.5% too heavy" was WRONG
+
+I have carried that finding for hours and told two fixers to reduce weight.
+**Do not reduce the weight. The weight is already exactly right.**
+
+Measured stem thickness, live and reference:
+
+| | cap height | stroke/cap | **stem = product** |
+|---|---|---|---|
+| reference | 15 px | 0.200 | **3.00 px** |
+| live | 13 px | 0.231 | **3.00 px** |
+
+`0.231 = 3/13` and `0.200 = 3/15` **exactly**. Same 3-pixel stem. The metric is a
+ratio whose denominator is cap height, so a smaller clock reads as "heavier"
+with identical ink. The entire gap was **cap height 13 vs 15**, i.e. the clock
+was too SMALL, not too bold. (This is the same class of error as the advance-vs-ink
+comparison in §9-pre: a ratio mistaken for an absolute.)
+
+### The solved configuration — set these two values, then MEASURE
+
+```
+collapsed_width=74     # 74 * 1.5 = 111 device px  (reference 111)
+bar_height=28          # 28 * 1.5 =  42 device px  (reference  42)
+```
+
+`text_px` is derived (`src/lock_timer.rs`, `pill_h * 0.357 * 2048/1510`), so
+`bar_height=28` yields **text_px 13.56**. Simulated through the panel's real
+pipeline (raster at 2× logical, then 0.75 downsample), using the shipped
+`assets/fonts/Inter-Medium.ttf`:
+
+| text_px | cap | text_w | stroke/cap |
+|---|---|---|---|
+| 12.10 (today, bar_height 25) | 13 | 49 | 0.231 |
+| **13.56 (bar_height 28)** | **15** | **55** | **0.200** |
+| reference | **15** | **54** | **0.200** |
+
+All three metrics land on the reference; text width is +1 px (+1.9%), inside
+one-pixel quantisation. **Do not touch the font weight, the font file, or
+`text_px`'s formula.** Two config values close the whole sharpness gap.
+
+Verify after setting them:
+```sh
+python3 scripts/measure.py    # expect cap 15, stroke/cap 0.200, pill 111x42
+```
