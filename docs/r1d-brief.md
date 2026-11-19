@@ -475,3 +475,42 @@ Adding letter-spacing to the 675/24 bake:
 
 **Do not change `bar_height` or `collapsed_width` to fix this.** The pill's
 screen-width fraction is already correct (4.300 % vs 4.336 %).
+
+---
+
+## 14. MAJOR — the clock migrates and resizes during the morph
+
+Measured frame by frame on the native 60 fps reference (`/tmp/ref60/`), the
+clock isolated by its periwinkle tint **inside** the capsule, leftmost cluster:
+
+| frame | capsule | clock w×h | clock centre x / capsule w | clock top / capsule h |
+|---|---|---|---|---|
+| 168 | 111×42 | 40×11 | 0.437 | 0.405 |
+| 170 | 156×50 | 43×12 | 0.449 | 0.400 |
+| 172 | 380×96 | 58×17 | 0.375 | 0.375 |
+| 174 | 590×139 | 77×22 | 0.254 | 0.360 |
+| 176 | 668×155 | 108×26 | 0.224 | 0.348 |
+| 178 | 788×180 | 93×28 | 0.128 | 0.356 |
+| 180 | 817×186 | 92×30 | 0.107 | 0.344 |
+| 182 | 825×188 | 93×29 | 0.103 | 0.351 |
+
+Clean endpoints, no motion blur:
+
+| state | capsule | clock | centre x frac | centre y frac | cap / capsule h |
+|---|---|---|---|---|---|
+| collapsed | 111×42 | 40×14 | **0.437** | **0.512** | **0.333** |
+| expanded | 825×188 | 95×34 | **0.104** | **0.330** | **0.181** |
+
+**Three things move together with the capsule's own progress:**
+1. The clock slides from centre (**0.437**) to left (**0.104**).
+2. It slides from vertically centred (**0.512**) to upper third (**0.330**).
+3. It **grows in absolute pixels** (cap 14 → 34) while **shrinking relative to
+   the capsule** (0.333 → 0.181 of capsule height).
+
+So the expanded clock is roughly **2.4× the collapsed clock in device px**,
+not the same size. Interpolate all three on the same eased progress as the
+capsule — do not cross-fade two separately-positioned clocks, and do not keep
+the collapsed size.
+
+Date and weather content fades in later in the morph (visible from frame 174),
+i.e. content opacity lags geometry. That is a second, slower track.
