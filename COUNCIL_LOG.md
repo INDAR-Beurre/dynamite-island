@@ -1834,3 +1834,20 @@ recorded as §18: no PAM crate, no ext-session-lock binding,
 live that `mmsg get all-clients` / `all-tags` still answer while "locked",
 and `unlock`→`collapsed` recovers. `swaylock` is the owner's own locker on
 SUPER+CTRL+l — never invoke or rebind. Both children steered with this.
+
+## r1d — font weight + clock colour landed (parent verification)
+
+Measured on the live binary (mtime 06:42:30, pid 5234):
+- clock core colour **(187,213,254)** vs reference (188,214,255) — §11 landed.
+- `lapvar_norm` **1734.95 → 1296.1** against reference 1277.0: gap **35.9% → 1.5%**.
+- aspect 2.667 (ref 2.643, +0.9%); cap/pill 0.361 (ref 0.357, +1.1%).
+- `scripts/fontcheck.py assets/fonts/Inter-Clock.ttf 12.105 0.0275` → PASS
+  (stem/cap +2.4%, w/cap −0.3%).
+
+Instrument note: added `--text` to fontcheck. Digit identity swings ink width
+~17% ('1' narrow, '0' wide), so the four-string average cannot be compared to
+a single live capture. Also: measuring the live clock needs the capsule's
+**rectangular middle** (inset x by the stadium radius) — a plain bbox includes
+bright wallpaper in the corners and reported cap 36 in a 36 px pill.
+
+Still open: morph pose count 2–3 vs reference 14; halo §19; lock material.
