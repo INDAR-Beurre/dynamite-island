@@ -2271,3 +2271,6 @@ was not used or invented. Absolute wf latency is explicitly unresolved; grim
 onset is the only absolute measurement and is sampling-limited.
 Slots: visual pill/panels/lock, motion/instrument, perf/RAM, dictation,
 packaging, Rust correctness, stress integrity, UX/accessibility. No edits.
+r2 panel dispatched: 15 slots in one turn. Models: hy4 #1/#2/#3/#15;
+logfare deepseek #4/#8/#14; group deepseek #5/#9/#13; logfare glm-5.3 #6/#11;
+fasfas deepseek #7/#12; logfare glm-5.3-flash #10. All read-only.
