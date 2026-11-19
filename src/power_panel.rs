@@ -620,6 +620,13 @@ pub fn button_hit(px: f32, py: f32) -> Option<usize> {
 }
 
 /// (label, exact command) for disc `i`.
+///
+/// REFERENCE ONLY — no entry here is ever executed by the panel. They
+/// document what the real system command would be. In particular the
+/// lock entry must stay unexecuted: the panel's lockscreen is a visual
+/// preview with no PAM and no session-lock, so spawning a real locker
+/// from it could lock the owner out irrecoverably. The Lock disc opens
+/// the preview instead (see `PressAction::PowerButton` in main.rs).
 pub fn action_command(i: usize) -> (&'static str, &'static str) {
     match i {
         0 => ("suspend", "loginctl suspend"),

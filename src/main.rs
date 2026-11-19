@@ -6869,18 +6869,24 @@ impl PointerHandler for Island {
                             self.apply_theme(i);
                         }
                         PressAction::PowerButton(i) => {
-                            // iter36 a6b: only Lock executes. The other
-                            // four are destructive: log the exact command
-                            // (command-path verification) and do NOT run
-                            // it unannounced.
+                            // NO disc executes a system command. The four
+                            // destructive ones log their command path only;
+                            // Lock opens the in-panel lockscreen PREVIEW.
+                            // It must never spawn the real locker: the
+                            // preview has no PAM and no session-lock, so
+                            // handing the session to swaylock here could
+                            // lock the owner out with no way back in.
                             let (label, cmd) = power_panel::action_command(i);
                             if i == 2 {
                                 eprintln!(
-                                    "dynamite-rust: DBG press -> power lock ({})",
+                                    "dynamite-rust: DBG press -> power lock: preview only, NOT executing {}",
                                     cmd
                                 );
-                                self.request_state(IslandState::Collapsed);
-                                spawn_exec(cmd);
+                                // enter_lockscreen, not request_state: the
+                                // preview swaps geometry wholesale and must
+                                // not capsule-morph a fullscreen surface.
+                                let handle = self.loop_handle.clone();
+                                self.enter_lockscreen(&handle);
                             } else {
                                 eprintln!(
                                     "dynamite-rust: DBG press -> power {} ({}): NOT executed, command-path only",
@@ -7068,7 +7074,12 @@ impl KeyboardHandler for Island {
         // state — see sync_keyboard_interactivity). Anything else goes
         // to the per-view key handlers below.
         if event.keysym == Keysym::Escape
-            && (MENU_CYCLE.contains(&self.state) || self.state == IslandState::TrayMenu)
+            && (MENU_CYCLE.contains(&self.state)
+                || self.state == IslandState::TrayMenu
+                // The Lock disc now opens the preview by click, so Esc
+                // must close it too — otherwise a full-screen preview
+                // with no keyboard exit is a trap.
+                || self.state == IslandState::Lockscreen)
         {
             if self.state == IslandState::ControlCenter
                 && (controlcenter_panel::cc_bt_submenu_open()
@@ -9193,6 +9204,27 @@ mod iter36_tests {
             classify_press(((ox + mid) as f64, below), IslandState::Calendar, false, 0, 0, 0),
             PressAction::NoOp
         );
+    }
+
+    /// Safety guard, not a style check: the Lock disc must open the
+    /// in-panel preview and never hand the session to a real locker.
+    /// There is no runtime API to assert this through (the arm's whole
+    /// job is a side effect it must NOT have), so pin the source.
+    #[test]
+    fn power_lock_disc_never_spawns_a_real_locker() {
+        let src = include_str!("main.rs");
+        let arm = src
+            .split("PressAction::PowerButton(i) => {")
+            .nth(1)
+            .expect("PowerButton arm present")
+            .split("\n                        }")
+            .next()
+            .expect("arm body");
+        assert!(
+            !arm.contains("spawn_exec"),
+            "the Lock disc must open the preview, not execute a locker"
+        );
+        assert!(arm.contains("enter_lockscreen"), "Lock must open the preview");
     }
 
     #[test]
