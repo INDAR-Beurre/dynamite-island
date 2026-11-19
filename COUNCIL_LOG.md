@@ -1617,3 +1617,36 @@ reload ever exceeds ~6 s`.
 Also: `state_machine` seeding now falls back to **asking the panel** when
 `grim` fails, instead of treating a failed capture as "not collapsed" — three
 groups logged `liveness …: grim failed` under concurrent load.
+
+## Instrument repair #19 — stop tuning the threshold, measure the thing
+Three successive tunings (#17 3-sample persistence, #18 return-to-baseline,
+then a quarter-median rule) each still failed a wallpaper/lock reload. All
+three judged an excursion by its **duration**, and a reload can last
+arbitrarily long. Stopped tuning and measured what the +11.5 MB actually is:
+
+| state | VmRSS | Pss |
+|---|---|---|
+| collapsed | 33.5 MB | 30.2 MB |
+| lockscreen | 84.8 MB | 58.9 MB |
+| unlocked | 33.1 MB | 30.0 MB |
+
+**VmRSS swing +51.3 MB, Pss swing +28.6 MB.** The shm maps go
+`(Size 22 MB, Rss 0)` → `(45 MB, 45 MB)` → back. VmRSS counts pages the
+compositor also maps; it was never the right metric for "as little RAM as
+possible". `rss_kb()` now reads **Pss** from `smaps_rollup`, falling back to
+VmRSS, and every label reports which metric was used.
+
+**The verdict is now a SHAPE test, not a threshold**: a leak never returns to
+its baseline, a reload always does. Judge once at the end —
+`median(last 20) - median(rss[20:40])` — and report per-iteration excursions as
+observations. The early window matters: against a whole-tail median a slow
++0.08 MB/iter leak read as +6.4 MB and **passed**; against the early window it
+reads +12.8 MB and fails.
+**`scripts/stress/leak_shape_selftest.py` — 10/10 PASS**: flat, and reloads of
+2/5/25/60/100 samples all PASS; linear +0.25, slow +0.08, step +25 at i110 and
+i170 all FAIL. Every observed real curve is in the fixture set.
+
+## Fixer r1c FAILED — `The model is temporarily unavailable`
+`logfare/deepseek-v4.1-flash-1017` died mid-round after landing verified work
+(embedded fonts, bounded morph rect). Third fixer death; two providers now.
+Its tree state is sound: build 0 errors, 304 tests pass.
