@@ -370,7 +370,24 @@ class App:
             cur = self._log_state()
             if cur is None:
                 return None
-            if start_id is not None and cur[1] == start_id[1] and cur[2] > start_id[2]:
+            if start_id is not None and cur[1] != start_id[1]:
+                # The supervisor rotates the log by mv while the panel holds
+                # the fd open, so /proc/PID/fd/2 re-resolves to a NEW path with
+                # a NEW inode mid-wait. Ignoring that (the old code fell
+                # through both branches) spun to the budget and reported
+                # NO EFFECT on a command the panel had actually accepted.
+                # Re-anchor: the needle may sit anywhere in the new target.
+                try:
+                    with open(cur[3], "rb") as f:
+                        data = f.read()
+                except OSError:
+                    data = b""
+                if needle in data:
+                    self._log_id = cur
+                    return (time.perf_counter() - t0) * 1000.0
+                start_id = cur
+                self._log_id = cur
+            elif start_id is not None and cur[2] > start_id[2]:
                 try:
                     with open(cur[3], "rb") as f:
                         f.seek(start_id[2])
@@ -1003,6 +1020,8 @@ def group_load(app, out):
     problems = []
     iters = 200
     rss = []
+    over_run = 0          # consecutive samples above the bound
+    transient = []        # (iteration, excess) spikes that did NOT persist
     settle = 0.045
     app.refresh()
     for i in range(iters):
@@ -1046,11 +1065,23 @@ def group_load(app, out):
             # climb, because a leak raises later samples above it.
             base_i = statistics.median(rss[20:i + 1])
             out.asserts += 1
-            if (kb - base_i) / 1024.0 > 8.0:
-                out.fails += 1
-                problems.append(
-                    f"iteration {i}: RSS {(kb - base_i)/1024.0:+.1f} MB over "
-                    f"post-warmup median (bound 8 MB)")
+            excess = (kb - base_i) / 1024.0
+            # A LEAK persists; a transient does not. Iterations 50-51 spiked
+            # +11.6 MB and returned to the same 85 MB for the next 150, which
+            # is a panel reload, not growth. Require the excess to hold for
+            # three consecutive samples before calling it a failure, and
+            # report the transient so it is never silently swallowed.
+            if excess > 8.0:
+                over_run += 1
+                if over_run == 3:
+                    out.fails += 1
+                    problems.append(
+                        f"iteration {i}: RSS {excess:+.1f} MB over "
+                        f"post-warmup median for 3 samples (bound 8 MB)")
+                elif over_run == 1:
+                    transient.append((i, excess))
+            else:
+                over_run = 0
 
     if len(rss) == iters:
         warm = rss[:20]                      # one-time lazy allocations:
@@ -1072,6 +1103,11 @@ def group_load(app, out):
         # decile curve so the shape is visible, not just two numbers
         curve = [f"{rss[j]/1024:.0f}" for j in range(0, iters, 20)]
         out.extra.append("RSS curve (every 20th iter, MB): " + " ".join(curve))
+        if transient:
+            shown = ", ".join(f"i{i}:{e:+.1f}" for i, e in transient[:6])
+            out.extra.append(
+                f"transient RSS spikes (not leaks, <3 samples): {shown}"
+                + (f" +{len(transient)-6} more" if len(transient) > 6 else ""))
     return problems
 
 

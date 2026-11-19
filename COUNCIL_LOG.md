@@ -1534,3 +1534,30 @@ a rapid exit whatever the rc, so 10 strikes hit `GIVE-UP CAP REACHED … backing
 to 300s`. **Fix**: guard now exits **75 (EX_TEMPFAIL)**, and both the live
 `~/.config/mango/scripts/dynamite_autostart.sh` and the repo copy treat rc=75 as
 "another instance owns the socket" → log and `exit 0`, no strike. Backup kept.
+
+## Instrument repairs #16, #17 — two more false verdicts, both harness-side
+04:59 run: `TOTAL tests=1207 asserts=6179 fails=3` / `FAIL: load_leak, state_machine`.
+Neither was a product defect.
+
+**#16 `state_machine` NO EFFECT was a log-rotation blind spot.**
+`pair-reset collapsed: no '-> Collapsed' morph line within 2.0s (last confirmed
+state b'traymenu')`. Parent reproduced traymenu→collapsed at gaps
+0.00/0.02/0.05/0.20 s — **all four produced the line** — and replayed the exact
+11-word/20 ms pair cadence **4/4 OK**. So the panel was never at fault.
+Root cause: `~/.config/mango/scripts/dynamite_autostart.sh:71-79` rotates the
+log with `mv` at 256 KiB while the panel holds the fd open, so
+`/proc/PID/fd/2` re-resolves to a NEW path with a NEW inode mid-wait.
+`wait_effect` only handled `cur[1] == start_id[1]` (same inode, grown); an
+inode change fell through BOTH branches and spun to the budget.
+**Fix**: on inode change, re-anchor and scan the new target from its start.
+
+**#17 `load_leak` +11.6 MB at iterations 50-51 was a transient, not a leak.**
+Curve `62 85 85 85 85 84 85 85 85 85`, `growth_after_warmup=-0.1`. Two samples
+spiked and returned to the same 85 MB for 150 iterations — a panel reload.
+**Fix**: the bound now requires the excess to hold for **3 consecutive
+samples**; non-persistent spikes are reported as `transient RSS spikes`.
+**Mutation-tested**: flat → 0 fails · 2-sample spike → **0 fails, 1 transient**
+· linear +0.2 MB/iter → fails · persistent +25 MB step → fails.
+
+Latency unchanged and excellent: p50 44.9 / p95 85.7 / p99 127.5 / max 140.4
+vs 400 ms bound.
