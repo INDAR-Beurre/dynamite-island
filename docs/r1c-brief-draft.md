@@ -594,3 +594,32 @@ Verify after setting them:
 ```sh
 python3 scripts/measure.py    # expect cap 15, stroke/cap 0.200, pill 111x42
 ```
+
+## 5c. ⛔⛔ RETRACTION OF §5b — "set 74x28" was WRONG. LEAVE THE GEOMETRY ALONE.
+
+§5b told you to set `collapsed_width=74 bar_height=28` to reach a 111x42 pill.
+**Do not do that.** I matched ABSOLUTE DEVICE PIXELS across two screens of
+DIFFERENT WIDTH:
+
+| | screen | pill | % of screen width |
+|---|---|---|---|
+| reference | **2560**x1440 | 111x42 | **4.336 %** |
+| ours now (67x25) | **2256**x1504 | 98x38 | **4.344 %** |
+| my §5b target (74x28) | 2256x1504 | 111x42 | **4.920 %** |
+
+The scale-invariant quantity is the pill's **fraction of screen width**, because
+that is what a viewer actually sees. Ours is already within **0.2 %** of the
+reference. My target would have made it **13.5 % too wide**.
+
+The same reasoning dissolves the cap-height gap: at the correct proportional
+size the reference cap scales to `15 x 38/42 = 13.6 px`, and we render **13**.
+`cap/pill_h` is 0.342 vs 0.357 — 4.2 %, i.e. **one pixel of quantisation** at
+this size (cap 13 -> 0.342, cap 14 -> 0.368; the reference 0.357 sits between
+them and is not reachable). Likewise the stem: proportionally it should be
+`3 x 38/42 = 2.71 px` and we render 3, because a 2.71 px stem does not exist.
+
+**Conclusion: the collapsed geometry is DONE. `collapsed_width=67`,
+`bar_height=25` stay as they are.** Both "too heavy" (§5) and "too small" (§5b)
+were the same mistake — comparing absolute pixels across different screens.
+Do not change config geometry, font weight, font file, or `text_px`.
+Spend the round on the real blockers: the startup panic and the morph.

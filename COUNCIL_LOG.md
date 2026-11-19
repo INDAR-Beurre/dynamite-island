@@ -1225,3 +1225,17 @@ Inter-Medium.ttf): `bar_height=28` ⇒ text_px 13.56 ⇒ **cap 15, stroke/cap 0.
 text_w 55** vs reference **15 / 0.200 / 54**. With `collapsed_width=74` ⇒ pill **111×42**,
 exactly the reference. **Two config values close the entire sharpness gap; no font change.**
 Recorded in `docs/r1c-brief-draft.md` §5b (commit `d588998`).
+
+## ⛔⛔ PARENT SELF-CORRECTION #10 — §5b's "74x28" was wrong; geometry is already DONE
+Matched absolute device px across screens of different width. Scale-invariant truth:
+reference 111/2560 = **4.336 %** of screen width; ours (67x25) 98/2256 = **4.344 %**
+— **0.2 % off**. My 74x28 target = 111/2256 = 4.920 % = **13.5 % too wide**.
+Proportional cap = 15x38/42 = 13.6 vs our 13 ⇒ cap/pill_h 0.342 vs 0.357 is **one
+pixel of quantisation** (13->0.342, 14->0.368; 0.357 unreachable). Proportional stem
+2.71 px vs our 3 — a 2.71 px stem cannot exist. **"Too heavy" and "too small" were the
+same error.** Collapsed geometry is finished; config stays 67x25.
+Caught BEFORE the fixer applied it (r1c died on dispatch). Brief §5c records it.
+
+## Fixer r1c FAILED on dispatch — `YJS: Upstream error`, model swap
+Second consecutive failure on `magpie/group/deepseek-v4.1-flash-1017` (r1b died
+mid-round, r1c died instantly). Per the skill's two-strike rule the fixer model swaps.
