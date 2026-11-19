@@ -1803,3 +1803,34 @@ vs video 1's 0.224/0.430/0.507. Backdrop sharp: best-fit Gaussian < 0.3 px
 
 **Two different clock materials, do not unify**: island pill = fixed
 #BCD6FF; lock = wallpaper frosting.
+
+## r1d — owner-reported blocker (parent, chain 5t)
+
+Owner sent a phone photo of `/tmp/ab_fair.png` and said the halos are real
+and must be fixed: *"when I close it … instead of having something round,
+it's cubic."* **Parent retraction #12**: I had earlier written these off as
+composite paste artefacts. Wrong — reproduced on the live desktop, unscaled.
+
+Finding (§19, blocker): `draw_top_row_2x` (`src/main.rs:2716-2720`) `fill(0)`s
+its whole rect on the 2× canvas, setting **alpha 0**, punching a transparent
+rectangle through the panel just upscaled. Called for MENU_CYCLE states at
+`src/main.rs:5839-5842`. Invisible before r1d §0 (pill hung above the panel,
+strip was over wallpaper anyway); §0 gave panel and pill a shared top edge,
+so the strip now lies inside the panel.
+
+Measured: hole x[954,1211] y[22,56] = 258×35 device px, identical in **all 8**
+menu states, single-pixel edges, no AA. Collapsed is clean.
+
+Parent shipped the regression test `scripts/halo_check.py`: 8/8 FAIL now,
+`collapsed` PASS as negative control. Three detector traps solved (app window
+below y98; hole splits the panel's dark run so width must come from lower
+rows; threshold cannot separate hole from glyphs/accent — 7×7 erosion can).
+
+## r1d — safety constraint (parent, chain 4t)
+
+Owner is leaving for school: a lockout is unrecoverable. Verified and
+recorded as §18: no PAM crate, no ext-session-lock binding,
+`KeyboardInteractivity::None` for Lockscreen (`src/main.rs:4472`). Proved
+live that `mmsg get all-clients` / `all-tags` still answer while "locked",
+and `unlock`→`collapsed` recovers. `swaylock` is the owner's own locker on
+SUPER+CTRL+l — never invoke or rebind. Both children steered with this.
