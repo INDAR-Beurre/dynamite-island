@@ -1154,3 +1154,14 @@ Parent took only the findings that touch no `src/`, each verified by running:
   `~/.config/mango/rule.conf` (backup kept). The documented no-blur rule had matched nothing.
 - `a0eb900` `deploy/` ships rule.conf + autostart with ISLAND_HOME/XDG_RUNTIME_DIR,
   no silent `qs -c dynamite` substitution. Missing-binary path proven: exit 1.
+
+## Parent verification of the fixer's new region upscale (chain 3t)
+r1b added `upscale_canvas_2x_region` (`src/main.rs:615`), used on the settled path
+(`src/main.rs:5376`); morph/lock still take the full-stage path (`:5374`).
+**New failure mode the full-stage version cannot have: a seam at the rect boundary.**
+The blend reads `i-1`/`i+1`, so a rect starting mid-image must still read source
+pixels outside it. Parent extracted the three fns verbatim and asserted, for every
+rect, every interior pixel equals the full-stage result:
+**847 rect cases across 8 sizes, 0 mismatches** (`scripts/perf/region_exactness.rs`,
+commit `0d71059`). Includes 1x1, 1xN, Nx1, odd sizes, edge-touching and fully-outside rects.
+So the optimisation is safe; the remaining morph cost is untouched, not broken.
