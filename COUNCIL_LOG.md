@@ -2260,3 +2260,14 @@ A 3-trial grim run on the same binary measures onset worst 56.0 ms, capture
 248.7 ms settle duration are sampling-limited (~33 ms/frame), not proof of a
 60 Hz presentation defect. The earlier 16-pose wf result remains the valid
 relative-motion result. No src change was made for this investigation.
+
+## r2 panel dispatch (chain 3t)
+
+15 read-only critics, hard tier retained: multi-surface Wayland UI, lock
+preview, dictation, packaging and a 1207-test stress surface. Visual reference
+is the owner's captured video material in `docs/reference/`; the Sleek
+`magpie-image-mcp` reference is not applicable to this desktop replication and
+was not used or invented. Absolute wf latency is explicitly unresolved; grim
+onset is the only absolute measurement and is sampling-limited.
+Slots: visual pill/panels/lock, motion/instrument, perf/RAM, dictation,
+packaging, Rust correctness, stress integrity, UX/accessibility. No edits.
