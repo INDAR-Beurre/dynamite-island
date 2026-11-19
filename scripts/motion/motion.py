@@ -318,19 +318,26 @@ def wf_record(path, region, seconds, trig_delay, sock, word):
     except subprocess.TimeoutExpired:
         p.kill()
         p.wait(5)
-    # PTS -> wall clock: assume the last frame is ~1 interval before SIGINT.
     pts = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0",
                           "-show_entries", "frame=pts_time", "-of", "csv=p=0",
                           path], capture_output=True, text=True).stdout
     tv = [float(x.strip().rstrip(",")) for x in pts.split()
           if x.strip().rstrip(",")]
     if len(tv) < 4:
-        return [], {"error": "no frames", "n_pts": len(tv)}
+        return [], {"error": "no frames", "n_pts": len(tv),
+                    "absolute_latency_resolved": False}
+    # PTS -> wall clock cannot be recovered reliably from the recorder's
+    # final frame. The old `t_sig - last_pts` mapping sometimes placed the
+    # trigger BEFORE the first PTS (negative pts_trig) and manufactured a
+    # ~340 ms flat prefix. Keep the relative PTS series for motion shape,
+    # but mark absolute command->first-pixel latency unresolved instead of
+    # turning a recorder-startup offset into a product defect.
     t_sig_rel = t_sig - t_pop
-    offset = t_sig_rel - tv[-1]            # wall = popen + offset + pts
-    pts_trig = (t_trig - t_pop) - offset if t_trig else None
+    offset = t_sig_rel - tv[-1]
+    pts_trig = None
     return tv, {"offset_s": offset, "pts_trig": pts_trig, "n_pts": len(tv),
-                "span_s": tv[-1] - tv[0], "sigint_rel_s": t_sig_rel}
+                "span_s": tv[-1] - tv[0], "sigint_rel_s": t_sig_rel,
+                "absolute_latency_resolved": False}
 
 
 def wf_extract(path, outdir, trial, pts_list):
@@ -461,8 +468,17 @@ def grab(region, path):
 
 
 # --------------------------------------------------------------------------- #
-def outcome(frames, pre, bounds):
-    """Per-trial verdict: settled geometry, latency, reversals, overshoot."""
+def outcome(frames, pre, bounds, allow_relative=False):
+    """Per-trial verdict: settled geometry, latency, reversals, overshoot.
+
+    `allow_relative` keeps a wf-recorder trial usable after its absolute
+    wall-clock trigger was rejected. The series is then indexed from the
+    first captured frame, so only relative motion metrics are meaningful;
+    `latency_ms` and command-relative `settle_ms` stay None.
+    """
+    if allow_relative:
+        for i, f in enumerate(frames):
+            f["dt"] = f["t0"] - frames[0]["t0"]
     w = [f for f in frames if f["dt"] is not None and f["geom"]]
     after = sorted([f for f in w if f["dt"] >= 0], key=lambda f: f["dt"])
     if len(after) < 3:
@@ -477,21 +493,39 @@ def outcome(frames, pre, bounds):
     travel = target - h0
     # None = the change was never observed inside the burst. Reporting a large
     # number here would be an extrapolation, so absence stays absent.
-    lat = next((f["dt"] * 1000 for f in after
-                if abs(f["geom"]["total_h"] - h0) > bounds["settle_tolerance_px"]),
-               None)
+    lat = None if allow_relative else next(
+        (f["dt"] * 1000 for f in after
+         if abs(f["geom"]["total_h"] - h0) > bounds["settle_tolerance_px"]),
+        None)
     if lat is not None and lat > 900:
         lat = None
     tol = bounds["settle_tolerance_px"]
     settle = None
-    for i, f in enumerate(after):
-        if abs(f["geom"]["total_h"] - target) <= tol and \
-                all(abs(g["geom"]["total_h"] - target) <= tol for g in after[i:]):
-            settle = f["dt"] * 1000
-            break
-    # settle DURATION is what the animation costs; measuring it from the command
-    # would just re-report the command->first-pixel latency on top of it.
-    settle_dur = (settle - lat) if (settle is not None and lat is not None) else None
+    if not allow_relative:
+        for i, f in enumerate(after):
+            if abs(f["geom"]["total_h"] - target) <= tol and \
+                    all(abs(g["geom"]["total_h"] - target) <= tol for g in after[i:]):
+                settle = f["dt"] * 1000
+                break
+    else:
+        # Relative settle duration only: time from the first changed pose to
+        # the final stable pose. It never claims command-to-settle latency.
+        first_change = next((i for i, f in enumerate(after)
+                             if abs(f["geom"]["total_h"] - h0) > tol), None)
+        if first_change is not None:
+            for i in range(first_change, len(after)):
+                if abs(after[i]["geom"]["total_h"] - target) <= tol and \
+                        all(abs(g["geom"]["total_h"] - target) <= tol
+                            for g in after[i:]):
+                    settle = None
+                    settle_dur = (after[i]["dt"] - after[first_change]["dt"]) * 1000
+                    break
+            else:
+                settle_dur = None
+        else:
+            settle_dur = None
+    if not allow_relative:
+        settle_dur = (settle - lat) if (settle is not None and lat is not None) else None
     stats_trial = [f["geom"]["total_h"] for f in after]
     rev = 0
     for i in range(1, len(stats_trial) - 1):
@@ -680,7 +714,13 @@ def run():
         for f in frames:
             f["geom"] = analyse_frame(f["path"], cx_crop, prev)
             prev = f["path"]
-        o = outcome(frames, pre, b) if trig["t"] is not None else None
+        # Relative PTS is still valid for pose shape, pacing and settle
+        # duration. Absolute command->first-pixel latency is unresolved for
+        # wf-recorder (see wf_record), so keep the trial and its relative
+        # series but do not invent a command-relative timestamp.
+        o = outcome(frames, pre, b, allow_relative=(args.source == "wf"))
+        if args.source == "wf" and o:
+            o["absolute_latency_resolved"] = False
         # pose count over the morph window: command -> anim_ms + 2 intervals.
         # This is THE smoothness number: how many distinct images the panel
         # actually presented while it was supposed to be animating.
@@ -708,6 +748,11 @@ def run():
             "frames": len(frames),
             "no_island": sum(1 for f in frames if not f["geom"]),
             "samples_after_trigger": o["samples"] if o else 0,
+            # Audit the wall->PTS offset: absolute latency is only as good as
+            # this mapping, and a long flat prefix must be attributable.
+            "wf_meta": meta if args.source == "wf" else None,
+            "series_dt_ms": [round(f["dt"] * 1000, 1) for f in frames
+                             if f["dt"] is not None],
             "total_h_series": o["series_total_h"] if o else None,
             "start_total_h": o["start_total_h"] if o else None,
             "target_total_h": o["target_total_h"] if o else None,
@@ -847,16 +892,21 @@ def run():
         travel is not None and travel >= b["travel_min_px"],
         f">= {b['travel_min_px']} px",
         "no travel means the morph never happened / wrong signal")
+    absolute_latency = args.source != "wf"
     add("latency_ms", round(lat_max, 1) if lat_max is not None else None,
         lat_max is not None and lat_max <= b["latency_bound_ms"],
         f"<= {b['latency_bound_ms']:.0f} ms (worst trial)",
-        "command -> first visible change; the user sees this as lag")
+        "UNRESOLVED for wf-recorder: its PTS has no trustworthy wall-clock "
+        "anchor. Relative pose timing remains measured.",
+        resolved=absolute_latency and lat_max is not None)
     add("settle_ms", round(settle_max, 1) if settle_max is not None else None,
         settle_max is not None and never_settled <= len(clean) // 4
         and settle_max <= b["settle_bound_ms"],
         f"<= {b['settle_bound_ms']:.0f} ms from command (anim {args.anim_ms:.0f} + "
         f"1 interval + slack), never-settled <= {len(clean) // 4} trials",
-        "settle measured from the command, so it contains dispatch latency")
+        "UNRESOLVED for wf-recorder: command-relative settle would inherit "
+        "the same invalid wall-clock offset. Use settle_duration_ms instead.",
+        resolved=absolute_latency and settle_max is not None)
     add("settle_duration_ms",
         round(settle_dur_max, 1) if settle_dur_max is not None else None,
         settle_dur_max is not None and settle_dur_max <= b["settle_duration_ms"],

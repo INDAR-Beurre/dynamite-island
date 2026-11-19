@@ -2244,3 +2244,19 @@ Stress on the same binary: TOTAL tests=1207 asserts=6179 fails=0 groups=5,
 load_leak growth -32.2 MB, peak_delta +2.0 MB, socket p95 0.7 ms.
 320 Rust tests pass, render_check PASS 9/9, halo_check PASS 8/8.
 Commits: d8e3ca4 (stage 512 + lock-ring release + detectors), 8ae0a00 (trend).
+
+## r2 absolute-latency correction
+
+The read-only trace found no panel-side dispatch delay: socket -> begin_morph
+-> synchronous first draw, and a direct socket->morph-log probe is ~5 ms. The
+341-349 ms onset was produced by `wf_record`'s `t_sig - last_pts` mapping; an
+audited trial had `pts_trig=-0.19406` before the recording even started.
+`wf_record` now returns `absolute_latency_resolved:false`; wf trials retain
+relative pose/settle-duration data and mark command-relative latency and
+settle UNRESOLVED rather than failing on a fabricated clock.
+
+A 3-trial grim run on the same binary measures onset worst 56.0 ms, capture
+29.7 fps, 8 distinct poses, no reversals/overshoot. Its 41.5 ms pose hold and
+248.7 ms settle duration are sampling-limited (~33 ms/frame), not proof of a
+60 Hz presentation defect. The earlier 16-pose wf result remains the valid
+relative-motion result. No src change was made for this investigation.
