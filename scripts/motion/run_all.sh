@@ -29,20 +29,34 @@ TRIALS=${2:-5}
 # median delta 13.8 and 4 spikes on a pill that cannot move).
 # Margin is generous enough to contain the widest expanded panel.
 REGION=$("${PYTHON:-python3}" - <<'PY'
-import json, subprocess, sys
+import json, subprocess, sys, os
+# The output's LAYOUT ORIGIN is not fixed: eDP-1 moved to y=1543 mid-run and
+# every hardcoded y=0 crop then missed the output entirely -- grim returned
+# "supplied geometry did not intersect with any outputs" and captured 0 frames.
+# Query it, and offset the pill's screen coordinates into layout space.
+ox = oy = 0
 try:
+    mons = json.loads(subprocess.run(["mmsg", "get", "all-monitors"],
+                                     capture_output=True, text=True,
+                                     check=True).stdout)["monitors"]
+    m = next((m for m in mons if m.get("active")), mons[0])
+    ox, oy = m["x"], m["y"]
+except Exception:
+    pass
+try:
+    here = os.path.dirname(os.path.abspath("__file__"))
     d = json.loads(subprocess.run(
-        [sys.executable, "../../scripts/measure.py"],
+        [sys.executable, os.path.join(here, "..", "measure.py")],
         capture_output=True, text=True, check=True).stdout)
     p = d["pill"]
-    if d.get("state") == "not-collapsed":
+    if d.get("state") == "not-collapsed" or not p:
         raise ValueError("not collapsed")
     s = 1.5
-    cx = (p["x"] + p["w"] / 2) / s
-    x0 = max(0, int(cx - 200)); x1 = int(cx + 200)
-    print(f"{x0},0,{x1},210")
+    cx = ox + (p["x"] + p["w"] / 2) / s
+    x0 = max(ox, int(cx - 200)); x1 = int(cx + 200)
+    print(f"{x0},{oy},{x1},{oy + 210}")
 except Exception:
-    print("640,0,900,210")   # fall back to the old window, never abort
+    print(f"{ox + 640},{oy},{ox + 900},{oy + 210}")
 PY
 )
 FPS=20

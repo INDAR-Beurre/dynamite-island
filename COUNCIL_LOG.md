@@ -1473,3 +1473,17 @@ converges to the steady state. The summary `base` likewise uses the tail.
 **Mutation-tested rather than assumed** (`flat` / `linear +0.2 MB/iter` /
 `step +25 MB at iter 110`): flat → **0 fails**, linear → **99 fails**,
 step → **90 fails**. The gate still catches both leak shapes.
+
+## Instrument repair #15 — the output's LAYOUT ORIGIN moved; every crop missed it
+04:40 motion run captured **0 frames** in every stage. `errors.log`:
+`supplied geometry did not intersect with any outputs` (repeated).
+`mmsg get all-monitors` → eDP-1 is at **x=0, y=1543**, not 0,0. Every hardcoded
+`y=0` crop therefore fell outside the output. `grim -g "0,1543 1504x200"` works.
+**This is the same class as the reference-frame overwrite**: an instrument
+assuming a fixed world instead of querying it.
+**Fix**: `scripts/motion/run_all.sh` and `scripts/motion/capture.sh` both query
+`mmsg get all-monitors`, take the active monitor's `x,y`, and offset the crop
+into layout space. Derived region is now `552,1543,952,1753`; capture.sh
+default went from 0 frames to **11 frames in 1 s at 20 fps**.
+Also fixed a latent path bug: run_all.sh called `../../scripts/measure.py`
+relative to CWD, which only worked from one directory.

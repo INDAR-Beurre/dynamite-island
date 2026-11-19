@@ -40,7 +40,19 @@ case "$SECS" in ''|*[!0-9.]*) echo "seconds must be a number" >&2; exit 2;; esac
 SECS_MS=$(awk -v s="$SECS" 'BEGIN{printf "%d", s*1000}')
 [ "$SECS_MS" -gt 0 ] || { echo "seconds must be > 0" >&2; exit 2; }
 
-REGION="164,0,1340,200"   # x0,y0,x1,y1, LOGICAL px (grim -g space)
+# Default region is in LAYOUT space. The output origin is not fixed (eDP-1
+# moved to y=1543 mid-run), so query it rather than assuming 0,0.
+ORIGIN=$(mmsg get all-monitors 2>/dev/null | python3 -c "
+import json,sys
+try:
+    m=json.load(sys.stdin)['monitors']
+    a=next((x for x in m if x.get('active')), m[0])
+    print(a['x'], a['y'])
+except Exception:
+    print(0, 0)
+" 2>/dev/null || echo "0 0")
+read -r OX OY <<< "$ORIGIN"
+REGION="$((OX+164)),$OY,$((OX+1340)),$((OY+200))"   # x0,y0,x1,y1, LOGICAL px
 FORMAT=ppm
 TRIGGER=""
 
