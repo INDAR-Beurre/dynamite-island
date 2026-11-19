@@ -1066,3 +1066,17 @@ Verified in **three** places, verbatim:
 
 ### #27 lockscreen critic FAILED — `[acp-proxy: the turn degenerated again after the continuation nudge]`
 Second failure for this slot (first was the vision-route death). No output file written. **Not re-dispatched yet**: the parent has now verified the decisive fact itself (draw-only, no PAM), so the slot's highest-value question is already answered. Will re-dispatch on a different route for the *visual* comparison only, with a tighter scope.
+
+### Parent measurement — r1b settled, quiet screen (`r1b-settled`)
+Drove `collapsed`, waited 3 s, recorded through the repaired instrument (state witness now gates it).
+| metric | reference | baseline | **now** | gap |
+|---|---|---|---|---|
+| pill w×h | 111×42 | 141×35 | **100×38** | — |
+| **aspect** | 2.643 | 4.029 | **2.632** | **0.4%** ✅ |
+| cap/pill-h | 0.357 | 0.486 | 0.342 | −4.2% |
+| **stroke/cap** | 0.200 | 0.154 | **0.231** | **+15.5% (overshot)** |
+| lapvar_norm | 1277.0 | — | 1784.4 | +39.7% |
+| RSS | — | 44.2 MB | 55.3 MB | transient, see #26 |
+| **idle CPU** | — | 2–9% | **0.5%** | ✅ |
+**Aspect is essentially solved** (4.029 → 2.632 vs 2.643). **Idle CPU is solved** (2–9% → 0.5%). The remaining sharpness gap is **weight, not rasterisation**: stroke/cap went 0.154 (too thin) → 0.231 (too heavy), passing straight through the 0.200 target. That is a one-value correction, not a redesign.
+`lapvar_norm` rose 1665.7 → 1784.4 while stroke stayed 0.231 — consistent with the pill growing 96→100 px wide (more ink, same weight), not a regression. **Do not read lapvar alone**; the standing instruction holds.
