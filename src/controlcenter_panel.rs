@@ -2666,8 +2666,15 @@ fn draw_icon(
     cy: f32,
     rgb: (u8, u8, u8),
 ) {
+    // Scale size AND position, exactly as draw_text does. Without this the
+    // glyph was rasterised at logical `px` and placed at logical (cx, cy) on a
+    // device-sized canvas: at 2x it landed at a quarter of the disc's position
+    // and half its size, so Wi-Fi/Bluetooth discs rendered as flat colour with
+    // no icon at all (r2 accessibility critic measured 0 glyph pixels).
+    let s = scale_of(w);
+    let (cx, cy) = (cx * s, cy * s);
     if let (Some(font), Some(ch)) = (icon_font, icon_char(name)) {
-        let (m, cov) = crate::lock_timer::rasterize_cached(font, ch, px);
+        let (m, cov) = crate::lock_timer::rasterize_cached(font, ch, px * s);
         // Glyph top row, same formula as main.rs:
         //   top = baseline - ymin - height, centre = baseline - ymin - height/2
         // so baseline = cy + ymin + height/2, and top simplifies to cy - height/2.
@@ -2688,7 +2695,7 @@ fn draw_icon(
         }
     } else {
         // Placeholder: hollow ring, same footprint as the glyph would have.
-        stroke_circle(canvas, w, h, cx, cy, px / 2.0 - 1.0, 1.5, rgb);
+        stroke_circle(canvas, w, h, cx, cy, (px / 2.0 - 1.0) * s, 1.5 * s, rgb);
     }
 }
 
@@ -4608,6 +4615,69 @@ mod iter98_tests {
         assert_eq!(ink_h_logical(&canvas), [0, 0], "disc-only logical ink");
         assert_eq!(ink_h_phys_bilin(&canvas), [0, 0], "disc-only bilin ink");
     }
+    /// r2 accessibility: a toggle disc must carry a glyph at EVERY draw scale.
+    ///
+    /// `draw_icon` used to rasterise at logical `px` and place at logical
+    /// (cx, cy) on a device-sized canvas, so at 2x the icon landed at a quarter
+    /// of the disc's position and half its size: the live Wi-Fi and Bluetooth
+    /// discs were flat periwinkle with ZERO glyph pixels. The existing glyph
+    /// tests all draw at scale 1.0, which is exactly why they never caught it.
+    #[test]
+    fn toggle_disc_glyph_is_present_and_centred_at_every_scale() {
+        let font = load_icon_font();
+        for scale in [1.0f32, 1.5, 2.0] {
+            let w = (CC_W as f32 * scale).round() as u32;
+            let h = (160.0 * scale).round() as u32;
+            let mut canvas = vec![0u8; (w * h * 4) as usize];
+            set_scale(w);
+            // disc centre in LOGICAL units, as every caller passes it
+            let (cx, cy) = (80.0f32, 80.0f32);
+            let r = CIRCLE_D / 2.0;
+            fill_rounded_rect(
+                &mut canvas, w, h,
+                Rect::new(cx - r, cy - r, CIRCLE_D, CIRCLE_D), r, PERIWINKLE,
+            );
+            draw_icon(&mut canvas, w, h, Some(&font), "bluetooth", 26.0, cx, cy, NAVY);
+
+            // count glyph pixels inside the disc, in DEVICE units
+            let (dcx, dcy) = ((cx * scale) as i32, (cy * scale) as i32);
+            let rad = (r * scale) as i32;
+            let mut glyph = 0usize;
+            let mut sx = 0i64;
+            let mut sy = 0i64;
+            for y in (dcy - rad)..(dcy + rad) {
+                for x in (dcx - rad)..(dcx + rad) {
+                    if x < 0 || y < 0 || x >= w as i32 || y >= h as i32 {
+                        continue;
+                    }
+                    let (pr, pg, pb) = px_rgb(&canvas, w, x, y);
+                    // navy glyph on periwinkle: far from the fill colour
+                    if col_dist((pr, pg, pb), (124.0, 162.0, 245.0)) > 90.0
+                        && pr + pg + pb > 30.0
+                    {
+                        glyph += 1;
+                        sx += x as i64;
+                        sy += y as i64;
+                    }
+                }
+            }
+            let disc_px = (std::f32::consts::PI * (rad * rad) as f32) as usize;
+            assert!(
+                glyph * 100 > disc_px * 8,
+                "scale {scale}: only {glyph} glyph px in a {disc_px} px disc \
+                 (icon missing or mis-scaled)"
+            );
+            // and it must sit ON the disc, not a quarter of the way there
+            let (mx, my) = (sx / glyph as i64, sy / glyph as i64);
+            assert!(
+                (mx - dcx as i64).abs() <= 3 && (my - dcy as i64).abs() <= 3,
+                "scale {scale}: glyph centroid ({mx},{my}) vs disc centre \
+                 ({dcx},{dcy})"
+            );
+            SCALE.with(|c| c.set(1.0));
+        }
+    }
+
 }
 
 #[cfg(test)]
@@ -4760,4 +4830,5 @@ mod iter108_tests {
         let ideal = crate::disc_row_widths(&ideal_canvas, 240, 78, 78, 84, fill, 0.5);
         assert_profile_close("cc-bell-O34", &prof, &ideal, BELL_D);
     }
+
 }

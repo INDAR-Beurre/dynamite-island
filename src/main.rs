@@ -410,6 +410,36 @@ const MENU_CYCLE: [IslandState; 8] = [
     IslandState::Clipboard,
 ];
 
+/// States that actually consume typed keys. `press_key` routes real per-view
+/// input only to these four; the other menu states understand nothing but
+/// Esc/Left/Right.
+const TYPING_STATES: [IslandState; 4] = [
+    IslandState::Launcher,
+    IslandState::Clipboard,
+    IslandState::Wallpaper,
+    IslandState::Themes,
+];
+
+/// Keyboard grab per state (r2 accessibility critic).
+///
+/// Every menu state used to take `Exclusive`, so Music, ControlCenter,
+/// Calendar, Power and TrayMenu stole the keyboard from the focused window
+/// and then swallowed every keystroke: they have no key handler at all.
+/// Those five now take `OnDemand` — keys reach them while the pointer is
+/// inside (which it is, since they are opened by clicking), so Esc and the
+/// arrow cycle still work, and typing goes to the owner's window otherwise.
+/// The four typing states keep `Exclusive` so a search field never loses a
+/// keystroke to the client behind it.
+fn keyboard_mode_for(state: IslandState) -> KeyboardInteractivity {
+    if TYPING_STATES.contains(&state) {
+        KeyboardInteractivity::Exclusive
+    } else if MENU_CYCLE.contains(&state) || state == IslandState::TrayMenu {
+        KeyboardInteractivity::OnDemand
+    } else {
+        KeyboardInteractivity::None
+    }
+}
+
 /// evdev button code for the left mouse button (wl_pointer `button`).
 const BTN_LEFT: u32 = 0x110;
 
@@ -4836,13 +4866,7 @@ impl Island {
     /// enter_lockscreen); idempotent.
     fn sync_keyboard_interactivity(&self) {
         if let Some(layer) = &self.layer {
-            let mode = if MENU_CYCLE.contains(&self.state)
-                || self.state == IslandState::TrayMenu
-            {
-                KeyboardInteractivity::Exclusive
-            } else {
-                KeyboardInteractivity::None
-            };
+            let mode = keyboard_mode_for(self.state);
             layer.set_keyboard_interactivity(mode);
             layer.wl_surface().commit();
         }
@@ -9235,6 +9259,44 @@ mod iter36_tests {
         assert_eq!(power_panel::action_command(3), ("reboot", "loginctl reboot"));
         assert_eq!(power_panel::action_command(4), ("poweroff", "loginctl poweroff"));
     }
+
+    /// r2 accessibility: only the states that consume typing may take the
+    /// keyboard away from the focused window.
+    #[test]
+    fn keyboard_grab_matches_which_states_consume_typing() {
+        for st in TYPING_STATES {
+            assert_eq!(
+                keyboard_mode_for(st),
+                KeyboardInteractivity::Exclusive,
+                "{st:?} has a search field and must keep every keystroke"
+            );
+        }
+        for st in MENU_CYCLE {
+            if TYPING_STATES.contains(&st) {
+                continue;
+            }
+            assert_eq!(
+                keyboard_mode_for(st),
+                KeyboardInteractivity::OnDemand,
+                "{st:?} understands only Esc/Left/Right; it must not steal \
+                 the keyboard from the focused window"
+            );
+        }
+        assert_eq!(
+            keyboard_mode_for(IslandState::TrayMenu),
+            KeyboardInteractivity::OnDemand
+        );
+        assert_eq!(
+            keyboard_mode_for(IslandState::Collapsed),
+            KeyboardInteractivity::None
+        );
+        assert_eq!(
+            keyboard_mode_for(IslandState::Lockscreen),
+            KeyboardInteractivity::None,
+            "the lock preview is not a security boundary and must never grab"
+        );
+    }
+
 }
 
 #[cfg(test)]
