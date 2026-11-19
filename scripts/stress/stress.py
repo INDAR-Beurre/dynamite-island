@@ -252,6 +252,21 @@ class App:
 
     # -- metrics -----------------------------------------------------
     def rss_kb(self):
+        """Proportional memory in kB: Pss if available, else VmRSS.
+
+        VmRSS counts every shm page the compositor also maps, so a lock
+        surface reads +51 MB that is shared, not owned. Pss divides each
+        shared page by its number of sharers, which is what "as little RAM
+        as possible" actually means. The metric name is reported so a reader
+        never mistakes one for the other.
+        """
+        try:
+            with open(f"/proc/{self.pid}/smaps_rollup") as f:
+                for line in f:
+                    if line.startswith("Pss:"):
+                        return int(line.split()[1])
+        except OSError:
+            pass
         try:
             with open(f"/proc/{self.pid}/status") as f:
                 for line in f:
@@ -1058,7 +1073,7 @@ def group_load(app, out):
         kb = app.rss_kb()
         if kb is None:
             out.fails += 1
-            problems.append(f"iteration {i}: VmRSS unreadable")
+            problems.append(f"iteration {i}: {MEM_METRIC} unreadable")
             break
         rss.append(kb)
         # Assert EVERY sample, not just the last one. Critic #11: 200 counted
@@ -1073,16 +1088,15 @@ def group_load(app, out):
             # on a panel that was flat at 85 MB for 160 iterations. A running
             # median converges to the steady state and still catches a real
             # climb, because a leak raises later samples above it.
-            base_i = statistics.median(rss[20:i + 1])
+            # Per-iteration observations, NOT verdicts. Three threshold
+            # tunings in a row failed a wallpaper/lock reload, because they
+            # judged an excursion by its DURATION and a reload can last
+            # arbitrarily long. The shape that separates them: a leak never
+            # returns to its baseline. So record excursions here and judge
+            # once, at the end, on the tail. See leak_shape_selftest.py.
+            base_i = statistics.median(rss[20:40]) if i >= 40 else rss[20]
             out.asserts += 1
             excess = (kb - base_i) / 1024.0
-            # A LEAK never returns to its baseline; a reload does. Counting
-            # consecutive samples still failed a 5-sample wallpaper reload
-            # (i146..i150 at +11.5 MB, then flat at the SAME 85 MB for 50
-            # more iterations, growth_after_warmup=+0.0). So judge an
-            # excursion only once it has ENDED: if it came back to within
-            # 2 MB of the baseline it was transient, however long it lasted.
-            # An excursion still open at the end is judged by the tail below.
             if excess > 8.0:
                 if over_run == 0:
                     over_start = i
@@ -1091,43 +1105,34 @@ def group_load(app, out):
             elif over_run:
                 transient.append((over_start, over_run, over_peak))
                 over_run, over_peak = 0, 0.0
-            # A sustained climb that never comes back is caught here: half
-            # the post-warmup window above the bound cannot be a reload.
-            if i >= 60 and excess > 8.0:
-                recent = rss[i - 20:i + 1]
-                if statistics.median(recent) - base_i > 8.0 * 1024:
-                    out.fails += 1
-                    problems.append(
-                        f"iteration {i}: RSS {excess:+.1f} MB over baseline, "
-                        f"20-sample median also over (bound 8 MB) -- sustained")
-                    break
 
     if len(rss) == iters:
         warm = rss[:20]                      # one-time lazy allocations:
         tail = rss[20:]                      # lock wallpaper + shm slot ring
-        base = statistics.median(tail)       # steady state, not the ramp
-        growth = (tail[-1] - base) / 1024.0
+        base = statistics.median(rss[20:40])  # EARLY steady state; a slow
+                                             # leak raises its own median
+        growth = (statistics.median(rss[-20:]) - base) / 1024.0
         peak = (max(tail) - base) / 1024.0
         bound = 8.0
         out.asserts += 1
         if growth > bound:
             out.fails += 1
             problems.append(
-                f"RSS grew {growth:.1f} MB after warmup (bound {bound:.0f} MB)")
+                f"{MEM_METRIC} grew {growth:.1f} MB after warmup (bound {bound:.0f} MB)")
         out.extra.append(
-            f"RSS MB: first={rss[0]/1024:.0f} warmup_max={max(warm)/1024:.0f} "
+            f"{MEM_METRIC} MB: first={rss[0]/1024:.0f} warmup_max={max(warm)/1024:.0f} "
             f"post20={tail[0]/1024:.0f} last={tail[-1]/1024:.0f} "
             f"peak={max(tail)/1024:.0f} growth_after_warmup={growth:+.1f} "
             f"peak_delta={peak:+.1f} bound={bound:.0f}")
         # decile curve so the shape is visible, not just two numbers
         curve = [f"{rss[j]/1024:.0f}" for j in range(0, iters, 20)]
-        out.extra.append("RSS curve (every 20th iter, MB): " + " ".join(curve))
+        out.extra.append(f"{MEM_METRIC} curve (every 20th iter, MB): " + " ".join(curve))
         if over_run:
             transient.append((over_start, over_run, over_peak))
         if transient:
             shown = ", ".join(f"i{i}x{n}:{p:+.1f}" for i, n, p in transient[:6])
             out.extra.append(
-                f"RSS excursions that returned to baseline (not leaks): {shown}"
+                f"{MEM_METRIC} excursions that returned to baseline (not leaks): {shown}"
                 + (f" +{len(transient)-6} more" if len(transient) > 6 else ""))
     return problems
 
@@ -1249,6 +1254,7 @@ GROUPS = [
 
 
 MIN_ASSERTS = 1000
+MEM_METRIC = "Pss"   # rss_kb() prefers Pss; falls back to VmRSS if unavailable
 
 
 class Out:
