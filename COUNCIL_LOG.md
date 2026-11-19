@@ -1693,3 +1693,26 @@ Chain 4t: r1c died on `The model is temporarily unavailable` after landing
 verified work; two DeepSeek routes have now failed as fixers, so the third
 candidate is GLM 5.3 on logfare — a different model family, not another
 transport retry. It is image-blind, but this brief is entirely numeric.
+
+## ✅ Stress gate GREEN — `TOTAL tests=1207 asserts=6179 fails=0 groups=5` / `RESULT PASS`
+All five groups pass on the current tree (fixer r1d in flight):
+protocol_fuzz 636/0 · state_machine 246/0 · load_leak 200/0 ·
+latency 120/0 · liveness 5/0.
+**Latency p50 34.9 / p95 44.4 / p99 80.9 / max 92.8 ms** vs a 400 ms bound —
+the best measured this run (baseline p95 was 220.7, and one contended run
+read 411.9).
+Memory now reported as **Pss**: `first=57 warmup_max=61 post20=59 last=59
+peak=76`.
+
+## Instrument repair #20 — the baseline sat before a one-time allocation
+The PASS above was real but its label was wrong: `growth_after_warmup=+5.8`
+and `excursions … i49x141` on a curve `57 59 64 64 64 64 64 64 64 64` — a
+one-time step at i49 then **flat for 160 iterations**. `median(rss[20:40])`
+sat below that step. This is the mirror of repair #14.
+**Fix**: baseline is the **settled region `median(rss[40:60])`** — past every
+allocation observed, still early enough that a slow leak separates from it.
+Added an explicit `one-time allocations (i20-40 -> i40-60)` line so the step
+is reported as what it is instead of being folded into "growth".
+**`leak_shape_selftest.py` now 11/11**, including the real i49 curve as a
+fixture: flat, one-time step, and reloads of 2/5/25/60/100 samples all PASS;
+linear +0.25, slow +0.08, and steps at i110/i170 all FAIL.

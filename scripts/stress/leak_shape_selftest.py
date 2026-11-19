@@ -20,12 +20,13 @@ BOUND = 8.0
 def verdict(rss):
     """(fails, growth_mb, peak_mb, excursions) — mirrors group_load."""
     tail_all = rss[20:]
-    # The baseline must be the EARLY post-warmup steady state, not the median
-    # of the whole tail: a slow leak raises its own median and hides itself
-    # (+0.08 MB/iter read as +6.4 MB against a whole-tail median, but +43 MB
-    # against the early window). Allocations are done by i20 in every run
-    # observed; the ramp is visible in the printed curve if that ever changes.
-    base = statistics.median(rss[20:40])
+    # The baseline is the SETTLED region [40:60], not the whole tail (a slow
+    # leak raises its own median and hides itself: +0.08 MB/iter read as
+    # +6.4 MB there) and not [20:40] either (a real run allocated once at i49,
+    # so [20:40] sat below the step and called +5.8 MB of nothing "growth").
+    # [40:60] is past every allocation observed and still early enough that a
+    # slow leak separates from it.
+    base = statistics.median(rss[40:60])
     growth = (statistics.median(rss[-20:]) - base) / M
     peak = (max(tail_all) - base) / M
     excursions = []
@@ -60,6 +61,8 @@ def ramp(n, start, step):
 CASES = []
 # --- must PASS: flat, and reloads of every duration ---------------------
 CASES.append(("flat 85MB", S((1, 58), (199, 85)), 0))
+CASES.append(("one-time step at i49 (real curve)",
+              S((1, 57), (48, 59), (151, 64)), 0))
 for n, at in ((2, 50), (5, 146), (25, 126), (60, 60), (100, 60)):
     CASES.append((f"reload {n} samples at i{at}",
                   S((1, 58), (at - 2, 85), (n, 96), (201 - at - n, 85)), 0))

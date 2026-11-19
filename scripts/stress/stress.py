@@ -1094,7 +1094,7 @@ def group_load(app, out):
             # arbitrarily long. The shape that separates them: a leak never
             # returns to its baseline. So record excursions here and judge
             # once, at the end, on the tail. See leak_shape_selftest.py.
-            base_i = statistics.median(rss[20:40]) if i >= 40 else rss[20]
+            base_i = statistics.median(rss[40:60]) if i >= 60 else rss[20]
             out.asserts += 1
             excess = (kb - base_i) / 1024.0
             if excess > 8.0:
@@ -1109,8 +1109,13 @@ def group_load(app, out):
     if len(rss) == iters:
         warm = rss[:20]                      # one-time lazy allocations:
         tail = rss[20:]                      # lock wallpaper + shm slot ring
-        base = statistics.median(rss[20:40])  # EARLY steady state; a slow
-                                             # leak raises its own median
+        # Baseline = the SETTLED region, not the first post-warmup samples.
+        # A one-time allocation landed at i49 in a real run (curve
+        # 57 59 64 64 64 64 64 64 64 64), so [20:40] sat below it and reported
+        # +5.8 MB of "growth" on a panel flat for 160 iterations. [40:60] is
+        # past every allocation observed and still early enough that a slow
+        # +0.08 MB/iter leak separates from it (+11.2 MB over 200 iterations).
+        base = statistics.median(rss[40:60])
         growth = (statistics.median(rss[-20:]) - base) / 1024.0
         peak = (max(tail) - base) / 1024.0
         bound = 8.0
@@ -1124,6 +1129,9 @@ def group_load(app, out):
             f"post20={tail[0]/1024:.0f} last={tail[-1]/1024:.0f} "
             f"peak={max(tail)/1024:.0f} growth_after_warmup={growth:+.1f} "
             f"peak_delta={peak:+.1f} bound={bound:.0f}")
+        out.extra.append(
+            f"one-time allocations (i20-40 -> i40-60): "
+            f"{(statistics.median(rss[40:60])-statistics.median(rss[20:40]))/1024:+.1f} MB")
         # decile curve so the shape is visible, not just two numbers
         curve = [f"{rss[j]/1024:.0f}" for j in range(0, iters, 20)]
         out.extra.append(f"{MEM_METRIC} curve (every 20th iter, MB): " + " ".join(curve))
