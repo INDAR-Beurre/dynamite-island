@@ -1024,3 +1024,45 @@ Assembled while r1b builds, from **parent-verified** findings only. Eleven secti
 | C dim/session | **Default Dim Too Strong** · GTK4 theming · no display manager | logfare/deepseek-v4.1-flash-1017 | `a614ad91` | `docs/transcript-dim-session.md` |
 **Why C is highest-value:** our lock screen needs a dark veil and we currently derive a *vertical* black veil purely from pixels, with **no stated authority for its strength**. Hyprland's `dim_strength` is exactly that concept and `docs/mango-capabilities.md` records MangoWM has no equivalent — so his number is a target we can adopt directly. Brief demands every number quoted verbatim with an explicit ambiguity flag, because auto-captions garble decimals and a wrong value would be built into the lock screen.
 All three briefs carry the **invented-`#F2A65A` lesson** and require separating *what he states* from *what the worker infers*.
+
+### Instrument repair #10 (parent) — the panel's own witness outranks every pixel heuristic
+`measure.py` returned **pill 220×205 at (1018,15), aspect 1.073, ALL glyph metrics 0.0, `ink: null`, RSS 89.3 MB, CPU 98.5%**. Not a pill. stderr showed another agent driving `Lockscreen → Launcher → Wallpaper → Collapsed`, ending `DBG enter state=Collapsed morph=false pos=(538.5,715.6)` — **y=715.6 logical is the centre of the 1002-tall lock surface**, so the capsule was still mid lock-exit. RSS 89.3 MB independently matches #26's measured **locked** peak of 86.6 MB.
+**Sixth mis-score, fifth distinct cause** — and this one defeats *every* pixel guard: the box starts at y=15 (not 0) and its interior **is** genuinely the panel's own black material. It is simply the wrong surface. No luminance test can separate a lock surface from a pill.
+**Fix:** `panel_state()` reads the panel's own `DBG enter state=… morph=…` witness from `/proc/PID/fd/2`; `main()` emits `state:"not-collapsed"`, `pill: null` and **no gates** unless `state==Collapsed && morph==false`. Authoritative, not inferred — same lesson as the stress harness's surface-presence gate. Falls back to the pixel heuristics when stderr is a pipe. **6/6 self-test checks PASS** (parses witness, takes the LAST not the first, morph true/false, no-witness→None, pipe-stderr safe).
+
+### Transcript miners A/B/C returned — 13 of 13 transcripts now mined
+**★ Worker C corrected my brief and prevented a wrong fix.** I briefed *"his dim number is a target we can adopt directly"*. **That was wrong.** His `dim_strength` dims **unfocused clients relative to a full-brightness focused surface, compositor-side**; our lock veil is an **absolute alpha over a static wallpaper with no focused window**. Different quantity — **not substitutable**.
+- **`dim_strength = 0.12`** (HIGH confidence), stated band **0.12–0.15** (MEDIUM, caption drops the "to"); default **0.5** criticised (HIGH); range 0–1, `1.0` = black privacy filter. Demo "0.01" **AMBIGUOUS — discarded**. No hex ever stated.
+- **Keep the measured veil.** Verified in tree: `src/lockscreen.rs:205-206` `SCRIM_CENTRE 0.22` / `SCRIM_EDGE 0.42`, with an iter13 re-measurement comment (patch-averaged 9×9, corners mean ratio 0.58 ⇒ alpha 0.42, five points 0.39–0.49). Adopting 0.12 would have made the veil ~half as dark as the reference — destroying the pixel match *in the name of following the creator's advice*.
+- Record 0.12–0.15 only as **stated authority that a gentle, still-legible dim is deliberate** and 0.5-heaviness is the known mistake. **His acceptance test is legibility, not a number.**
+- **Safety warning worth carrying:** test the unlock path before enabling lock-at-boot, or a failed lock client leaves an **untypeable locked session**.
+- GTK4: no bearing on a self-drawn panel; one transferable fact — it reads `~/.config/gtk-4.0/gtk.css` **once at startup**, so a shared palette will not live-reload there.
+
+**Worker A (mechanics):**
+- **No perf content exists in any of the three transcripts** — zero mentions of frame callbacks, damage, timers or lag. **Don't spend another pass looking.** (Useful negative: the lag fix must come from measurement, which is where it did come from.)
+- **Anchor-top-only is his centring mechanism** [STATED]: *"since I didn't pick a side, it just sits in the middle."* **We already do this correctly** — verified `src/main.rs:6331` `layer.set_anchor(Anchor::TOP)`.
+- **Real bug it exposed:** `stage_screen_origin()` (`src/main.rs:888-891`) computes `(LOCKSCREEN_SIZE.0 - STAGE_W)/2` from the **constant 1504**, not the live output size. The pill *looks* right because the compositor centres the surface, but the **frost sampling origin** is derived from a hardcoded width — exactly the 246-device-px mis-sample critic #5 predicted. Fix: read the output's logical size.
+- **Exclusive zone confirmed correct as-is**: we reserve `pill_strip_px()`, not the 636-tall stage (that would cost 63% of a 1002 px desktop).
+- **OPEN QUESTION, not a finding:** his bar may be on layer `top` (*"you can go through full screen over your bar"*) where we are `overlay`. Worker labelled it **INFERENCE** and did not check frames, so it is **not promoted**. Test: does the reference pill vanish over fullscreen video? No known frame contains fullscreen video.
+- **Do not propagate T1's margin rule** — he states it then disproves it 20 s later; both halves are in the captions.
+
+**Worker B (taste) — 53 quotes machine-checked verbatim:**
+1. **Contrast is a budget**: *"contrast is basically deciding where people look first"*; blur a screenshot — *"whatever that you can still see in the blurry version is what your desktop is shouting about."*
+2. **One accent**: *"your accent and you only get one"*, *"the only saturated color in the whole palette"*, reserved for *"you are here"*. Base/panels/inactive borders *"really close to each other"* — *"this layer's job is to be quiet"*. Set the palette once: *"all of it pulls from that same palette."*
+3. Clock *"bigger and bolder than everything else in the bar"*; other data *"smaller and dimmer"*.
+4. **Single island**: *"why not have everything pop up out of one single island"*; *"The button itself actually opens up into the menu"*.
+5. *"just make your panel solid… the wallpaper stays behind everything."*
+**The "one trick" = deliberately spend contrast so only the active workspace and the clock survive the blur test.**
+**STATED contradictions with our tree:** four-file accent duplication vs "palette once"; saturated teal bloom vs one accent reserved for "you are here". **NO statement** on glow/bloom, UI gradients, shadows, rim-light, waveform or animation numbers — so those remain *our* judgement, not his authority. Honest separation.
+
+### ⛔ BLOCKER the parent found while verifying — the lock screen does not lock
+Verified in **three** places, verbatim:
+- `src/main.rs:9` — *"lockscreen.rs — a visual harness, NOT a session lock (no ext-session-lock surface, no PAM, no keyboard input yet)"*
+- `src/main.rs:2320` — *"real session lock — no ext-session-lock surface, no PAM"*
+- `src/lockscreen.rs:8` — *"This module is draw-only"*
+`grep -rn 'pam\|PAM' src/*.rs Cargo.toml` → **only comments**. **It is a picture of a lock screen.**
+**Severity call (chain 5t):** the owner asked to *replicate* the lock screen — a visual ask — so under pure replication this is not a defect. But it is named `lockscreen`, driven by a `lockscreen` socket word, and a user who believes it locks and walks away has an **unlocked machine**. That is a security-expectation mismatch.
+**Decision: do NOT build a PAM/session-lock stack tonight.** That is a large risky subsystem (auth, keyboard grab, per-output surfaces, lockout failure modes) the owner did not ask for. The complete-and-lazy move is (a) make the UI honest so nobody mistakes it for a lock, and (b) document exactly what a real lock needs so the owner can decide. MangoWM implements `ext-session-lock-v1` (`docs/mango-capabilities.md`), so the path exists.
+
+### #27 lockscreen critic FAILED — `[acp-proxy: the turn degenerated again after the continuation nudge]`
+Second failure for this slot (first was the vision-route death). No output file written. **Not re-dispatched yet**: the parent has now verified the decisive fact itself (draw-only, no PAM), so the slot's highest-value question is already answered. Will re-dispatch on a different route for the *visual* comparison only, with a tighter scope.

@@ -7,7 +7,7 @@ gates recorded in COUNCIL_LOG.md: sharpness, geometry, CPU, RAM.
 Usage:  ./scripts/measure.py [--png PATH]   (no --png => runs grim)
 Output: one JSON object on stdout.
 """
-import json, os, subprocess, sys, time
+import json, os, re, subprocess, sys, time
 from pathlib import Path
 import numpy as np
 from PIL import Image
@@ -205,6 +205,41 @@ def edge_ramp(a: np.ndarray, box) -> dict | None:
     return {"left_edge_lum": [round(float(v), 1) for v in scan]}
 
 
+def panel_state() -> dict | None:
+    """The panel's OWN last reported state, read from its stderr witness.
+
+    Pixel heuristics have now mis-scored six times (discs swallowed, dark page
+    below, dark window at y=0, dark window mid-screen, dark wallpaper, and a
+    lock surface measured as a pill). The last one defeated every pixel guard:
+    the box was genuinely the panel's own black material, just the wrong
+    surface. The panel states its state outright -- 'DBG enter state=Collapsed
+    morph=false' -- so ask it instead of guessing.
+    """
+    p = pid()
+    if p is None:
+        return None
+    try:
+        target = os.readlink(f"/proc/{p}/fd/2")
+    except OSError:
+        return None
+    if not (target.startswith("/") and os.path.isfile(target)):
+        return None
+    try:
+        with open(target, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - 65536))
+            lines = f.read().decode("utf-8", "replace").splitlines()
+    except OSError:
+        return None
+    for ln in reversed(lines):
+        m = re.search(r"DBG enter state=(\w+) morph=(\w+)", ln)
+        if m:
+            return {"state": m.group(1), "morph": m.group(2) == "true",
+                    "witness": ln.strip()}
+    return None
+
+
 def main() -> int:
     png = None
     if "--png" in sys.argv:
@@ -217,6 +252,20 @@ def main() -> int:
     out = {"png": str(png), "screen": {"w": W, "h": H}}
     bb = pill_bbox(a)
     out["pill"] = bb
+    st = panel_state()
+    if st:
+        out["panel"] = st
+    # The panel's own witness outranks any pixel heuristic: a lock surface or
+    # an open panel is black too, and no luminance test can tell them apart.
+    if st and (st["state"] != "Collapsed" or st["morph"]):
+        out["state"] = "not-collapsed"
+        out["note"] = (f"panel reports state={st['state']} morph={st['morph']}; "
+                       "no geometry/sharpness gates emitted. Drive `collapsed`, "
+                       "wait for the morph to finish, and re-measure.")
+        out["pill"] = None
+        out.update(proc_stats(pid()))
+        print(json.dumps(out, indent=2))
+        return 0
     if bb and bb.get("not_collapsed"):
         # Refuse to score a frame that is not the collapsed pill: geometry and
         # sharpness gates are meaningless on a lockscreen or an open panel.
