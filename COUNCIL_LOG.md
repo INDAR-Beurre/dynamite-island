@@ -2374,3 +2374,28 @@ r2 #8c dictation lifecycle (group hy4) score 4. Ran cargo test for both crates: 
   now sets panel_open like production does.
 - Cleaned two orphaned `mmsg watch all-tags` children (parents dead, reparented to
   dinit, 0 CPU) left by earlier panel kills. Not a product leak.
+
+## r2 fixes continued — commit c5384a8 (332 tests pass)
+
+- #10c `pkill -x swaybg` FIXED: `library::may_restart_swaybg(pgrep_output, our_png)`
+  only permits a restart when EVERY running swaybg shows our wallpaper.png; a
+  foreign one is left alone (the file is already written, so the user's own
+  setter picks it up). Extracted as a pure fn with 4 tests because a fake swaybg
+  cannot be simulated — three attempts failed: `cp /bin/sleep` rejects `-i`, a
+  script stub hits "Text file busy", and `pkill -f` matched the test shell's OWN
+  command line and killed it (exit 143). Lesson: test the decision, not the process.
+- #10c `/home/alex` HOME fallback removed (`unwrap_or_default`).
+- #10c probe geometry: did NOT rewrite the resampling. The 3:1 horizontal and
+  1504/501 vertical integer mappings are baked into the arithmetic, and the
+  display is wedged so the ONE pixel-matched material cannot be verified.
+  Instead `probe_size_warn` logs once, naming the actual size and saying the live
+  probe is disabled — turns "99% of machines silently get static frost" into one
+  clear line. `shortcut:` comment records the limit and when to upgrade.
+- #8c lost-end wedge FIXED: `main::dictation_stale(seen)` — 1.5 s of silence
+  (~50 missed frames at 33/s) collapses a Dictation pill. Safe because
+  `dictation_hide()` is sent BEFORE the blocking Groq POST, so a slow
+  transcription cannot trip it. 4 tests; **mutation-checked** (bound raised to
+  600 s and None=>false fails `never_seen`, restoring passes).
+- #8c restart-mid-utterance FIXED earlier in the socket handler: bars arriving
+  while Collapsed now enter Dictation, because bars are sent only inside
+  `if recording` and are themselves proof of a live utterance.
