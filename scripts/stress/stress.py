@@ -1037,18 +1037,25 @@ def group_load(app, out):
         # say which iteration leaked. The warmup window is exempt (one-time
         # lazy allocations), so the bound applies from iteration 20 on.
         if i >= 20:
-            base_i = statistics.median(rss[:20])
+            # Baseline = the median of the samples SO FAR, not of the first 20.
+            # The one-time allocations (lock wallpaper, shm slot ring) land a
+            # few iterations in, so a fixed 20-sample window straddles them and
+            # its median sits BELOW the steady state -- which reported +11.8 MB
+            # on a panel that was flat at 85 MB for 160 iterations. A running
+            # median converges to the steady state and still catches a real
+            # climb, because a leak raises later samples above it.
+            base_i = statistics.median(rss[20:i + 1])
             out.asserts += 1
             if (kb - base_i) / 1024.0 > 8.0:
                 out.fails += 1
                 problems.append(
                     f"iteration {i}: RSS {(kb - base_i)/1024.0:+.1f} MB over "
-                    f"warmup median (bound 8 MB)")
+                    f"post-warmup median (bound 8 MB)")
 
     if len(rss) == iters:
         warm = rss[:20]                      # one-time lazy allocations:
-        base = statistics.median(warm)       # lock wallpaper + icon font
-        tail = rss[20:]
+        tail = rss[20:]                      # lock wallpaper + shm slot ring
+        base = statistics.median(tail)       # steady state, not the ramp
         growth = (tail[-1] - base) / 1024.0
         peak = (max(tail) - base) / 1024.0
         bound = 8.0

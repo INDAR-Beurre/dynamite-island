@@ -1460,3 +1460,16 @@ identify the process it was driving — it fell back to `pgrep`.
 `socket_owner()` uses `ss -xap`. Verified both against the live pid (28880).
 **Why it only surfaced now**: the earlier runs used a panel started before the
 single-instance guard; the restart changed which socket state `ss` reported.
+
+## Instrument repair #14 — the leak baseline straddled the allocation ramp
+04:31 run: `load_leak FAIL tests=200 fails=39`, every message
+`iteration N: RSS +11.8 MB over warmup median (bound 8 MB)`.
+**Not a leak.** The decile curve was `51 96 96 52 85 85 85 85 85 85` — flat at
+85 MB for 160 iterations, and `growth_after_warmup=+0.1`. The one-time
+allocations (lock wallpaper, shm slot ring) land ~5 iterations in, so
+`median(rss[:20])` straddled the ramp and sat BELOW the steady state.
+**Fix**: baseline is `median(rss[20:i+1])` — a running post-warmup median that
+converges to the steady state. The summary `base` likewise uses the tail.
+**Mutation-tested rather than assumed** (`flat` / `linear +0.2 MB/iter` /
+`step +25 MB at iter 110`): flat → **0 fails**, linear → **99 fails**,
+step → **90 fails**. The gate still catches both leak shapes.
