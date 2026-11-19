@@ -965,9 +965,10 @@ fn ws_cy() -> f32 {
 /// Number glyph size inside a circle (iter92: digit ~8 px tall at
 /// 11.0 em — ~0.5 x the Ø16 disc, same ratio as the old Ø28/14 em).
 const WS_NUMBER_PX: f32 = 11.0;
-/// Active-workspace fill: periwinkle, the same accent as the CC
-/// toggle-on state (controlcenter_panel C_TOGGLE_ON #93A4F5).
-const WS_ACTIVE_FILL: (u8, u8, u8) = (147, 164, 245);
+/// Active-workspace fill: the island accent, bound to the one
+/// definition in library.rs so the disc and the CC toggles can never
+/// drift into two periwinkles side by side.
+const WS_ACTIVE_FILL: (u8, u8, u8) = library::ISLAND_ACCENT;
 /// Glyph on the active (periwinkle) fill: dark navy, as the CC toggle glyph.
 const WS_ACTIVE_GLYPH: (u8, u8, u8) = (11, 27, 58);
 /// Glyph on the inactive (dark) fill: near-white, as the nav chevron.
@@ -2038,9 +2039,6 @@ fn clock_font() -> Option<&'static fontdue::Font> {
                     candidates.push(dir.join("assets/fonts/Inter-Medium.ttf"));
                 }
             }
-            candidates.push(PathBuf::from(
-                "/home/alex/rust-island-build/assets/fonts/Inter-Medium.ttf",
-            ));
             if let Some(home) = std::env::var_os("HOME") {
                 candidates.push(PathBuf::from(home).join(".local/share/fonts/Inter.ttf"));
             }
@@ -2061,6 +2059,74 @@ fn clock_font() -> Option<&'static fontdue::Font> {
             }
         })
         .as_ref()
+}
+
+/// The UI face for every panel: Quicksand Bold (static, usWeightClass
+/// 700). Resolved WITHOUT ever requiring a filesystem font — the old
+/// loader only looked in `$HOME/.local/share/fonts` and `.expect`-ed,
+/// so the binary panicked at startup on any machine but the dev box
+/// (r1c headline 0).
+///
+/// Search order; the winner is logged once, because the three cases
+/// render different text metrics and used to be indistinguishable:
+/// 1. next to the executable (target/release -> repo root, packaged layout)
+/// 2. `$HOME/.local/share/fonts/Quicksand-Bold.ttf`
+/// 3. the vendored asset compiled into the binary — always present, so
+///    no install can fail for a missing font
+/// 4. `$HOME/.local/share/fonts/Quicksand.ttf` (Light, wght 300) — last,
+///    logged as metric-changing
+pub(crate) fn ui_font() -> fontdue::Font {
+    const EMBEDDED_BOLD: &[u8] = include_bytes!("../assets/fonts/Quicksand-Bold.ttf");
+    static LOGGED: std::sync::Once = std::sync::Once::new();
+    let mut candidates: Vec<(PathBuf, &'static str)> = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push((dir.join("../../assets/fonts/Quicksand-Bold.ttf"), "exe"));
+            candidates.push((dir.join("../../../assets/fonts/Quicksand-Bold.ttf"), "exe"));
+            candidates.push((dir.join("assets/fonts/Quicksand-Bold.ttf"), "exe"));
+        }
+    }
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    if let Some(home) = &home {
+        candidates.push((
+            home.join(".local/share/fonts/Quicksand-Bold.ttf"),
+            "home-bold",
+        ));
+    }
+    for (path, src) in &candidates {
+        let Ok(bytes) = std::fs::read(path) else { continue };
+        let Ok(f) = fontdue::Font::from_bytes(bytes, fontdue::FontSettings::default()) else {
+            continue;
+        };
+        LOGGED.call_once(|| eprintln!("dynamite-rust: UI font {src} {}", path.display()));
+        return f;
+    }
+    if let Ok(f) =
+        fontdue::Font::from_bytes(EMBEDDED_BOLD.to_vec(), fontdue::FontSettings::default())
+    {
+        LOGGED.call_once(|| {
+            eprintln!("dynamite-rust: UI font embedded assets/fonts/Quicksand-Bold.ttf")
+        });
+        return f;
+    }
+    if let Some(home) = &home {
+        let path = home.join(".local/share/fonts/Quicksand.ttf");
+        if let Ok(bytes) = std::fs::read(&path) {
+            if let Ok(f) = fontdue::Font::from_bytes(bytes, fontdue::FontSettings::default()) {
+                LOGGED.call_once(|| {
+                    eprintln!(
+                        "dynamite-rust: UI font home-light {} (wght 300 — text metrics differ)",
+                        path.display()
+                    )
+                });
+                return f;
+            }
+        }
+    }
+    eprintln!(
+        "dynamite-rust: no usable UI font: the embedded Quicksand-Bold failed to parse (corrupt build)"
+    );
+    std::process::exit(1);
 }
 
 fn load_icon_font() -> Option<fontdue::Font> {
@@ -3375,7 +3441,12 @@ fn draw_morph_frame(
     // runs with a Lockscreen endpoint).
     lock_data: &lockscreen::LockscreenData,
     lock_wallpaper: Option<&[u8]>,
+    // Only this rect is touched: the union of the two endpoint content
+    // rects (plus the previous frame's), so a morph frame costs its
+    // capsule's pixels instead of the whole 1176x636 stage.
+    region: (i32, i32, i32, i32),
 ) {
+    let rgn = clip_rect(region, w, h);
     let wf = w as f32;
     let (fw, fh, fr) = (frame.width, frame.height, frame.radius);
     // Capsule origin in stage coords: centred horizontally; the top
@@ -3438,16 +3509,19 @@ fn draw_morph_frame(
         Some(bw) => bw.sample_frost_uniform(msox + ox + fw / 2.0, msoy + oy + fh / 2.0),
         None => [0, 0, 0],
     };
-    // iter33: one frost sample at the capsule centre (same reasoning
-    // as draw_panel_into) — the capsule reads flat at every size.
-    let morph_uniform: [u8; 3] = match &morph_bg {
-        Some(bw) => bw.sample_frost_uniform(msox + ox + fw / 2.0, msoy + oy + fh / 2.0),
-        None => [0, 0, 0],
-    };
-    for y in 0..h {
-        for x in 0..w {
-            let a = rounded_rect_alpha(x as f32 + 0.5 - ox, y as f32 + 0.5 - oy, fw, fh, fr);
-            let i = ((y * w + x) * 4) as usize;
+    for y in rgn.1..rgn.3 {
+        // Bounded to the damage rect: pixels outside it are neither
+        // upscaled nor damaged, so the previous frame's identical bytes
+        // stay on screen. Only `dmg` is ever written here.
+        for x in rgn.0..rgn.2 {
+            let a = rounded_rect_alpha(
+                x as f32 + 0.5 - ox,
+                y as f32 + 0.5 - oy,
+                fw,
+                fh,
+                fr,
+            );
+            let i = ((y as u32 * w + x as u32) * 4) as usize;
             canvas[i] = 0;
             canvas[i + 1] = 0;
             canvas[i + 2] = 0;
@@ -5264,11 +5338,30 @@ impl Island {
         // union of the new content rect and the last committed one.
         // Untouched shm pages stay non-resident (Pss counts pages).
         let full = (0, 0, w as i32, h as i32);
-        let mut rect = if frame_running || self.state == IslandState::Lockscreen {
+        // F-A step 4 / r1c: damage only what this frame can change.
+        // A morph is NOT a full repaint: it interpolates between two
+        // KNOWN geometries, so the union of their content rects (each
+        // already padded for the panel shadow and the nav discs by
+        // content_rect) bounds every pixel the frame can touch — the
+        // capsule, the cross-faded endpoint content, the shadow, the
+        // nav discs and the top row all live inside it. Bounding it
+        // turned the 62-105 ms full-stage upscale into a sub-5 ms
+        // region upscale, which is what made a 160 ms morph present
+        // 2-3 poses instead of ~10.
+        let mut rect = if self.state == IslandState::Lockscreen {
             full
+        } else if frame_running {
+            union_rect(
+                content_rect(self.morph_from_state),
+                content_rect(self.state),
+            )
         } else {
             content_rect(self.state)
         };
+        // The top row is drawn at stage coords by several morph helpers
+        // (pill, workspace discs); its band is inside every content rect
+        // already, but keep the lock-state full-repaint guard intact.
+        rect = clip_rect(rect, w, h);
         let dmg = clip_rect(union_rect(rect, self.last_rect.unwrap_or(rect)), w, h);
         // iter108: the stage is drawn at logical 1x into this reused
         // scratch (grow-only, same pattern as the morph scratches) and
@@ -5291,34 +5384,34 @@ impl Island {
         // resizes now, so there is no configure lag to compensate for
         // and no presented width to invert — frame_at(now) is the frame
         // being drawn. (morph.rs keeps raw_for_eased for its own tests.)
-        if frame_running {
-            stage_1x.fill(0);
-        } else {
-            clear_rect(stage_1x, w, h, dmg);
-        }
+        // Every frame clears only its damage rect: morph frames write
+        // inside dmg too now (the capsule loop is bounded below), and
+        // fresh memfds are already zero, so a stage-sized memset every
+        // 16 ms was pure waste.
+        clear_rect(stage_1x, w, h, dmg);
         match morph_frame {
             Some(frame) if !frame.done => {
                 let from_state = self.morph_from_state;
                 let to_state = self.state;
                 let icon_from = icon_font_for(&self.icon_font, from_state);
                 let icon_to = icon_font_for(&self.icon_font, to_state);
-                // D7: reuse the island's scratch buffers (grow-only,
-                // zeroed per frame) instead of allocating two fresh
-                // buffers per intermediate frame. The from-scratch is
-                // current-buffer sized; the to-scratch is target-sized
-                // (D4) — resize only grows, never shrinks.
+                // D7: reuse the island's scratch buffers (grow-only)
+                // instead of allocating two fresh buffers per
+                // intermediate frame. Only the damage rect needs to be
+                // zero: the composite below reads nothing outside it,
+                // and the previous frame could only have written there.
                 let need_from = (w * h * 4) as usize;
                 if self.morph_scratch_from.len() != need_from {
                     self.morph_scratch_from.resize(need_from, 0);
                 }
-                self.morph_scratch_from.fill(0);
+                clear_rect(&mut self.morph_scratch_from, w, h, dmg);
                 // iter24: the to-scratch is stage-sized too (w, h are
                 // the stage size; the old target-panel size is gone).
                 let need_to = (w * h * 4) as usize;
                 if self.morph_scratch_to.len() != need_to {
                     self.morph_scratch_to.resize(need_to, 0);
                 }
-                self.morph_scratch_to.fill(0);
+                clear_rect(&mut self.morph_scratch_to, w, h, dmg);
                 draw_morph_frame(
                     stage_1x,
                     w,
@@ -5333,6 +5426,7 @@ impl Island {
                     icon_to,
                     &lock_data,
                     lock_wallpaper,
+                    dmg,
                 );
             }
             _ => {
@@ -5371,7 +5465,7 @@ impl Island {
             return;
         };
         if frame_running {
-            upscale_canvas_2x_into(&self.scale_scratch, w, h, canvas);
+            upscale_canvas_2x_region(&self.scale_scratch, w, h, canvas, dmg);
         } else {
             upscale_canvas_2x_region(&self.scale_scratch, w, h, canvas, dmg);
         }
@@ -6282,21 +6376,11 @@ fn main() {
     // state while the entry refresh runs.
     clipboard_panel::refresh_async();
 
-    // Font: Quicksand Bold (static, usWeightClass 700 — verified on the
-    // Surface 12 Nov 2026 ~23:55 via fontTools), with fallback to
-    // Quicksand.ttf (Light, default instance wght 300) if the Bold file
-    // is missing or unparseable. Bold keeps cap height 700/1000 em, so
-    // every px size in the panels is unchanged.
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
-    let font = ["Quicksand-Bold.ttf", "Quicksand.ttf"]
-        .iter()
-        .find_map(|name| {
-            let path = home.join(".local/share/fonts").join(name);
-            std::fs::read(&path)
-                .ok()
-                .and_then(|b| fontdue::Font::from_bytes(b, fontdue::FontSettings::default()).ok())
-        })
-        .expect("no Quicksand font file parses");
+    // Font: Quicksand Bold (static, usWeightClass 700), resolved by
+    // ui_font() — exe-relative, then $HOME, then the vendored asset
+    // compiled in. Never required on disk, never a panic: the old
+    // $HOME-only chain made the binary die at startup off the dev box.
+    let font = ui_font();
 
     // The icon font is NOT loaded here: see Island::icon_font — it parses
     // to ~19 MB, so it loads lazily on the first Power/ControlCenter draw.
@@ -6511,7 +6595,21 @@ fn main() {
 
     // Control socket (unix datagram).
     let sock_path = socket_path();
-    let _ = std::fs::remove_file(&sock_path);
+    // A second instance used to unlink this path and rebind it, orphaning the
+    // first: two live surfaces, one socket, and no way to tell which one a
+    // word reached. Refuse to start instead. (Probe before unlinking so the
+    // incumbent keeps its socket.)
+    if sock_path.exists() {
+        match UnixDatagram::unbound().and_then(|s| s.connect(&sock_path)) {
+            Ok(_) => {
+                eprintln!("dynamite-rust: another instance owns {} -- exiting",
+                          sock_path.display());
+                std::process::exit(0);
+            }
+            // Nothing is listening: a stale file from a crashed run.
+            Err(_) => { let _ = std::fs::remove_file(&sock_path); }
+        }
+    }
     let datagram = UnixDatagram::bind(&sock_path).expect("bind control socket");
     datagram.set_nonblocking(true).expect("nonblocking");
     {
@@ -7614,8 +7712,8 @@ mod iter30_tests {
 
     #[test]
     fn workspace_colours() {
-        // Active = periwinkle toggle accent; inactive = nav-disc dark.
-        assert_eq!(WS_ACTIVE_FILL, (147, 164, 245));
+        // Active = the island accent itself; inactive = nav-disc dark.
+        assert_eq!(WS_ACTIVE_FILL, library::ISLAND_ACCENT);
         assert_eq!(WS_INACTIVE_FILL, (28, 30, 34));
         assert_eq!(WS_ACTIVE_GLYPH, (11, 27, 58));
         assert_eq!(WS_INACTIVE_GLYPH, (232, 234, 237));
@@ -7633,16 +7731,8 @@ mod iter30_tests {
     fn workspace_digit_fits() {
         // iter92: the digit at WS_NUMBER_PX must fit inside a Ø16
         // disc with margin — rasterize 1..=4 with the real UI font.
-        let home = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_default();
-        let font = ["Quicksand-Bold.ttf", "Quicksand.ttf"]
-            .iter()
-            .find_map(|name| {
-                let path = home.join(".local/share/fonts").join(name);
-                std::fs::read(&path)
-                    .ok()
-                    .and_then(|b| fontdue::Font::from_bytes(b, fontdue::FontSettings::default()).ok())
-            })
-            .expect("no Quicksand font file parses");
+        // Vendored asset is embedded, so this never depends on $HOME.
+        let font = ui_font();
         for n in 1..=4u8 {
             let row = layout_text(&font, &n.to_string(), WS_NUMBER_PX);
             // Digit bitmap height ~8 px (0.5 x Ø16); width well inside.
@@ -8114,17 +8204,7 @@ mod iter108_tests {
     use super::*;
 
     fn load_font() -> fontdue::Font {
-        // Same fallback chain as main(): Bold, then Light.
-        let home = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_default();
-        ["Quicksand-Bold.ttf", "Quicksand.ttf"]
-            .iter()
-            .find_map(|name| {
-                let path = home.join(".local/share/fonts").join(name);
-                std::fs::read(&path)
-                    .ok()
-                    .and_then(|b| fontdue::Font::from_bytes(b, fontdue::FontSettings::default()).ok())
-            })
-            .expect("no Quicksand font file parses")
+        ui_font()
     }
 
     /// Ideal reference: the same disc rendered NATIVELY at 2x with the
@@ -8391,22 +8471,74 @@ mod iter108_tests {
     }
 
     #[test]
-    fn upscale_stage_perf() {
-        // Worst case the frame path pays: a full stage upscale.
+    fn upscale_region_perf() {
+        // What the frame path actually pays on a settled frame and on a
+        // morph frame: the upscale is bounded by the damage rect.
+        // (The full-stage sibling used to run here at ~61 ms; that is
+        // exactly the teleport this test now guards against coming
+        // back — a morph region is a fraction of the stage, so the
+        // budget is a fraction of the full-stage cost.)
         let (w, h) = (STAGE_W, STAGE_H);
         let mut src = vec![0u8; (w * h * 4) as usize];
         for (i, v) in src.iter_mut().enumerate() {
             *v = (i % 251) as u8;
         }
         let mut dst = vec![0u8; (2 * w * 2 * h * 4) as usize];
+        // Worst realistic damage: Collapsed -> Music, the union of both
+        // endpoint content rects (the morph path's bound).
+        let dmg = union_rect(
+            content_rect(IslandState::Collapsed),
+            content_rect(IslandState::Music),
+        );
+        let dmg = clip_rect(dmg, w, h);
+        let (dw, dh) = ((dmg.2 - dmg.0) as u32, (dmg.3 - dmg.1) as u32);
         let mut best = std::time::Duration::MAX;
         for _ in 0..3 {
             let t = std::time::Instant::now();
-            upscale_canvas_2x_into(&src, w, h, &mut dst);
+            upscale_canvas_2x_region(&src, w, h, &mut dst, dmg);
             best = best.min(t.elapsed());
         }
-        eprintln!("stage 2x upscale best of 3: {best:?}");
-        assert!(best.as_millis() < 200, "upscale took {best:?}, budget 200 ms");
+        eprintln!(
+            "morph-region 2x upscale best of 3: {best:?} over {dw}x{dh} = {:.1}% of the stage",
+            100.0 * (dw * dh) as f32 / (w * h) as f32
+        );
+        // Freeze a real budget: 15 ms leaves headroom for a loaded
+        // machine while still failing loudly if the region ever grows
+        // back into a full-stage upscale (61 ms measured on this box).
+        assert!(
+            best.as_millis() < 15,
+            "region upscale took {best:?} over {dw}x{dh}, budget 15 ms"
+        );
+    }
+
+    /// The morph damage bound is the union of the two endpoint content
+    /// rects and must stay a small fraction of the stage: that fraction
+    /// is what turned a 62 ms frame into a sub-5 ms one.
+    #[test]
+    fn morph_damage_rect_is_bounded() {
+        let (w, h) = (STAGE_W, STAGE_H);
+        for (from, to) in [
+            (IslandState::Collapsed, IslandState::Music),
+            (IslandState::Collapsed, IslandState::Wallpaper),
+            (IslandState::Music, IslandState::Launcher),
+            (IslandState::ControlCenter, IslandState::Collapsed),
+        ] {
+            let r = clip_rect(union_rect(content_rect(from), content_rect(to)), w, h);
+            let frac = (r.2 - r.0) as f32 * (r.3 - r.1) as f32 / (w * h) as f32;
+            assert!(
+                frac < 0.80,
+                "{from:?} -> {to:?} damage is {:.1}% of the stage",
+                frac * 100.0
+            );
+            // ...and it must still contain both endpoints outright.
+            for s in [from, to] {
+                let c = clip_rect(content_rect(s), w, h);
+                assert!(
+                    r.0 <= c.0 && r.1 <= c.1 && r.2 >= c.2 && r.3 >= c.3,
+                    "{from:?} -> {to:?} damage misses {s:?}"
+                );
+            }
+        }
     }
 
     /// Generic f32 bilinear resample (test-only stand-in for the
@@ -8528,19 +8660,7 @@ mod iter109_tests {
     use super::*;
 
     fn load_font() -> fontdue::Font {
-        // Same fallback chain as main(): Bold, then Light.
-        // (Copy of iter108_tests::load_font — the modules are
-        // independent, so the helper is duplicated, not shared.)
-        let home = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_default();
-        ["Quicksand-Bold.ttf", "Quicksand.ttf"]
-            .iter()
-            .find_map(|name| {
-                let path = home.join(".local/share/fonts").join(name);
-                std::fs::read(&path)
-                    .ok()
-                    .and_then(|b| fontdue::Font::from_bytes(b, fontdue::FontSettings::default()).ok())
-            })
-            .expect("no Quicksand font file parses")
+        ui_font()
     }
 
     /// STRICT disc predicate, identical to circles-profile108.py:
