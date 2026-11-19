@@ -509,6 +509,23 @@ pub fn save_config_keys(pairs: &[(&str, &str)]) -> std::io::Result<()> {
 fn restart_swaybg() {
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
     let png = home.join(".config/mango/wallpaper/wallpaper.png");
+    // r2 #10c: `pkill -x swaybg` killed ANY swaybg, including one the user
+    // started with a different wallpaper or mode. Only restart when every
+    // running swaybg is ours; if a foreign one is present, leave the
+    // desktop alone rather than fight it (the file is already written, so
+    // the user's own setter picks it up on its next reload).
+    let listed = std::process::Command::new("pgrep")
+        .args(["-a", "-x", "swaybg"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
+    if !may_restart_swaybg(&listed, &png.display().to_string()) {
+        eprintln!(
+            "dynamite-rust: another swaybg is running a different wallpaper; \
+             leaving it alone (wallpaper.png updated)"
+        );
+        return;
+    }
     let cmd = format!(
         "pkill -x swaybg; sleep 0.3; exec swaybg -i {} -m fill",
         png.display()
@@ -520,6 +537,43 @@ fn restart_swaybg() {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn();
+}
+
+/// True when restarting swaybg would only touch instances of OURS.
+/// Pure so the ownership rule is testable without spawning processes
+/// (a fake swaybg can't be simulated: `pkill -f` also matches the test
+/// shell's own command line).
+fn may_restart_swaybg(pgrep_output: &str, our_png: &str) -> bool {
+    let needle = format!("-i {our_png}");
+    pgrep_output.trim().is_empty() || pgrep_output.lines().all(|l| l.contains(&needle))
+}
+
+#[cfg(test)]
+mod swaybg_ownership_tests {
+    use super::may_restart_swaybg;
+    const OURS: &str = "/home/u/.config/mango/wallpaper/wallpaper.png";
+
+    #[test]
+    fn no_swaybg_running_means_start_ours() {
+        assert!(may_restart_swaybg("", OURS));
+    }
+
+    #[test]
+    fn only_our_instance_may_be_restarted() {
+        let out = format!("4242 swaybg -i {OURS} -m fill\n");
+        assert!(may_restart_swaybg(&out, OURS));
+    }
+
+    #[test]
+    fn a_foreign_wallpaper_is_left_alone() {
+        assert!(!may_restart_swaybg("4242 swaybg -i /home/u/other.png -m fill\n", OURS));
+    }
+
+    #[test]
+    fn a_mix_still_leaves_the_desktop_alone() {
+        let out = format!("4242 swaybg -i {OURS} -m fill\n4343 swaybg -i /x.png\n");
+        assert!(!may_restart_swaybg(&out, OURS));
+    }
 }
 
 /// Apply library wallpaper `filename` for real: copy it over

@@ -1511,6 +1511,16 @@ fn tag_state_cached() -> TagState {
 }
 /// Write a fresh snapshot; returns true when the DRAWN state changed
 /// (so the watcher only pokes the loop for a real change).
+/// Dictation liveness (r2 #8c). Bars arrive ~33/s while recording, so
+/// 1.5 s of silence is ~50 missed frames: the producer is gone, not busy.
+/// Pure so the threshold is pinned by a test rather than by prose.
+fn dictation_stale(seen: Option<Instant>) -> bool {
+    match seen {
+        Some(t) => t.elapsed() >= Duration::from_millis(1500),
+        None => true,
+    }
+}
+
 fn apply_tag_state(ts: TagState) -> bool {
     let mut changed = ts.active != active_tag_cached();
     if changed {
@@ -7513,6 +7523,21 @@ fn main() {
                         state.draw_if_ready();
                     }
                 }
+                // r2 #8c: a lost `dictation_end` (producer SIGKILLed, or a
+                // datagram dropped) used to leave the pill in Dictation
+                // forever. Bars arrive ~33/s while recording, so a 1.5 s
+                // gap is ~50 missed frames -- far past any hiccup, and
+                // dictation_hide() is sent BEFORE the blocking Groq POST
+                // (tools/dictation/src/main.rs finalize), so a slow
+                // transcription can never trip this.
+                if state.state == IslandState::Dictation {
+                    if dictation_stale(state.dictation_seen) {
+                        eprintln!("dynamite-rust: dictation went silent -- collapsing");
+                        state.dictation_seen = None;
+                        state.request_state(IslandState::Collapsed);
+                        changed = true;
+                    }
+                }
                 // iter109 RAM: once per idle period, return glibc arena
                 // slack (tour / registration transients) while collapsed
                 // with no state change for > 60 s. Trim only releases
@@ -9196,6 +9221,29 @@ mod iter30_tests {
 
 #[cfg(test)]
 mod iter36_tests {
+    #[test]
+    fn dictation_never_seen_counts_as_silent() {
+        assert!(super::dictation_stale(None));
+    }
+
+    #[test]
+    fn a_fresh_bar_keeps_dictation_open() {
+        assert!(!super::dictation_stale(Some(Instant::now())));
+    }
+
+    #[test]
+    fn half_a_second_of_silence_is_still_live() {
+        // 16 frames at 33/s: a scheduling hiccup must not collapse the UI.
+        let t = Instant::now() - Duration::from_millis(500);
+        assert!(!super::dictation_stale(Some(t)));
+    }
+
+    #[test]
+    fn a_lost_end_collapses_after_the_gap() {
+        let t = Instant::now() - Duration::from_millis(1600);
+        assert!(super::dictation_stale(Some(t)));
+    }
+
     use super::*;
 
     // Stage coords: panel origin + panel-local point.

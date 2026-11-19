@@ -122,6 +122,24 @@ const PROBE_STRIPS: [(i32, i32, i32, i32); 2] = [(900, 24, 150, 33), (1200, 24, 
 const PROBE_PHYS_W: i32 = 2256;
 const PROBE_PHYS_H: i32 = 1504;
 
+/// One line, once, when the capture is not the size the probe's integer
+/// resampling is defined for (r2 #10c). Before this the probe returned None
+/// forever on any other screen and every surface silently fell back to
+/// static frost with nothing in the log to say why.
+/// shortcut: the strip coords and the 3:1 / 1504:501 row mapping are integer
+/// arithmetic for this one panel. Making them fractional is a real rewrite of
+/// probe_read_full_frame; do it when a second screen size can be tested.
+fn probe_size_warn(w: i32, h: i32) {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        eprintln!(
+            "dynamite-rust: live backdrop probe DISABLED — capture is {w}x{h}, \
+             probe resampling is defined for {PROBE_PHYS_W}x{PROBE_PHYS_H}. \
+             Panels use static frost instead (no live wallpaper sampling)."
+        );
+    });
+}
+
 /// Cached median strip luminance x1000 (default 255000 = bright).
 static PROBE_LUM_MILLI: AtomicU32 = AtomicU32::new(255_000);
 /// True while a morph is running (set by main.rs draw_if_ready).
@@ -363,7 +381,10 @@ pub fn apply_backdrop_factor(n: [u8; 3], f: f32) -> [u8; 3] {
 }
 
 fn wallpaper_path() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/home/alex".to_string());
+    // r2 #10c: the fallback was the author's home, so a HOME-less run on
+    // someone else's machine looked under /home/alex. Empty is honest: the
+    // path then does not exist and the caller degrades to static frost.
+    let home = std::env::var("HOME").unwrap_or_default();
     PathBuf::from(home).join(".config/mango/wallpaper/wallpaper.png")
 }
 
@@ -577,6 +598,7 @@ fn probe_read_strips(child: &mut Child) -> Option<f32> {
     let h: i32 = tokens.get(2)?.parse().ok()?;
     let maxval: i32 = tokens.get(3)?.parse().ok()?;
     if w != PROBE_PHYS_W || h != PROBE_PHYS_H || maxval != 255 {
+        probe_size_warn(w, h);
         return None;
     }
     // Both strips share one band: rows y0..y0+hh, two x-ranges per row.
@@ -663,6 +685,7 @@ fn probe_read_full_frame(child: &mut Child) -> Option<(f32, LiveBackdrop)> {
     let h: i32 = tokens.get(2)?.parse().ok()?;
     let maxval: i32 = tokens.get(3)?.parse().ok()?;
     if w != PROBE_PHYS_W || h != PROBE_PHYS_H || maxval != 255 {
+        probe_size_warn(w, h);
         return None;
     }
     // Stream rows: strip luminances + half-res area average in one pass.
