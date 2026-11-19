@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 # Keep the global hotkey listener alive: restart it if it ever exits.
 #
-# Prefers the in-repo build so the tool ships with the package; falls back to
-# the original scratch build so a failed rebuild never leaves the owner
-# without dictation.
+# Runs the in-repo build only. A missing build is a loud error, not a silent
+# substitution: the old scratch-directory fallback ran a binary whose source
+# was not in the repo, so nobody could audit or reproduce what was running.
 set -u
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-LEGACY="$HOME/.t3/scratch/2026-11-13-can-you-please-like-i-e1185665/target/release/static-dictation"
 LOG="$HOME/.cache/static-dictation.log"
 
 # Every transcription is printed to stdout, so this log is a verbatim record
@@ -14,6 +13,7 @@ LOG="$HOME/.cache/static-dictation.log"
 # user — and never rotated. Create it private BEFORE anything is appended,
 # and tighten it if an older run already left it world-readable.
 umask 077
+mkdir -p "$(dirname "$LOG")"
 : >>"$LOG"
 chmod 600 "$LOG" 2>/dev/null || true
 # Keep one previous generation; the file grows without bound otherwise.
@@ -25,12 +25,12 @@ fi
 
 BIN="$here/target/release/static-dictation"
 if [ ! -x "$BIN" ]; then
-    BIN="$LEGACY"
-    echo "supervisor: in-repo binary missing, using legacy $LEGACY" >>"$LOG"
-fi
-if [ ! -x "$BIN" ]; then
-    echo "supervisor: no dictation binary found; build it with:
-  cd $here && cargo build --release --offline" >>"$LOG"
+    # stderr as well as the log: a failure buried in ~/.cache is invisible
+    # in the session that started it.
+    msg="supervisor: no dictation binary at $BIN; build it with:
+  cd $here && cargo build --release"
+    echo "$msg" >&2
+    echo "$msg" >>"$LOG"
     exit 1
 fi
 

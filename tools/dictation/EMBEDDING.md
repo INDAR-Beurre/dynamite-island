@@ -10,24 +10,29 @@ source now ships here.
 
 ```sh
 cd tools/dictation
-cargo build --release --offline
+cargo build --release
 ```
 
-Verified offline: **0 errors, 38 warnings, 132 crates**, binary
-`target/release/static-dictation` (3.4 MB). All seven direct dependencies were
-already in the local registry cache, so no network is needed.
+Verified: **0 errors, 38 warnings, 132 crates**, binary
+`target/release/static-dictation` (3.4 MB).
+
+`--offline` is deliberately **not** in the documented command. It succeeded
+here only because `~/.cargo/registry` was already warm; with a cold
+`CARGO_HOME` it fails (`error: no matching package named \`anyhow\` found`).
+The plain command works cold, given a network. Use `../../build.sh` to build
+the panel and this crate together.
 
 `target/` is excluded by the repo's existing `.gitignore` — source only is
 tracked (**30 files, 452 KB**).
 
-**Reproducibility limit (critic #21, verified).** `--offline` succeeds only
-because `~/.cargo/registry` is already warm. With an empty `CARGO_HOME` it
-fails: `error: no matching package named \`anyhow\` found`. There is no vendor
-dir and no `.cargo/config.toml` for this crate, so **a fresh clone on another
-machine cannot build it offline**. A fresh clone also has no binary (`target/`
-is ignored) and no build entry point, so dictation would not start after
-checkout. Open work: vendor the direct deps and add one top-level build
-command.
+**Reproducibility limit (critic #21, verified; partly closed).** A cold
+`CARGO_HOME` still cannot build **offline** — there is no vendor dir and no
+`.cargo/config.toml` for this crate. The documented command no longer claims
+otherwise, and `build.sh` at the repo root now builds both crates and fails
+loudly. A fresh clone has no binary (`target/` is ignored); the supervisor now
+**exits non-zero with a build hint on stderr** instead of silently running a
+binary from a dated scratch directory. Open work: vendor the direct deps if
+fully offline builds are wanted.
 
 ## Why it is NOT a Cargo workspace member
 

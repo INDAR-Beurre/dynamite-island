@@ -23,7 +23,7 @@ Everything below is evidence-cited unless explicitly marked `[Hyprland knowledge
 - No `dim_inactive` key in config.conf. Strings show only `dim_enable`, `current_dim_color`, `get_dim_color`, `target_dim_color`, `initial_dim_color` — this is the **idle dimming** engine (dimland integration), not a focus-based dim-inactive feature. **Mango has no `dim_inactive`.**
 
 ### rule.conf — layer rules (applied to the panel already)
-- `layer_rule=no_blur:1,no_shadow:1,no_animation:1,layer_name:dynamite` — Mango accepts per-layer rules by layer-name.
+- `layer_rule=no_blur:1,no_shadow:1,no_animation:1,layer_name:dynamite-rust` — Mango accepts per-layer rules by layer-name.
 - Layer rules exist for: `selection` (no_blur, no_animation), `swaync-control-center`, `swaync-notification-window`, `dimland_layer`, `launcher`, `rofi`, `hyprpicker`, `showkeys`, `wofi`, `mangobar`, `mangobar-menu`, `swayosd` — with per-layer `no_blur`, `no_shadow`, `no_animation`, `animation_type_open/close:fade|zoom`.
 
 ### monitor.conf
@@ -119,7 +119,7 @@ Three options, best-first:
 
 ## 6. Notes for the reimplementation
 
-- The panel's existing layer rule `layer_rule=no_blur:1,no_shadow:1,no_animation:1,layer_name:dynamite` in rule.conf disables compositor blur/shadow/animation for the panel; the panel's own drawn shadow/blur must account for this (compositor will not add anything behind it).
+- The panel's existing layer rule `layer_rule=no_blur:1,no_shadow:1,no_animation:1,layer_name:dynamite-rust` in rule.conf disables compositor blur/shadow/animation for the panel; the panel's own drawn shadow/blur must account for this (compositor will not add anything behind it).
 - eDP-1 reports logical 1504x1002 at scale 1.5; the panel is anchored TOP on the Overlay layer. Fractional-scale-v1 is active, so the panel should consume `wp_fractional_scale_v1.preferred_scale` (1.5 → 120/120ths) and size buffers as `logical_size * scale` (e.g. width 1504 logical = 2256 buffer px).
 - The reference's Hyprland-derived behaviours that Mango provides natively: animations, layer rules by name, shadows, exclusive zone, keyboard interactivity, ext-session-lock-v1, fractional scale.
 - The reference's Hyprland-derived behaviours that Mango does NOT provide: `dim_inactive`, client-driven blur behind layer surfaces, per-layer radius/blur/shadow tuning.
