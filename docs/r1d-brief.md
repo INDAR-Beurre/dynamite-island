@@ -249,3 +249,88 @@ python3 scripts/measure.py               # collapsed pill, quiet screen
 ```
 
 Report **actual numbers** for each, and say explicitly what you did not verify.
+---
+
+## 9. BLOCKER (visual) — the lock screen material is wrong in three ways
+
+`docs/lockscreen-spec.md` is the authority; it was written from the reference
+pixels by a vision-capable reviewer and every number below was re-checked by
+the parent. **Read that file before touching `src/lockscreen.rs`.**
+
+**Important:** `/tmp/ref/lock/l60.png` and `l320.png` are the OLD macOS-style
+**comparison image** the author shows to explain what he is NOT building.
+The final design is `l40`/`l400` (resting) and `l120` (typing). Copies are in
+`docs/reference/lock-resting.png` and `docs/reference/lock-typing.png`.
+
+### 9a. The veil is VERTICAL, not radial
+`src/lockscreen.rs:960-975` draws a radial elliptical scrim
+(`t = dx*dx + dy*dy`, `SCRIM_CENTRE 0.22` → `SCRIM_EDGE 0.42`).
+The reference transmits ≈.78 at **both x100 and x2400 at y720** — a radial
+vignette cannot do that. Measured recipe, normalised to screen height H:
+
+```
+top_ramp    = clamp((0.27778*H - y) / (0.27778*H), 0, 1)
+bottom_ramp = clamp((y - 0.75*H) / (0.25*H), 0, 1)
+transmission(y) = 0.77635045 - 0.20660489*top_ramp - 0.28306150*bottom_ramp
+alpha(y) = 1 - transmission(y)
+```
+
+Parent verified this against all nine measured patch alphas:
+**mean abs error 0.0037, max 0.0105**. Plateau (y .278–.750 H) alpha **.224**,
+top edge **.430**, bottom edge **.507**.
+
+Note the plateau value .224 is essentially our current `SCRIM_CENTRE 0.22` —
+the centre alpha was already right. **Only the shape is wrong.** Do not
+"adopt the author's 0.12 dim_strength": that dims unfocused *clients* relative
+to a bright focused window, compositor-side; ours is an absolute alpha over a
+static wallpaper. Not substitutable — see `docs/transcript-dim-session.md`.
+
+### 9b. The backdrop is SHARP, not globally blurred
+Best-fit global Gaussian is **radius 0.6 device px** (gradient residual
++0.089 %, RGB RMSE 2.60/255) — a compression-scale effect, not a UI blur.
+**Do not apply a 20–24 px global blur.** That is the OLD design.
+
+### 9c. The clock is wallpaper-sampled frosting INSIDE the glyphs
+`src/lockscreen.rs:1000-1009` paints an opaque **white base** then a fixed
+**cyan specular gradient** (`C_CYAN` at `:199`). Both are wrong. The reference
+clock ink has median RGB **[87,235,206]**, is **92.8 % teal-ish**, and **varies
+across x** (left third [127,221,194] vs mid/right [87,235,206]) — it is the
+wallpaper showing through, tinted. Measured equivalent:
+
+```
+B = GaussianBlur(registered wallpaper, radius = 0.016667*H)   // 24 px at 1440
+material.r = clamp(1.19396*B.r + 83.78911, 0, 255)
+material.g = clamp(1.25239*B.g + 83.09509, 0, 255)
+material.b = clamp(1.25567*B.b + 76.69171, 0, 255)
+out = backdrop*(1 - glyph_coverage) + material*glyph_coverage
+```
+
+RGB RMSE **2.39/255** over 114,924 glyph-interior pixels. A common-channel
+approximation `clamp(1.227918*B + 82.943521, 0, 255)` gives RMSE 3.62 — usable
+if the per-channel form is awkward, but **keeping the wallpaper-driven hue
+matters more than the exact coefficients**. Do not hardcode #57EBCE as a
+palette colour; it is this wallpaper's hue, not a brand token.
+
+The wallpaper is **zoomed 1.030× about screen centre** in the locked state
+(verified against pole/support edges over a 1.000–1.070 scan). Sample the
+**registered, pre-veil** wallpaper for the glyph material, and draw the
+separately veiled backdrop through the holes.
+
+**Remove the white base and the cyan specular pass entirely.** A frosted
+rectangular card behind the clock would be both wrong and an AI-slop tell —
+the reference has no card, no border, no avatar, no date, no bottom field.
+
+### 9d. Clock size
+Reference clock ink **868×279** at 2560×1440 (colour mask
+`(G>170)&(B>150)&(R<200)&(G-R>40)`; a luminance mask is contaminated by a cream
+mast and an orange buoy and returns 2057×340 — do not use it).
+Cap/H = **.19375**, ink/W = **.33906**. Ours after the advance fix is 867.9
+wide — **−0.01 %**, already correct. `CLOCK_PX_FRAC 0.27` at
+`src/lockscreen.rs:188` stays.
+
+**The reference glyphs are much heavier than ours**: vertical stems 76–77 px
+on a 279 px cap = stroke/cap **.272–.276**, terminals conspicuously rounded.
+The author states the font is **SF Compact Display**. We ship Quicksand-Bold.
+Do not claim a font identification from shape correlation — that method was
+tried and retracted here. Report the stroke/cap gap as a finding if you cannot
+close it with the shipped font.
