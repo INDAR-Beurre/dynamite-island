@@ -2280,3 +2280,9 @@ r2 #2 panels (hy4) score 7: expanded geometry/accent close; majors: upper panel 
 r2 #3 lockscreen (hy4) score 7: veil/registration/frosting/proportional clock verified; BLOCKER: power disc action still spawns real `swaylock -f -c 000000` at src/main.rs:6876-6885 + src/power_panel.rs:623-630, violating owner no-lockout constraint; majors: capsule/dot fractions need measured retune.
 r2 #12 rust performance (fasfas deepseek) score 7.5 (JSON wrapped in fences, extracted for merge): safe remaining candidates: upscale column weights/duplicate loops, tag reads, tray menu borrow, clock formatting, wallpaper stat gating, thread spawn overhead. No profiling run; verify before applying.
 r2 #8 dictation lifecycle: failed (see thread status); no usable verdict, must account for gap before scoring.
+r2 #6 memory (glm-5.3) score 8: pool/scratch/lock lifecycle sound; two minor tray worker robustness findings (unguarded property fetches, abandoned timeout threads).
+r2 #7 dictation failed: upstream stream error decoding response body; no usable verdict.
+r2 #9 packaging (group deepseek) score 7: generated autostart wrapper mode 644 is a fresh-install blocker; --check creates dirs; source dedup misses ~/ form; generated files rewritten; dictation install/cc/network/uinput documentation gaps.
+r2 #11 rust correctness (glm-5.3) score 7: no reachable production panic found; reproducible load-sensitive upscale_region_perf failure; low-priority unreachable!/pipe2/time handling notes.
+r2 #13 test integrity (group deepseek) score 6: green stress mostly transport assertions; baseline/tail state mismatch, redeploy continuation, no load gate, weak visual coverage and selftest replicas are real false-green risks.
+r2 #15 accessibility (hy4) score 5: independently confirms swaylock blocker; majors: unscaled Control Center glyphs render blank/stranded, and exclusive keyboard grabs lack activation in five menu states.
