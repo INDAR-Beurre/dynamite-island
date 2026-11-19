@@ -1920,3 +1920,30 @@ control the glyph identity. Do NOT "fix" the tracking to chase this.
 
 Committed `docs/reference/ab-pill-zoom.png` (4× A/B): capsule shape, pure
 black fill, periwinkle clock and glyph weight now visibly match.
+
+## Lock veil independently verified (parent, chain 6t)
+
+`veil_edges_match_the_fitted_recipe` tests the code against the constants the
+code declares — it cannot catch a wrong fit. Wrote `scripts/veil_check.py` to
+re-derive the veil from two reference frames (same wallpaper unlocked `l20`
+vs locked `l40`) and score the shipped constants against it.
+
+**Result: shipped constants mean error 1.00/255, max 4.85/255. PASS.** The
+best possible fit of the same two-ramp model is 0.51/255, so the shipped
+recipe is within half a level of optimal. `VEIL_BOT_SPLIT` 0.75 vs fit 0.72
+and `VEIL_TOP_DROP` 0.2066 vs 0.2198 are the only real offsets, both sub-level.
+
+Three instrument traps, each caught by running:
+1. **8 sparse samples hid a 0.079 alpha error.** 97 rows at 1% steps exposed it.
+2. **The bottom 7 rows are not sky.** R/G goes 0.03 → 1.12 below y/H 0.92 —
+   that is the wallpaper's foreground figure, so `1 - locked/unlocked`
+   measures content difference, not veil. It produced a fake 21.88/255 max.
+   Now filtered by R/G < 0.10; 90 rows survive, max drops to 4.85/255.
+3. **Score in /255 on the real background, not percent.** An alpha error of
+   0.009 reads alarming as "0.9%" but is 1.09/255 — invisible.
+
+Also refuted my own zoom hypothesis: I tried registering the locked frame at
+1.015/1.030/1.045× and got 51.8/255 at *every* zoom including 1.000, where the
+correct path gives 1.32. **My inline test double-inverted the alpha**
+(`alpha_at` already returns alpha; I subtracted it from 1 again). The zoom
+idea was never tested — discard that experiment, not the model.
