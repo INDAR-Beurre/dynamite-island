@@ -415,3 +415,63 @@ top band now shows real wallpaper and the capsule reads correctly against it.
 This was a large part of "looks really bad compared to his setup" and it was
 **not a code defect**. Any visual score taken before this point was scoring a
 black band. Re-take screenshots before judging colour or contrast.
+
+---
+
+## 13. MAJOR — the clock font is 15 % too light. Bake wght 675 / opsz 24.
+
+**This supersedes the earlier "the font is correct" verdict.** That verdict
+rested on a *modal integer* stem width (3 px vs 3 px), which is quantised — one
+pixel decides it. Measuring stems at **subpixel** precision (integrating
+coverage across each stem rather than thresholding) separates them cleanly.
+
+Reference, four frames, two different wallpapers:
+
+| frame | cap | subpixel stem | stem/cap |
+|---|---|---|---|
+| `docs/reference/pill-settled.png` | 15 | 2.75 | 0.1832 |
+| `/tmp/ref/s/s25.png` | 15 | 2.77 | 0.1846 |
+| `/tmp/ref/s/s65.png` | 15 | 2.78 | 0.1850 |
+| `/tmp/ref/s/s85.png` | 15 | 2.79 | 0.1859 |
+
+**Target stem/cap = 0.1846.** Ours measures **0.1560** — **15 % light**.
+A second independent metric agrees: ink coverage/cap² is 1.468 reference vs
+1.250 live, ratio 0.852.
+
+Sweeping the variable Inter's axes with `fontTools.varLib.instancer` (PIL's
+`set_variation_by_axes` silently no-ops on this file — every weight rendered
+identically, so bake real instances):
+
+| bake | stem/cap | vs ref | w/cap | vs ref 3.600 |
+|---|---|---|---|---|
+| **shipped 550 / opsz 20** | 0.1566 | **−15.2 %** | 3.411 | −5.3 % |
+| 675 / opsz 20 | 0.1883 | +2.0 % | 3.446 | −4.3 % |
+| **675 / opsz 24** | **0.1835** | **−0.6 %** | **3.571** | **−0.8 %** |
+
+Averaged over four clock strings, 675/24 gives stem/cap 0.1883 (+2.0 %) and
+w/cap 3.446 (−4.3 %).
+
+**Weight is solved by the bake. Width is a separate axis — tracking.**
+Adding letter-spacing to the 675/24 bake:
+
+| tracking (device px) | w/cap | vs ref |
+|---|---|---|
+| 0.0 | 3.446 | −4.3 % |
+| +0.4 | 3.571 | −0.8 % |
+| **+0.5** | ~3.60 | **~0 %** |
+| +0.6 | 3.625 | +0.7 % |
+
+**Do this:**
+1. Bake `assets/fonts/Inter-Clock.ttf` from `~/.local/share/fonts/Inter.ttf`
+   at **wght 675, opsz 24**, delete `fvar` and `STAT`, keep `usWeightClass`.
+   A baked candidate is at `/tmp/Inter-Clock.ttf` (342,824 B) — verify it
+   rather than trusting it. Keep the OFL alongside.
+2. Add tracking of **+0.0357 × cap height** (equivalently +0.0275 × text_px),
+   applied in `src/lock_timer.rs:269` (`width += m.advance_width`) and `:300`
+   (`pen += m.advance_width`). Both must use the same value or the centring
+   drifts. Express it as a fraction, not a pixel constant, so it survives
+   `bar_height` changes.
+3. Re-measure stem/cap and w/cap after the change and report both.
+
+**Do not change `bar_height` or `collapsed_width` to fix this.** The pill's
+screen-width fraction is already correct (4.300 % vs 4.336 %).
