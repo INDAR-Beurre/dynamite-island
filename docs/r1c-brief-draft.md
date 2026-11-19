@@ -443,3 +443,74 @@ the frame callback, never drop the word.
 
 Report what you changed per finding, what you left open and why, and the exact
 commands you ran with their results.
+---
+
+## 0. ⛔ START HERE — the product does not start on another machine
+
+**This outranks every visual finding below.** Reproduced by the parent:
+
+```
+HOME=/tmp/emptyhome2 ./target/release/dynamite-rust
+thread 'main' panicked at src/main.rs:6299:10:
+no Quicksand font file parses
+```
+
+The **entire UI font** resolves from `$HOME/.local/share/fonts/{Quicksand-Bold.ttf,
+Quicksand.ttf}` only, then `.expect(...)`. It dies **before reaching Wayland**.
+`git ls-files | grep -ci quick` was **0**.
+
+**The parent has already vendored the fonts** — `assets/fonts/Quicksand-Bold.ttf`
+(78,528 B, static, usWeightClass 700) and `assets/fonts/Quicksand.ttf` (124,824 B,
+variable, wght 300), with `assets/fonts/OFL-Quicksand.txt` (SIL OFL 1.1,
+redistributable). Commit `263b807`. **The loader change is yours:**
+
+1. Resolve **exe-relative first**, exactly like `clock_font()` already does
+   (`src/main.rs:2029-2063`) — `../../assets/fonts`, `assets/fonts`, then `$HOME`.
+2. **`include_bytes!` the Bold as the final candidate** so no filesystem font is
+   ever required. 78 KB in a 3 MB binary is nothing.
+3. **Drop the `.expect`.** Under `panic="abort"` this kills the process.
+4. **Log which candidate won**, once. Today "repo Bold", "`$HOME` Light (wght
+   300!)" and "fell back" are indistinguishable — and the Light fallback silently
+   changes every panel's text metrics.
+5. Delete the absolute `/home/alex/...` candidate at `src/main.rs:2042`.
+
+Verify with the exact command above: it must reach Wayland, not panic.
+
+## 0b. The rest of the packaging gap (all from #29, verified)
+
+- **No root README, no build entry point.** Two crates, two build commands,
+  nothing says so. `STATUS.md:1-6` still claims *"v0.1 prototype: collapsed clock
+  pill only"*. Add a README with **Prerequisites** (`libasound`, `libxkbcommon`
+  via pkg-config — both are hard **link-time** requirements — plus a
+  wlr-layer-shell compositor), the two build commands, and where binaries land.
+- **`tools/dictation/EMBEDDING.md` documents `--offline` but a cold `CARGO_HOME`
+  fails**: `error: no matching package named \`anyhow\` found`. Either drop
+  `--offline` from the docs or vendor the deps the way `png` is already vendored.
+  **Do not leave a doc that documents its own hole.**
+- **Delete the supervisor's `LEGACY` scratch fallback**
+  (`tools/dictation/scripts/dictation_supervisor.sh:9,26-33`). The parent added it
+  when embedding; #29 is right that on a fresh clone it silently runs an
+  **unauditable binary**. Missing build ⇒ **loud error to stderr + non-zero exit**.
+- **The launcher layer is not in git.** `~/.config/mango/{autostart.sh,bind.conf,
+  rule.conf}` hardcode `/home/alex` and `/run/user/1000`;
+  `dynamite_autostart.sh:51-57` **silently falls back to `qs -c dynamite`**, a
+  *different Quickshell UI*. Add `deploy/` with paths derived from one
+  `ISLAND_HOME` and `XDG_RUNTIME_DIR`; make the `qs` fallback an explicit error.
+- **Layer-rule name mismatch (verified):** binary sets
+  `NAMESPACE = "dynamite-rust"` (`src/main.rs:1932`) but
+  `~/.config/mango/rule.conf:134` and `docs/mango-capabilities.md:26,122` say
+  `layer_name:dynamite`. **The documented no-blur/no-shadow rule matches
+  nothing.** Fix both docs and ship the corrected rule in `deploy/rule.conf`.
+- **16 external tools, no capability check.** Every spawn is `.spawn().ok()?`, so
+  a missing `bluetoothctl` renders a **blank BT row indistinguishable from "no
+  devices"**. Add a one-shot startup line naming what is missing. Do not add a
+  dependency for this — `which` in a loop is enough.
+- **Git hygiene:** tracked `.pyc`, `src/music_panel.rs.20261115-040501.bak`, 17
+  files under `scripts/motion/out/`, and a **stale root `wallpaper_blur.rs`
+  (15,149 B)** that is dead — `src/main.rs:128 mod wallpaper_blur;` resolves to
+  `src/wallpaper_blur.rs` (62,238 B). `git rm` them; extend `.gitignore`.
+- **Output geometry is a compile-time constant.** `LOCKSCREEN_SIZE (1504,1002)`
+  and the guard `configured_size.0 >= 1400` (`src/main.rs:4597,4611`) mean **the
+  lock animation never draws on an output narrower than 1400 logical px**. Read
+  `OutputState::info().logical_size` once. This is the same root cause as the
+  frost-origin bug in §9c — **fix it once, in one place.**
