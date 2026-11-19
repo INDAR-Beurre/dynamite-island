@@ -2286,3 +2286,4 @@ r2 #9 packaging (group deepseek) score 7: generated autostart wrapper mode 644 i
 r2 #11 rust correctness (glm-5.3) score 7: no reachable production panic found; reproducible load-sensitive upscale_region_perf failure; low-priority unreachable!/pipe2/time handling notes.
 r2 #13 test integrity (group deepseek) score 6: green stress mostly transport assertions; baseline/tail state mismatch, redeploy continuation, no load gate, weak visual coverage and selftest replicas are real false-green risks.
 r2 #15 accessibility (hy4) score 5: independently confirms swaylock blocker; majors: unscaled Control Center glyphs render blank/stranded, and exclusive keyboard grabs lack activation in five menu states.
+r2 #7b/#8b retries dispatched on group deepseek after transport failures; same read-only briefs. No fixes applied while panel outstanding.
