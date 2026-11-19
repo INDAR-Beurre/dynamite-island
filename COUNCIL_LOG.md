@@ -1776,3 +1776,30 @@ rather than wait. Six findings, two of them retractions of my own earlier work.
 Lessons: PIL's `set_variation_by_axes` silently no-ops on this Inter file —
 use `fontTools.varLib.instancer`. Thresholded integer metrics hide sub-pixel
 defects; integrate coverage instead.
+
+## Lock-screen material: challenged, then confirmed (chain 7t)
+Purpose: the lockscreen worker was implementing §9's frosting recipe on my
+word. Before letting it land I tried to refute the recipe myself.
+
+- 89.5% of interior clock pixels within 3/255 of flat (87,235,206) — looked
+  like a flat colour, which would have made §9 wrong.
+- Outliers (3.6%) confined to x[905,982]. Alpha-over fit there gives α≈0.69
+  (G,B) but the flat region needs α=1.0. **One alpha cannot do both** →
+  semi-transparent-flat ruled out.
+- Crop `docs/reference/lock-glyph-frosting.png` shows the red bird and brown
+  pole bleeding through, blurred, INSIDE the "1" glyph. Frosting confirmed.
+- Fit on 112,574 interior px: flat RMSE **15.101**, affine-over-blurred-
+  wallpaper RMSE **5.281**. (Spec says 2.39 with a properly registered
+  wallpaper; I used the unlocked frame, so registration cost ~3 RMSE.)
+
+**Honesty correction issued to the child**: the two lock videos use the SAME
+wallpaper (means 21.9/84.3/71.5 vs 20.8/84.1/70.0). The veil and sharpness
+results are independent captures; the clock-colour comparison is NOT an
+independent wallpaper test. I had implied it was.
+
+Veil re-derived on video 2: plateau **0.220**, top **0.411**, bottom **0.476**
+vs video 1's 0.224/0.430/0.507. Backdrop sharp: best-fit Gaussian < 0.3 px
+(locked normalised lapvar 0.0371 vs unblurred 0.0359).
+
+**Two different clock materials, do not unify**: island pill = fixed
+#BCD6FF; lock = wallpaper frosting.
