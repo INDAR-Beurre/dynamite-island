@@ -1405,3 +1405,44 @@ ambiguous target, not just an absent one.
   wrong process.
 Stubbed self-test: none → False/0, one → True/1, two → False/2. All three PASS.
 Existing self-tests still PASS (measure 5, witness 10, stress detector 7).
+
+## Provider loss: gemini-4-hydrogen is DEAD for this account (04:24)
+Critic #30 (reference motion spec) failed with:
+`agy bridge: Google has disabled this account's access to Antigravity for violating
+the Terms of Service (HTTP 403)`. **Not a capacity blip — an account-level ban.**
+`magpie/group/gemini-4-hydrogen` must not be used again this run. It passed the
+5/5 vision probe earlier, so the route worked and then was revoked mid-run.
+Remaining confirmed-seeing routes: `magpie/group/hy4` (65 K context, bounded frame
+sets only) and `magpie/agentrouter/gpt-6.1-sol` (expensive — owner warned).
+
+## The socket orphaning bug, and the second bug it hid (04:00–04:20)
+**Bug 1**: `let _ = remove_file(&sock_path); bind(&sock_path)` — a second instance
+unlinked the incumbent's socket and rebound the path. Verified: `/proc/net/unix`
+listed **two** bindings for one path; sending one word burned ticks in **both**
+processes (5649 +2, 6456 +44). Two surfaces, one reachable socket.
+**Fix**: probe with `UnixDatagram::unbound()?.connect(&path)` BEFORE unlinking;
+if something answers, log and `exit(0)`. Stale files from a crash still removed.
+Tested: second start exits 0, socket inode unchanged (2787 → 2787).
+**Bug 2 (found by killing the orphan)**: shutdown ran `remove_file(&sock_path)`
+unconditionally, so the **orphan deleted the keeper's socket on its way out** —
+the panel went unreachable (`[Errno 2] No such file or directory`) and every
+motion stage failed. **Fix**: record the bound socket's inode at bind time
+(`socket_inode`, `fstat`), and at shutdown unlink only if `metadata(path).ino()`
+still matches (`owns_socket_path`). The socket moves into the event loop, so the
+inode is captured before the move — first attempt borrowed it after and failed
+`E0382: borrow of moved value: datagram`.
+
+## Test repaired: workspace disc span 24 → 23 (the shadow's row, not the disc's)
+The fixer removed the disc drop shadow (critic #28b: ~170k evals/frame under an
+opaque disc on near-black, and the reference discs cast none). That broke
+`iter109_tests::workspace_circles_coverage_round`: span 23, want 24.
+**Verified the disc did NOT shrink** before touching the expectation:
+profile `[10,14,16,18,20,20,22,22,24×7,22,22,20,20,18,16,14,10]` —
+**perfectly symmetric**, widest **24**. A shadow at offset **(2,3)** could never
+produce a symmetric profile; it added one row of alpha>128 BELOW the disc.
+So 24 was shadow-inflated and **23 is the true disc**. Updated the expectation
+and ADDED a symmetry assertion, so a returning shadow or a misplaced centre
+fails loudly instead of silently changing the span.
+Also fixed a stale call site: `draw_workspace_disc` gained an `occupied: bool`
+parameter (the fixer's client_count work) and the test still passed 8 args.
+**`cargo test --release --offline`: 304 passed, 0 failed.**

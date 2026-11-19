@@ -795,14 +795,9 @@ mod tests {
         peak
     }
 
-    fn load_font(names: &[&str]) -> Option<fontdue::Font> {
-        let home = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_default();
-        names.iter().find_map(|name| {
-            let path = home.join(".local/share/fonts").join(name);
-            std::fs::read(&path).ok().and_then(|b| {
-                fontdue::Font::from_bytes(b, fontdue::FontSettings::default()).ok()
-            })
-        })
+    fn load_font(_names: &[&str]) -> Option<fontdue::Font> {
+        // Vendored asset is embedded: no $HOME dependency, no panic.
+        Some(crate::ui_font())
     }
 
     #[test]

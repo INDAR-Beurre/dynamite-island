@@ -976,6 +976,14 @@ const WS_INACTIVE_GLYPH: (u8, u8, u8) = (232, 234, 237);
 /// Inactive fill: the nav-disc dark (#1C1E22) at the same 0.92 coverage
 /// as draw_nav_disc — the nav-disc material, reused at Ø16 here.
 const WS_INACTIVE_FILL: (u8, u8, u8) = (28, 30, 34);
+/// Inactive but HOLDING WINDOWS (r1c finding 4): the palette's existing
+/// dark toggle-off grey, one step up from the empty-disc dark, so an
+/// occupied workspace reads as "something is there" without a new hue
+/// and without competing with the accent.
+const WS_OCCUPIED_FILL: (u8, u8, u8) = (52, 55, 60);
+/// Disc labels, indexed by tag-1. Static so a settled frame does not
+/// allocate four Strings per draw (r1c finding 6).
+const WS_LABELS: [&str; 9] = ["1", "2", "3", "4", "5", "6", "7", "8", "9"];
 
 /// Workspace disc centres in STAGE coords, left-to-right tag 1..4.
 /// Derived from the collapsed pill rect so they follow the configured
@@ -986,6 +994,30 @@ const WS_INACTIVE_FILL: (u8, u8, u8) = (28, 30, 34);
 /// and fully INSIDE the a3d reserved strip (y 3..27) with 4 px to
 /// spare top and bottom (iter92: Ø16 < 24 pill height, so unlike the
 /// old Ø28 there is no overhang). Hugs the pill with a 4 px gap.
+/// First tag shown in the four disc slots.
+/// r1c finding 3: mango binds SUPER+1..9 to `view` (bind.conf:78-82),
+/// so tags 5..9 are reachable while WS_COUNT is 4. A FIXED 1..4 window
+/// left every disc inactive on tags 5..9 — the one "you are here" cue
+/// the bar has disappeared. The window slides so the active tag is
+/// always drawn; tags 1..4 keep the window at 1, so the layout every
+/// other test and the reference geometry were measured against does
+/// not move.
+fn ws_window_start(active: u8) -> u8 {
+    let a = active.clamp(1, 9) as i32;
+    let max_start = 10 - WS_COUNT as i32;
+    (a - (WS_COUNT as i32 - 1)).clamp(1, max_start) as u8
+}
+
+/// The tags the four slots currently show, left to right.
+fn ws_visible_tags(active: u8) -> [u8; WS_COUNT] {
+    let start = ws_window_start(active);
+    let mut out = [1u8; WS_COUNT];
+    for (i, slot) in out.iter_mut().enumerate() {
+        *slot = start + i as u8;
+    }
+    out
+}
+
 fn workspace_disc_centres() -> [(f32, f32); WS_COUNT] {
     let (pill_x, _, _, _) = panel_rect_stage(IslandState::Collapsed);
     let mut out = [(0.0f32, ws_cy()); WS_COUNT];
@@ -1023,10 +1055,11 @@ fn workspace_cluster_rect() -> (f32, f32, f32, f32) {
 /// must never add the 164 here.
 fn workspace_hit_stage(pos: (f64, f64)) -> Option<u8> {
     let radius = (WS_DISC_R + 1.0) as f64;
+    let tags = ws_visible_tags(active_tag_cached());
     for (i, (cx, cy)) in workspace_disc_centres().iter().enumerate() {
         let d = ((pos.0 - *cx as f64).powi(2) + (pos.1 - *cy as f64).powi(2)).sqrt();
         if d <= radius {
-            return Some((i + 1) as u8);
+            return Some(tags[i]);
         }
     }
     None
@@ -1249,6 +1282,12 @@ fn tray_hit_stage(pos: (f64, f64), n: usize) -> Option<usize> {
 // fast path; this 1 s poller stays as fallback/resync.
 static TAG_CACHE: std::sync::OnceLock<std::sync::RwLock<u8>> =
     std::sync::OnceLock::new();
+/// Occupied/urgent bits for tags 1..=9 (bit n-1), from the same JSON.
+/// r1c (finding 4): `mmsg get all-tags` reports `client_count` per tag,
+/// so a workspace with windows in it can read as occupied instead of
+/// looking exactly like an empty one.
+static TAG_OCC: std::sync::OnceLock<std::sync::RwLock<TagState>> =
+    std::sync::OnceLock::new();
 /// Cached active mango tag (1..=9); seed 1 = mango's startup tag.
 fn active_tag_cached() -> u8 {
     *TAG_CACHE
@@ -1261,28 +1300,102 @@ fn set_active_tag_cached(tag: u8) {
         *c.write().unwrap() = tag;
     }
 }
+/// What one `mmsg` tag snapshot tells the bar: which tag is active and
+/// which tags hold windows / want attention. Bit n-1 is tag n.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct TagState {
+    pub(crate) active: u8,
+    pub(crate) occupied: u16,
+    pub(crate) urgent: u16,
+}
+impl TagState {
+    fn is_occupied(&self, tag: u8) -> bool {
+        tag >= 1 && tag <= 9 && self.occupied & (1 << (tag - 1)) != 0
+    }
+}
+/// Cached tag state (active + occupancy). Seed = tag 1 active, nothing
+/// occupied, which is mango's startup state.
+fn tag_state_cached() -> TagState {
+    *TAG_OCC
+        .get_or_init(|| std::sync::RwLock::new(TagState::default()))
+        .read()
+        .unwrap()
+}
+/// Write a fresh snapshot; returns true when the DRAWN state changed
+/// (so the watcher only pokes the loop for a real change).
+fn apply_tag_state(ts: TagState) -> bool {
+    let mut changed = ts.active != active_tag_cached();
+    if changed {
+        set_active_tag_cached(ts.active);
+    }
+    let mut cur = TAG_OCC
+        .get_or_init(|| std::sync::RwLock::new(TagState::default()))
+        .write()
+        .unwrap();
+    if cur.occupied != ts.occupied || cur.urgent != ts.urgent {
+        cur.occupied = ts.occupied;
+        cur.urgent = ts.urgent;
+        changed = true;
+    }
+    changed
+}
 /// Parse the active tag out of `mmsg get all-tags` JSON: the first
 /// `"index":N` preceding an `"is_active":true`. No serde in this
 /// crate — the format is mmsg's stable one-line JSON; anything
 /// unparseable is None (the cache keeps its last value).
 fn parse_active_tag(json: &str) -> Option<u8> {
+    parse_tag_state(json).map(|t| t.active)
+}
+/// Parse one `mmsg` snapshot: the active tag plus an occupied/urgent
+/// bitmap. Scans `"index":N` heads and remembers the three flags that
+/// follow each one in mmsg's fixed field order, so a tag's flags can
+/// never be attributed to its neighbour.
+fn parse_tag_state(json: &str) -> Option<TagState> {
+    let mut out = TagState::default();
+    let mut found_active = false;
     let mut rest = json;
-    while let Some(pos) = rest.find("\"is_active\":true") {
-        let before = &rest[..pos];
-        if let Some(idx) = before.rfind("\"index\":") {
-            let num: String = before[idx + 8..]
-                .chars()
-                .take_while(|c| c.is_ascii_digit())
-                .collect();
-            if let Ok(n) = num.parse::<u8>() {
-                if (1..=9).contains(&n) {
-                    return Some(n);
+    while let Some(idx) = rest.find("\"index\":") {
+        let after = &rest[idx + 8..];
+        let num: String = after
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect();
+        let tag: u8 = num.parse().ok()?;
+        // The next tag's chunk (or EOF) bounds this one's flags.
+        let end = after.find("\"index\":").unwrap_or(after.len());
+        let chunk = &after[..end];
+        if (1..=9).contains(&tag) {
+            let bit = 1u16 << (tag - 1);
+            if chunk.contains("\"is_active\":true") {
+                out.active = tag;
+                found_active = true;
+            }
+            if chunk.contains("\"is_urgent\":true") {
+                out.urgent |= bit;
+            }
+            // client_count is always present in mmsg's output; a
+            // missing field reads as 0 (empty), which is the safe
+            // direction — an unreadable count never invents a window.
+            if let Some(p) = chunk.find("\"client_count\":") {
+                let n: String = chunk[p + 15..]
+                    .chars()
+                    .take_while(|c| c.is_ascii_digit())
+                    .collect();
+                if n.parse::<u32>().map(|n| n > 0).unwrap_or(false) {
+                    out.occupied |= bit;
                 }
             }
         }
-        rest = &rest[pos + 1..];
+        rest = &after[end..];
+        if !rest.contains("\"index\":") {
+            break;
+        }
     }
-    None
+    if found_active {
+        Some(out)
+    } else {
+        None
+    }
 }
 /// Run `mmsg args`, capturing stdout, with a HARD timeout (same
 /// pattern as controlcenter_panel::run_cmd_timeout — a hung compositor
@@ -1325,7 +1438,12 @@ fn run_mmsg_timeout(args: &[&str], timeout: std::time::Duration) -> Option<Strin
     }
 }
 fn read_active_tag() -> Option<u8> {
-    parse_active_tag(&run_mmsg_timeout(
+    read_tag_state().map(|t| t.active)
+}
+/// One snapshot: `mmsg get all-tags` (active tag + occupancy), hard
+/// 1500 ms timeout.
+fn read_tag_state() -> Option<TagState> {
+    parse_tag_state(&run_mmsg_timeout(
         &["get", "all-tags"],
         std::time::Duration::from_millis(1500),
     )?)
@@ -1337,8 +1455,8 @@ fn ensure_tag_poller() {
     STARTED.get_or_init(|| {
         let _ = active_tag_cached(); // init the cache (seed 1)
         std::thread::spawn(|| loop {
-            if let Some(t) = read_active_tag() {
-                set_active_tag_cached(t);
+            if let Some(t) = read_tag_state() {
+                apply_tag_state(t);
             }
             std::thread::sleep(std::time::Duration::from_secs(1));
         });
@@ -1399,9 +1517,8 @@ fn tag_watch_loop() {
                     let reader = std::io::BufReader::new(stdout);
                     for line in reader.lines() {
                         let Ok(line) = line else { break };
-                        if let Some(t) = parse_active_tag(&line) {
-                            if t != active_tag_cached() {
-                                set_active_tag_cached(t);
+                        if let Some(t) = parse_tag_state(&line) {
+                            if apply_tag_state(t) {
                                 tag_watch_poke();
                             }
                         }
@@ -1417,9 +1534,8 @@ fn tag_watch_loop() {
         }
         // Stream ended (mango restart / mmsg died): resync once via
         // the poll path, then respawn after a short backoff.
-        if let Some(t) = read_active_tag() {
-            if t != active_tag_cached() {
-                set_active_tag_cached(t);
+        if let Some(t) = read_tag_state() {
+            if apply_tag_state(t) {
                 tag_watch_poke();
             }
         }
@@ -2548,6 +2664,8 @@ fn draw_top_row_2x(
         lock_timer::text_px(ph as f32) * s,
     );
     for (i, (cx, cy)) in workspace_disc_centres().iter().enumerate() {
+        let tags = ws_visible_tags(active_tag_cached());
+        let tag = tags[i];
         draw_workspace_disc_flat_2x(
             canvas,
             bw,
@@ -2555,8 +2673,9 @@ fn draw_top_row_2x(
             font,
             *cx * s,
             *cy * s,
-            (i + 1) as u8 == active_tag,
-            &(i + 1).to_string(),
+            tag == active_tag_cached(),
+            tag_state_cached().is_occupied(tag),
+            WS_LABELS[(tag - 1) as usize],
         );
     }
     crate::tray::draw_tray_cluster_2x(canvas, bw, bh, font, s);
@@ -2629,12 +2748,19 @@ fn draw_workspace_disc_flat_2x(
     cx: f32,
     cy: f32,
     active: bool,
+    occupied: bool,
     label: &str,
 ) {
     const SS: usize = 4;
     let s = RENDER_SCALE as f32;
     let r = WS_DISC_R * s;
-    let (fr, fg, fb) = if active { WS_ACTIVE_FILL } else { WS_INACTIVE_FILL };
+    let (fr, fg, fb) = if active {
+        WS_ACTIVE_FILL
+    } else if occupied {
+        WS_OCCUPIED_FILL
+    } else {
+        WS_INACTIVE_FILL
+    };
     let glyph_rgb = if active { WS_ACTIVE_GLYPH } else { WS_INACTIVE_GLYPH };
     let x0 = ((cx - r - 1.0).floor() as i32).max(0);
     let x1 = ((cx + r + 1.0).ceil() as i32).min(bw as i32);
@@ -3014,46 +3140,14 @@ fn draw_workspace_disc(
     cx: f32,
     cy: f32,
     active: bool,
+    occupied: bool,
     font: &fontdue::Font,
     label: &str,
 ) {
-    // Drop shadow (iter26), drawn first so the disc covers the overlap.
-    // Supersampled (iter109): the shadow alpha is the mean of
-    // disc_shadow_alpha_r over the SS x SS sub-grid, so the soft
-    // shadow edge has no 1 px stairstep either.
-    {
-        let (sx, sy) = (cx + DISC_SHADOW_OFF.0, cy + DISC_SHADOW_OFF.1);
-        let m = WS_DISC_R + DISC_SHADOW_BLUR + 1.0;
-        let x0 = ((sx - m).floor() as i32).max(0);
-        let x1 = ((sx + m).ceil() as i32).min(w as i32);
-        let y0 = ((sy - m).floor() as i32).max(0);
-        let y1 = ((sy + m).ceil() as i32).min(h as i32);
-        for y in y0..y1 {
-            for x in x0..x1 {
-                let mut a_sum = 0.0f32;
-                for sub_y in 0..WS_DISC_SS {
-                    for sub_x in 0..WS_DISC_SS {
-                        let ox = (sub_x as f32 + 0.5) / WS_DISC_SS as f32 - 0.5;
-                        let oy = (sub_y as f32 + 0.5) / WS_DISC_SS as f32 - 0.5;
-                        a_sum += disc_shadow_alpha_r(
-                            x as f32 + 0.5 + ox,
-                            y as f32 + 0.5 + oy,
-                            cx,
-                            cy,
-                            WS_DISC_R,
-                        );
-                    }
-                }
-                let a = a_sum / (WS_DISC_SS * WS_DISC_SS) as f32;
-                if a > 0.0 {
-                    let i = (((y as u32 * w) + x as u32) * 4) as usize;
-                    composite_black_shadow(canvas, i, a);
-                }
-            }
-        }
-    }
     let (fr, fg, fb) = if active {
         WS_ACTIVE_FILL
+    } else if occupied {
+        WS_OCCUPIED_FILL
     } else {
         WS_INACTIVE_FILL
     };
@@ -3174,16 +3268,22 @@ fn draw_workspace_circles_stage(
     font: &fontdue::Font,
     active_tag: u8,
 ) {
+    // r1c: one snapshot read for the whole row (the active tag can move
+    // between two reads, and a half-updated row would draw two actives).
+    let tags = ws_visible_tags(active_tag);
+    let state = tag_state_cached();
     for (i, (cx, cy)) in workspace_disc_centres().iter().enumerate() {
+        let tag = tags[i];
         draw_workspace_disc(
             canvas,
             w,
             h,
             *cx,
             *cy,
-            (i + 1) as u8 == active_tag,
+            tag == active_tag,
+            state.is_occupied(tag),
             font,
-            &(i + 1).to_string(),
+            WS_LABELS[(tag - 1) as usize],
         );
     }
 }
@@ -6611,6 +6711,9 @@ fn main() {
         }
     }
     let datagram = UnixDatagram::bind(&sock_path).expect("bind control socket");
+    // The socket moves into the event loop below; remember its inode now so
+    // shutdown can tell whether the path is still ours.
+    let sock_ino = socket_inode(&datagram);
     datagram.set_nonblocking(true).expect("nonblocking");
     {
         let loop_handle_ctrl = loop_handle.clone();
@@ -6854,7 +6957,28 @@ fn main() {
         .run(None, &mut island, |_| {})
         .expect("event loop");
 
-    let _ = std::fs::remove_file(&sock_path);
+    // Only unlink if the path is still OUR socket. An instance that lost the
+    // path to a later bind must not delete the incumbent's socket on its way
+    // out -- doing exactly that killed the panel at 04:02.
+    if owns_socket_path(sock_ino, &sock_path) {
+        let _ = std::fs::remove_file(&sock_path);
+    }
+}
+
+/// Inode of the socket we bound, or 0 if it cannot be read.
+fn socket_inode(sock: &UnixDatagram) -> u64 {
+    use std::os::unix::io::AsRawFd;
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    if unsafe { libc::fstat(sock.as_raw_fd(), &mut st) } != 0 {
+        return 0;
+    }
+    st.st_ino
+}
+
+/// True if `path` still refers to the socket we bound (same inode).
+fn owns_socket_path(ino: u64, path: &std::path::Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    ino != 0 && std::fs::metadata(path).map(|m| m.ino() == ino).unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -8872,12 +8996,24 @@ mod iter109_tests {
                 prof.len(),
                 longest_outside(&prof)
             );
+            // 23, not 24: the drop shadow is gone (the reference discs cast
+            // none). Its +3y offset used to add one row of alpha>128 BELOW
+            // the disc, inflating this span. The disc itself is unchanged --
+            // the profile is now perfectly symmetric, which a +3y shadow
+            // could never be, and widest is still 24 = 2 * WS_DISC_R * 1.5.
             assert_eq!(
                 prof.len(),
-                24,
-                "circle {} coverage: span {} rows, want 24",
+                23,
+                "circle {} coverage: span {} rows, want 23",
                 i + 1,
                 prof.len()
+            );
+            assert_eq!(
+                prof,
+                prof.iter().rev().copied().collect::<Vec<_>>(),
+                "circle {} coverage: profile asymmetric -- a shadow or a \
+                 misplaced centre is back",
+                i + 1
             );
             assert!(
                 (24..=25).contains(&width),
@@ -8962,7 +9098,7 @@ mod iter109_tests {
             (false, WS_INACTIVE_FILL),
         ] {
             let mut tile = vec![0u8; 40 * 40 * 4];
-            draw_workspace_disc(&mut tile, 40, 40, 20.0, 20.0, active, &font, "1");
+            draw_workspace_disc(&mut tile, 40, 40, 20.0, 20.0, active, false, &font, "1");
             // (20, 14) = (cx, cy - 6): d = 6, inside the rim band
             // (6.5..8) and above the glyph box.
             let i = (14 * 40 + 20) * 4;

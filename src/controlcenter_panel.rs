@@ -4061,16 +4061,9 @@ mod iter85_tests {
     fn render_proof_iter91() {
         let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
         let Some(home) = home else { return };
-        let ui_bytes = match std::fs::read(home.join(".local/share/fonts/Quicksand-Bold.ttf")) {
-            Ok(b) => b,
-            Err(_) => return,
-        };
+        let ui_font = crate::ui_font();
         let icon_bytes = match std::fs::read(home.join(".local/share/fonts/MaterialSymbolsRounded.ttf")) {
             Ok(b) => b,
-            Err(_) => return,
-        };
-        let ui_font = match Font::from_bytes(ui_bytes, fontdue::FontSettings::default()) {
-            Ok(f) => f,
             Err(_) => return,
         };
         let icon_font = match Font::from_bytes(icon_bytes, fontdue::FontSettings::default()) {
@@ -4108,19 +4101,12 @@ mod iter85_tests {
     fn render_proof_bt_submenu() {
         let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
         let Some(home) = home else { return };
-        let ui_bytes = match std::fs::read(home.join(".local/share/fonts/Quicksand-Bold.ttf")) {
-            Ok(b) => b,
-            Err(_) => return,
-        };
+        let ui_font = crate::ui_font();
         let icon_bytes =
             match std::fs::read(home.join(".local/share/fonts/MaterialSymbolsRounded.ttf")) {
                 Ok(b) => b,
                 Err(_) => return,
             };
-        let ui_font = match Font::from_bytes(ui_bytes, fontdue::FontSettings::default()) {
-            Ok(f) => f,
-            Err(_) => return,
-        };
         let icon_font = match Font::from_bytes(icon_bytes, fontdue::FontSettings::default()) {
             Ok(f) => f,
             Err(_) => return,
@@ -4155,19 +4141,12 @@ mod iter85_tests {
     fn render_proof_sound_submenu() {
         let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
         let Some(home) = home else { return };
-        let ui_bytes = match std::fs::read(home.join(".local/share/fonts/Quicksand-Bold.ttf")) {
-            Ok(b) => b,
-            Err(_) => return,
-        };
+        let ui_font = crate::ui_font();
         let icon_bytes =
             match std::fs::read(home.join(".local/share/fonts/MaterialSymbolsRounded.ttf")) {
                 Ok(b) => b,
                 Err(_) => return,
             };
-        let ui_font = match Font::from_bytes(ui_bytes, fontdue::FontSettings::default()) {
-            Ok(f) => f,
-            Err(_) => return,
-        };
         let icon_font = match Font::from_bytes(icon_bytes, fontdue::FontSettings::default()) {
             Ok(f) => f,
             Err(_) => return,
@@ -4218,16 +4197,9 @@ mod iter85_tests {
     fn slider_rendered_value_matches_level_iter107() {
         let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
         let Some(home) = home else { return };
-        let ui_bytes = match std::fs::read(home.join(".local/share/fonts/Quicksand-Bold.ttf")) {
-            Ok(b) => b,
-            Err(_) => return,
-        };
+        let ui_font = crate::ui_font();
         let icon_bytes = match std::fs::read(home.join(".local/share/fonts/MaterialSymbolsRounded.ttf")) {
             Ok(b) => b,
-            Err(_) => return,
-        };
-        let ui_font = match Font::from_bytes(ui_bytes, fontdue::FontSettings::default()) {
-            Ok(f) => f,
             Err(_) => return,
         };
         let icon_font = match Font::from_bytes(icon_bytes, fontdue::FontSettings::default()) {
