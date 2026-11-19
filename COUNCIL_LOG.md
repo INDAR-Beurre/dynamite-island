@@ -983,3 +983,34 @@ Scored so far (12): #1=6 · #2=5 · #3=3 · #4=7 · #5=6 · #6=4 · #8=3 · #11=
 | #29 | **portability + packaging** | logfare/deepseek-v4.1-flash-1017 | `2e26bac8` |
 (#24 expanded-panel vision `588d73cf` still outstanding.)
 Each brief carries the **retracted** `#F2A65A` accent claim explicitly so no critic re-introduces it, and #27 carries the **comparison-foil trap** (`l60`/`l320` are the design the creator rejects) so it cannot rebuild the wrong screen. #27 and #28 use the two routes proven to see images 5/5, keeping `gpt-6.1-sol` in reserve — the owner warned it drains their account.
+
+### #26 memory + shm budget — score **5** (`group/hy4`)
+**Measured, not inferred, and it corrects the parent twice.** Both corrections accepted after checking the code.
+
+**⛔ PARENT SELF-CORRECTION — "the perf fix and the RAM fix are the same fix" was WRONG.**
+I wrote that shrinking the morph damage rect shrinks `needed` and therefore the shm pool. Verified at `src/main.rs:5203-5206`: `let (bw, bh) = (w * RENDER_SCALE, h * RENDER_SCALE); let needed = (bw * bh * 4) as usize;` — **`needed` comes from the SURFACE size, not the damage rect.** A tighter rect cannot shrink the **reservation** (23,929,344 B). It changes **residency**: which pages get touched. #26 measured the first themes morph raising `Pss_Shmem` **0.3 → 11.688 MB** (shm RSS 23.376 MB, both slots faulted), total Pss **30.6 → 42.1 MB**, persisting **>3.5 s** after collapse. Union rect saves **~3.0–4.9 MB Pss per slot, ~6–10 MB both**. Real and large — but the wording matters: a fixer told "this shrinks the pool" hunts for a pool-size change that does not exist.
+
+**⛔ PARENT SELF-CORRECTION — "RAM REGRESSED 44.2 → 55.4 MB past baseline" is RETRACTED.**
+That reading was taken with both slots faulted after morph activity. #26 measured **idle after unlock: VmRSS 34.1 MB, Pss 30.6 MB**, with **no leak**: 12 lock cycles moved collapsed Pss **30.45 → 30.59 MB**; 20 theme cycles **41.97 → 41.83 MB**. Steady state is **better than the 44.2 MB baseline**, not worse. Same error class as quoting raw lapvar without normalising contrast: I compared a transient against a steady state.
+
+**The genuine RAM finding replaces it — the lock screen doubles the pool:**
+| | normal | locked |
+|---|---|---|
+| shm pool | 23,376 kB | **47,096 kB** (2 × 24,112,128 = **48,224,256 B**) |
+| Pss_Anon | 26.9 MB | **32.9 MB** (+6,028,008 B lock wallpaper) |
+| VmRSS | 34.1 MB | **86,616 kB** |
+| Pss | 30.6 MB | **59,917 kB** |
+| VmHWM | — | **103,696 kB** |
+Fully recovers on unlock (33.6 / 30.3 MB) ⇒ **peak problem, not a leak**. Sites `src/main.rs:1943` (`LOCKSCREEN_SIZE = (1504, 1002)`), `:5206`, `:5227`, `:4540`. A 2× steady-state peak on the owner's explicit minimal-RAM brief.
+
+**Open question the parent could NOT reconcile by reading (chain 4t) — handed to the fixer as a measurement, not a guess:**
+`src/main.rs:5237-5239` deliberately `canvas.fill(0)`s the **whole slot at creation**, commented *"Touch the whole slot once, here, instead of letting a full-stage draw fault it in later … which reads as a step in RSS."* That contradicts #26's **0.6 MB of 23.9 MB resident** at idle after unlock. If creation really faults both slots, the morph is not what makes them resident and the union-rect saving is smaller than estimated. Also: that fill memsets **23.9 MB on every surface-size change** (every lock/unlock) purely to avoid a *cosmetic* RSS step, and the comment itself says fresh memfds are already zero-filled — so it may be **both redundant and harmful**. Verify before removing; an undamaged area must stay transparent.
+**Do not drop `SLOT_RING` to 1 on a guess**: `src/main.rs:5207-5210` — `pool.canvas(&slot)` returning `None` for the in-flight slot *is* the back-pressure; one slot stalls every frame.
+
+### Instrument repair #9 (parent) — commit `92a100c`: name the guilty payload
+Answers #22's surviving critique of the owner's **≥1000-test gate**. The four inertness batches (word+garbage, case near-miss, compound, newline injection) checked **one** log witness for the whole batch and, on a hit, added `len(batch)` to fails — **one bad payload indicted 282 innocents and the report never said which**. A gate that cannot direct a fix is a weak gate wearing a big number.
+Inert payloads log nothing, so `_inert_batch()` keeps the healthy path at **one witness** and pays a **log2(n) bisection only on failure**, naming the exact payload. Adds one assertion per payload so the count is honest.
+`scripts/stress/inert_selftest.py` pins it with **10 ground-truth checks, 10/10 PASS**: clean batch costs one witness; a lone culprit at index 0, 137 or 281 yields exactly one failure naming it; two culprits are both named; singleton works.
+
+### r1c brief drafted — `docs/r1c-brief-draft.md`
+Assembled while r1b builds, from **parent-verified** findings only. Eleven sections: morph damage rect (with the three triangulating measurements and the withdrawn over-cautious caveat), lock-pool peak, the 40×-loose perf guard, per-frame allocation table, DBG gate + `let else` holdouts, geometry **set 74×28 then MEASURE**, the 1×-paths-on-expand defect, colour with the **retracted `#F2A65A`** warning, measured expanded-panel geometry, the **corrected** lock-screen spec with the comparison-foil trap, dictation's always-on mic and dead `collapsed` literal, and the six required verification commands.
