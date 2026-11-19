@@ -334,3 +334,24 @@ The author states the font is **SF Compact Display**. We ship Quicksand-Bold.
 Do not claim a font identification from shape correlation — that method was
 tried and retracted here. Report the stroke/cap gap as a finding if you cannot
 close it with the shipped font.
+
+---
+
+## 10. RESOLVED — do NOT remove the workspace discs
+
+The reference's resting top band contains **only the pill**. Measured across
+all 33 stills: in `docs/reference/pill-settled.png` there are **92 dark pixels
+outside the island column in the entire frame**, all at the screen edges.
+
+A naive reading says "delete the workspace strip to match". **That is wrong.**
+The other dark clusters in the later stills (s49–s113, at x≈507–655,
+1827–1956, 2364–2429) are **wallpaper content**, not UI — sampling
+`/tmp/ref/s/s65.png` at (580,40) gives RGB (35,22,8), at (1890,40) (38,24,2),
+at (2390,40) (47,30,9): dark wood and window frames in a photograph of a room.
+Our equivalent positions are all exactly (20,20,36), the compositor's
+`root_color`, because no wallpaper is running.
+
+**The owner explicitly asked to keep their workspace indicators and Bluetooth
+panel.** They are additions to the reference, not deviations from it. Keep
+them. Judge them on their own craft (uniform pitch, one accent, no invisible
+shadow), not against a reference frame that never had them.
