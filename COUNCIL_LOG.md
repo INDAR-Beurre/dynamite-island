@@ -2276,3 +2276,7 @@ logfare deepseek #4/#8/#14; group deepseek #5/#9/#13; logfare glm-5.3 #6/#11;
 fasfas deepseek #7/#12; logfare glm-5.3-flash #10. All read-only.
 r2 #1 pill (hy4) score 8: black fill, centre, ink and font metrics on target; live pill 94x36 = 4.167% W vs reference 4.336%, aspect 2.611 vs 2.643. One major: capsule ~4% undersized. Suggested re-measure runtime geometry toward 98x37 device px, preserving text. Not yet applied.
 r2 #10 portability: logfare glm-5.3-flash failed `Service temporarily at capacity`; one retry on group deepseek-1017 as #10b, same read-only brief.
+r2 #2 panels (hy4) score 7: expanded geometry/accent close; majors: upper panel fill still grey via FROST_ALPHA_MENU 0.92 instead of pure black; power uptime/Lock text oversized relative to panel.
+r2 #3 lockscreen (hy4) score 7: veil/registration/frosting/proportional clock verified; BLOCKER: power disc action still spawns real `swaylock -f -c 000000` at src/main.rs:6876-6885 + src/power_panel.rs:623-630, violating owner no-lockout constraint; majors: capsule/dot fractions need measured retune.
+r2 #12 rust performance (fasfas deepseek) score 7.5 (JSON wrapped in fences, extracted for merge): safe remaining candidates: upscale column weights/duplicate loops, tag reads, tray menu borrow, clock formatting, wallpaper stat gating, thread spawn overhead. No profiling run; verify before applying.
+r2 #8 dictation lifecycle: failed (see thread status); no usable verdict, must account for gap before scoring.
