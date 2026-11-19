@@ -355,3 +355,63 @@ Our equivalent positions are all exactly (20,20,36), the compositor's
 panel.** They are additions to the reference, not deviations from it. Keep
 them. Judge them on their own craft (uniform pitch, one accent, no invisible
 shadow), not against a reference frame that never had them.
+
+---
+
+## 11. MAJOR — the clock is not white. It is a pale periwinkle.
+
+Measured on **25 reference stills**, core ink pixels only (top 8 % by
+luminance, inside the stadium, away from AA edges):
+
+```
+median of per-frame medians   (188, 214, 255)   #BCD6FF
+p25 .. p75                    (185..192, 212..215, 253..255)
+```
+
+Ours measures **(254, 254, 254)** — pure white. `src/lock_timer.rs:293-296`
+writes `v = c * 255` into all three channels equally.
+
+**This is a fixed UI colour, not wallpaper frosting.** Proof: the clock reads
+the same in two scenes with opposite white points —
+
+| scene | scene white point | clock core |
+|---|---|---|
+| blue sky (`s1`, `s25`) | (236, 242, 254) | (188, 214, 255) |
+| warm indoor (`s65`, `s85`, `s101`) | (228, 239, 215) | (189, 213, 252) |
+
+A wallpaper-derived tint would follow the scene. It does not. Neither does a
+global video grade: white-balancing on the cloud gives (203, 225, 256), still
+not neutral, and the two scenes would need opposite corrections.
+
+**The rest of the reference's text is tinted the same way, by role:**
+
+| element | core RGB | B−R |
+|---|---|---|
+| clock | (188, 214, 255) | 67 |
+| "Lock" label | (201, 207, 233) | 32 |
+| uptime | (112, 112, 120) | 8 |
+
+So it is one cool-neutral ramp, strongest on the primary text. Do not invent
+three unrelated colours; derive the secondary/tertiary from the same hue.
+
+**Fix:** `src/lock_timer.rs:293-296` — scale the coverage by the token instead
+of writing `v` to all three channels. Keep the alpha-over structure; the
+per-channel `max()` there is a separate known defect (it erases the AA ramp on
+any non-black background).
+
+**Caution:** blue channel clips at 255 in the source, so the true token may be
+slightly brighter than #BCD6FF. Use #BCD6FF and say it is a lower bound.
+
+---
+
+## 12. Environment — the wallpaper was not running
+
+Every earlier screenshot of ours sat on flat **RGB(20,20,36)** —
+`~/.config/mango/config.conf:115` `root_color = 0x141424ff`. `swaybg` is
+installed and `autostart.sh:58-60` launches it, but no process was running.
+Started it (`swaybg -i ~/.config/mango/wallpaper/wallpaper.png -m fill`); the
+top band now shows real wallpaper and the capsule reads correctly against it.
+
+This was a large part of "looks really bad compared to his setup" and it was
+**not a code defect**. Any visual score taken before this point was scoring a
+black band. Re-take screenshots before judging colour or contrast.
