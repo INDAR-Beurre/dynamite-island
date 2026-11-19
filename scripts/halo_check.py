@@ -69,7 +69,7 @@ def panel_bbox(a):
     return int(x0), int(ys.min()), int(x1), int(ys.max())
 
 
-def check(state, settle=1.5):
+def check(state, wallpaper, settle=1.5):
     send(state)
     time.sleep(settle)
     png = f"/tmp/halo_{state}.png"
@@ -93,15 +93,26 @@ def check(state, settle=1.5):
     from scipy import ndimage
     er = ndimage.binary_erosion(lum > 40, np.ones((7, 7)))
     lab, nlab = ndimage.label(er)
+    # A bright blob alone is not a hole: ControlCenter's slider thumbs are
+    # solid (243,243,243) and a wallpaper thumbnail is a photo. Both are
+    # legitimate content. A HOLE is where the wallpaper itself shows
+    # through, so require the blob to match the same pixels in a
+    # collapsed-state capture. Measured: real hole diff ~1, thumb diff
+    # 65.9, thumbnail diff 133.8.
     blobs = []
     for i, sl in enumerate(ndimage.find_objects(lab)):
         size = int((lab[sl] == i + 1).sum())
-        if size > 150:
-            blobs.append({
-                "px": size,
-                "bbox": [int(sl[1].start + x0 + r), int(sl[0].start + y0 + r),
-                         int(sl[1].stop + x0 + r), int(sl[0].stop + y0 + r)],
-            })
+        if size <= 150:
+            continue
+        bx0, by0 = sl[1].start + x0 + r, sl[0].start + y0 + r
+        bx1, by1 = sl[1].stop + x0 + r, sl[0].stop + y0 + r
+        patch = a[by0:by1, bx0:bx1]
+        ref = wallpaper[by0:by1, bx0:bx1]
+        diff = float(np.abs(patch - ref).mean()) if patch.shape == ref.shape else 255.0
+        if diff >= 12.0:
+            continue
+        blobs.append({"px": size, "wall_diff": round(diff, 2),
+                      "bbox": [int(bx0), int(by0), int(bx1), int(by1)]})
     return {"state": state, "panel": [x0, y0, x1, y1],
             "hole_px": sum(b["px"] for b in blobs), "blobs": blobs}
 
@@ -109,8 +120,14 @@ def check(state, settle=1.5):
 def main():
     states = sys.argv[1:] or STATES
     send("collapsed")
-    time.sleep(0.6)
-    rows = [check(s) for s in states]
+    time.sleep(0.9)
+    if subprocess.run(["grim", "/tmp/halo_wallpaper_ref.png"],
+                      capture_output=True).returncode != 0:
+        print("RESULT ERROR: grim failed")
+        return 2
+    wallpaper = np.asarray(
+        Image.open("/tmp/halo_wallpaper_ref.png").convert("RGB")).astype(int)
+    rows = [check(s, wallpaper) for s in states]
     send("collapsed")
     bad = [r for r in rows if r.get("hole_px", 0) > 0]
     print(json.dumps({"rows": rows, "holes": len(bad)}, indent=1))
