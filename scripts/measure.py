@@ -212,8 +212,19 @@ def panel_state() -> dict | None:
     below, dark window at y=0, dark window mid-screen, dark wallpaper, and a
     lock surface measured as a pill). The last one defeated every pixel guard:
     the box was genuinely the panel's own black material, just the wrong
-    surface. The panel states its state outright -- 'DBG enter state=Collapsed
-    morph=false' -- so ask it instead of guessing.
+    surface. So ask the panel instead of guessing.
+
+    TWO witnesses, because the first one proved fragile. 'DBG enter state=' is
+    printed only on POINTER ENTER (src/main.rs:5653), so a panel driven purely
+    over the socket never emits it -- this guard silently returned None and fell
+    back to the pixel heuristics it exists to replace. 'DBG morph A -> B' is
+    printed on every state change (src/main.rs:4764) and is already a contract
+    the stress harness depends on, so it is the reliable one.
+
+    A morph line reports the state being LEFT and the one being ENTERED, and is
+    printed BEFORE the morph runs. `morph_running` says whether an animation
+    follows. There is no completion line, so a morph that has since finished
+    still reads morph=true; callers must allow for settling (see settled_for).
     """
     p = pid()
     if p is None:
@@ -236,8 +247,47 @@ def panel_state() -> dict | None:
         m = re.search(r"DBG enter state=(\w+) morph=(\w+)", ln)
         if m:
             return {"state": m.group(1), "morph": m.group(2) == "true",
-                    "witness": ln.strip()}
+                    "witness": ln.strip(), "via": "pointer-enter"}
+        # `DBG morph Lockscreen -> Collapsed (morph_running=true)`
+        m = re.search(r"DBG morph (\w+) -> (\w+) \(morph_running=(\w+)\)", ln)
+        if m:
+            return {"state": m.group(2), "morph": m.group(3) == "true",
+                    "witness": ln.strip(), "via": "morph"}
+        # Lock transitions use a fixed target and no morph_running flag.
+        m = re.search(r"DBG morph (\w+) -> Lockscreen \(morph_running=false\)", ln)
+        if m:
+            return {"state": "Lockscreen", "morph": False,
+                    "witness": ln.strip(), "via": "morph"}
     return None
+
+
+def settled(png: Path, tries: int = 3) -> bool:
+    """True when two captures `anim_ms` apart are pixel-identical.
+
+    The morph witness is printed BEFORE the animation runs and there is no
+    completion line, so `morph_running=true` stays true forever after a morph
+    finishes. Trusting it would refuse every measurement. Instead ask the
+    pixels the one question they CAN answer reliably: is anything still moving?
+    This is not a return to the old heuristics -- it does not identify the pill,
+    it only detects change.
+    """
+    import time
+    # Compare only the BAR STRIP, not the whole screen: a terminal cursor or a
+    # video elsewhere on the desktop keeps changing forever and would make this
+    # refuse every measurement. The strip is where the island lives.
+    strip = 220
+    try:
+        prev = np.array(Image.open(png).convert("RGB"))[:strip]
+    except OSError:
+        return False
+    for _ in range(tries):
+        time.sleep(0.20)          # > anim_ms (160 ms)
+        shot(png)
+        cur = np.array(Image.open(png).convert("RGB"))[:strip]
+        if cur.shape == prev.shape and not np.any(cur != prev):
+            return True
+        prev = cur
+    return False
 
 
 def main() -> int:
@@ -257,6 +307,21 @@ def main() -> int:
         out["panel"] = st
     # The panel's own witness outranks any pixel heuristic: a lock surface or
     # an open panel is black too, and no luminance test can tell them apart.
+    moving = st and st["state"] == "Collapsed" and st["morph"]
+    if moving:
+        # A finished morph still reads morph=true. Only refuse if it is
+        # genuinely still animating.
+        if settled(png):
+            st["morph"] = False
+            st["settled_by"] = "two identical captures 200ms apart"
+        else:
+            out["state"] = "not-collapsed"
+            out["note"] = ("panel is mid-morph and still changing between "
+                           "captures; wait and re-measure")
+            out["pill"] = None
+            out.update(proc_stats(pid()))
+            print(json.dumps(out, indent=2))
+            return 0
     if st and (st["state"] != "Collapsed" or st["morph"]):
         out["state"] = "not-collapsed"
         out["note"] = (f"panel reports state={st['state']} morph={st['morph']}; "
