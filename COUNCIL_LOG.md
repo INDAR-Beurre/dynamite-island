@@ -1323,3 +1323,23 @@ All canonical targets confirmed against uncorrupted evidence.
 **Both self-corrections re-verified against the CLEAN reference**: stem **3.00 px**
 (#9 confirmed), width **4.336 %** (#10 confirmed). Neither was poisoned by the
 contaminated file.
+
+## Parent verification of r1c's morph-rect change (read-only, before the fixer reports)
+The risk in bounding a morph's damage rect is **writing outside it** — stale pixels or a
+torn edge. Checked every write in `draw_morph_frame`:
+- capsule loop now `rgn.0..rgn.2` / `rgn.1..rgn.3` ✓
+- **shadow loop** bounds come from the INTERPOLATED capsule (`ox-m .. ox+fw+m`), not the
+  endpoints. Safe **because the live easing is `EaseOutCubic`** (`src/main.rs:4921,4923,
+  4955,4957`), which is monotone on [0,1] — the interpolated capsule is always *between*
+  the endpoints, never larger. `src/morph.rs:143` explicitly warns callers not to assume
+  `<=1.0` for `EaseOutBack`/`Spring`; those are **not wired**.
+  Margins: `content_rect` pads menus by `ceil(10+5+14+8+2)=39`; the shadow needs
+  `m = 10+max(0,5)+1 = 16`. **39 > 16 ✓**. Vertically both endpoints anchor at
+  `gap_top=13`, union top clips to 0, shadow top `13-16=-3` clips to 0 ✓.
+- **This safety depends on the easing staying non-overshooting.** If anyone wires
+  `EaseOutBack` later, the rect must grow by the overshoot fraction or the shadow will
+  tear. Worth a comment at the rect computation.
+Also verified: `ui_font()` embeds `Quicksand-Bold.ttf` via `include_bytes!`, logs the
+winning candidate, and the three duplicated `$HOME`-only loaders in tests were replaced
+with it. `std::process::exit(1)` replaces the panic only if the EMBEDDED font fails to
+parse (a corrupt build) — acceptable, and no longer reachable on a clean machine.
