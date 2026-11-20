@@ -119,7 +119,8 @@
       "status": "starting",
       "link": "[Council r3 #11: rust-correctness](t3-thread://v2/699b4b1c-474b-4871-82f1-d1eb0c374204/thread:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3A596e05c8-a98f-4acc-81d1-c367348eaa07)",
       "isError": false,
-      "reviewState": "awaiting wake"
+      "reviewState": "unusable original and retry; exhausted; coverage gap",
+      "failure": "The model is temporarily unavailable."
     },
     {
       "slot": 12,

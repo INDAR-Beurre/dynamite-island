@@ -1,5 +1,5 @@
 {
-  "reason": "Unusable original reviews excluded with one retry. Slots 4/7/10/12 exhausted retries; coverage gaps, no scores.",
+  "reason": "Unusable original reviews excluded with one retry. Slots 4/7/10/11/12 exhausted; coverage gaps, no scores.",
   "retries": [
     {
       "slot": 4,
@@ -136,7 +136,8 @@
       "pendingApproval": null,
       "waitTimedOut": false,
       "next": "Completion wakes this thread. Do not wait on it or poll it. Continue other work, and end your turn when none is left.",
-      "reviewState": "awaiting wake"
+      "reviewState": "failed; retry exhausted; coverage gap",
+      "failure": "The model is temporarily unavailable."
     },
     {
       "slot": 12,
