@@ -62,23 +62,28 @@ impl Drop for EndOnDrop {
     }
 }
 
-/// r2 #7d: `kill`, Ctrl-C, session end and dinit shutdown all bypass Drop,
-/// so the pill stayed expanded with frozen bars and the in-flight sentence
-/// was lost. A handler cannot touch the Vec safely, so the audio lives
-/// behind a Mutex the handler only try_locks: if the main loop holds it the
-/// handler skips the save rather than deadlock. `dictation_hide` is a
-/// non-blocking sendto, which is async-signal-safe enough in practice.
+/// A signal handler may only publish a lock-free flag. Cleanup and WAV writes
+/// happen on the normal event-loop thread, where Rust and libc are safe to use.
+static TERMINATE: AtomicBool = AtomicBool::new(false);
 static LIVE_AUDIO: std::sync::Mutex<Vec<f32>> = std::sync::Mutex::new(Vec::new());
 
 extern "C" fn on_term(_sig: libc::c_int) {
-    dictation_hide();
-    if let Ok(mut a) = LIVE_AUDIO.try_lock() {
-        if !a.is_empty() {
-            groq::save_failed(&a);
-            a.clear();
+    TERMINATE.store(true, Ordering::SeqCst);
+}
+
+fn save_signal_audio() {
+    if let Ok(mut audio) = LIVE_AUDIO.lock() {
+        if !audio.is_empty() {
+            match groq::save_failed(&audio) {
+                Some(path) => eprintln!(
+                    "static-dictation: signal shutdown kept audio at {}",
+                    path.display()
+                ),
+                None => eprintln!("static-dictation: signal shutdown could not keep audio"),
+            }
+            audio.clear();
         }
     }
-    unsafe { libc::_exit(0) };
 }
 
 /// ms of silence after speech before we finalize an utterance.
@@ -160,6 +165,11 @@ fn main() {
     dump::maybe_spawn();
 
     loop {
+        if TERMINATE.swap(false, Ordering::SeqCst) {
+            save_signal_audio();
+            return;
+        }
+
         // Move any new audio into the local buffer (non-blocking).
         while let Ok(chunk) = audio.try_recv() {
             buf.extend_from_slice(&chunk);
@@ -339,7 +349,16 @@ fn finalize(
 
 #[cfg(test)]
 mod tests {
-    use super::worth_transcribing;
+    use super::{on_term, worth_transcribing, TERMINATE};
+    use std::sync::atomic::Ordering;
+
+    #[test]
+    fn signal_handler_only_requests_normal_thread_cleanup() {
+        TERMINATE.store(false, Ordering::SeqCst);
+        on_term(libc::SIGTERM);
+        assert!(TERMINATE.load(Ordering::SeqCst));
+        TERMINATE.store(false, Ordering::SeqCst);
+    }
 
     #[test]
     fn room_noise_blips_are_not_transcribed() {

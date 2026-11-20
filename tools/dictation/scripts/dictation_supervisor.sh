@@ -16,12 +16,6 @@ umask 077
 mkdir -p "$(dirname "$LOG")"
 : >>"$LOG"
 chmod 600 "$LOG" 2>/dev/null || true
-# Keep one previous generation; the file grows without bound otherwise.
-if [ "$(stat -c %s "$LOG" 2>/dev/null || echo 0)" -gt 1048576 ]; then
-    mv -f "$LOG" "$LOG.1"
-    : >>"$LOG"
-    chmod 600 "$LOG" 2>/dev/null || true
-fi
 
 # r2 #8c: no lock meant a second supervisor started a second binary; the
 # newcomer stole the control socket and the old writer kept appending to a
@@ -49,6 +43,8 @@ fi
 child=""
 trap '[ -n "$child" ] && kill -TERM "$child" 2>/dev/null; exit 0' TERM INT
 
+# Rotate between child runs. shortcut: one long-lived child can exceed 1 MiB
+# until it exits; use an in-place monitor if sustained dictation logs grow too far.
 rotate() {
     if [ "$(stat -c %s "$LOG" 2>/dev/null || echo 0)" -gt 1048576 ]; then
         mv -f "$LOG" "$LOG.1"
@@ -58,8 +54,6 @@ rotate() {
 }
 
 while true; do
-    # Rotate INSIDE the loop: a stable instance appends forever, and the
-    # startup-only check relied on frequent restarts to bound the file.
     rotate
     "$BIN" >>"$LOG" 2>&1 &
     child=$!

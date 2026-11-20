@@ -9770,22 +9770,24 @@ mod iter108_tests {
             (940, 0, 950, 8),
         ] {
             let r = clip_rect(r, w, h);
-            let mut dst = vec![0u8; full.len()];
+            let untouched = [0xA5; 4];
+            let mut dst = vec![untouched[0]; full.len()];
             upscale_canvas_2x_region(&src, w, h, &mut dst, r);
-            for dy in (2 * r.1 as usize)..(2 * r.3 as usize) {
-                for dx in (2 * r.0 as usize)..(2 * r.2 as usize) {
+            for dy in 0..2 * h as usize {
+                for dx in 0..2 * w as usize {
                     let i = (dy * 2 * w as usize + dx) * 4;
-                    assert_eq!(
-                        &dst[i..i + 4],
-                        &full[i..i + 4],
-                        "region {r:?} differs at device ({dx},{dy})"
-                    );
+                    let inside = dx >= 2 * r.0 as usize && dx < 2 * r.2 as usize
+                        && dy >= 2 * r.1 as usize && dy < 2 * r.3 as usize;
+                    let expected = if inside { &full[i..i + 4] } else { &untouched };
+                    assert_eq!(&dst[i..i + 4], expected,
+                        "region {r:?} differs at device ({dx},{dy}); inside={inside}");
                 }
             }
         }
     }
 
     #[test]
+    #[ignore = "wall-time benchmark: run on an idle host with --ignored --test-threads=1"]
     fn upscale_region_perf() {
         // What the frame path actually pays on a settled frame and on a
         // morph frame: the upscale is bounded by the damage rect.

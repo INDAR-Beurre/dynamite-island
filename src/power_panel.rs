@@ -103,10 +103,10 @@ const BUTTON_BG: [u8; 3] = [0x19, 0x1A, 0x1F]; // (25, 26, 31)
 // Brief §11: reference uptime ink (112, 112, 120).
 const SECONDARY_TEXT: [u8; 3] = [0x70, 0x70, 0x78]; // (112, 112, 120)
 
-const UPTIME_PX: f32 = 11.0;
+const UPTIME_PX: f32 = 8.0;
 // Fraction of the panel height (22/150 and 107/150, scaled by 118/150).
 const UPTIME_TOP_FRAC: f32 = 0.1466;
-const LABEL_PX: f32 = 12.5;
+const LABEL_PX: f32 = 9.0;
 const LABEL_TOP_FRAC: f32 = 0.7136;
 const ICON_PX: f32 = 14.3;
 const CENTRE_ICON_PX: f32 = 18.1;
@@ -634,5 +634,22 @@ pub fn action_command(i: usize) -> (&'static str, &'static str) {
         2 => ("lock", "swaylock -f -c 000000"),
         3 => ("reboot", "loginctl reboot"),
         _ => ("poweroff", "loginctl poweroff"),
+    }
+}
+
+#[cfg(test)]
+mod typography_tests {
+    use super::*;
+
+    #[test]
+    fn captions_keep_the_reference_proportions() {
+        let font = Font::from_bytes(
+            include_bytes!("../assets/fonts/Quicksand-Bold.ttf").as_slice(),
+            fontdue::FontSettings::default(),
+        ).expect("embedded font parses");
+        let uptime = layout_text(&font, "Up 3 h 34 min", UPTIME_PX).width / PANEL_W as f32;
+        let label = layout_text(&font, "Lock", LABEL_PX).width / PANEL_W as f32;
+        assert!((uptime - 92.0 / 538.0).abs() < 0.03, "uptime width fraction {uptime}");
+        assert!((label - 31.0 / 538.0).abs() < 0.012, "caption width fraction {label}");
     }
 }

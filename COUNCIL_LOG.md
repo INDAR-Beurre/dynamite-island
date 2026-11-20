@@ -2453,3 +2453,65 @@ docs/restart-checklist.md):
   #1 (pill ~3.9% narrow)
 - halo_check / render_check / scorecard rows on the new binary
 - the wheels-Esc interaction question (unverified mechanism, do not code it)
+
+## Round 3 — active
+
+- Live baseline before the UI fixer: one `dynamite-rust` layer; `grim` capture works.
+  Old running binary is stale relative to the release target, so no source edit has
+  a visual verdict until a verified rebuild/restart. Existing gates: halo 8/8,
+  render 9/9, stress 1207 tests / 6179 assertions / 0 failures. Do not describe the
+  assertion count as distinct product-semantic coverage; roughly 4000 checks are
+  transport return codes. `mutation_gate.py` passed: dropped calendar/lock and
+  injected 3000 ms latency were all caught.
+- UI fixer: `magpie/logfare/deepseek-v4.1-flash-1017`, task
+  `node:delegated-task:command%3Amcp%3A1919af44-dafc-4156-839e-29e7315d6880:delegate-task:r3-shell-original-fixer-1`.
+  Owns `src/main.rs`, `src/lock_timer.rs`, `src/lockscreen.rs`,
+  `src/power_panel.rs`, `src/morph.rs`; parent avoids those files. Target is a
+  distinctive polished shell panel, preserving workspaces, Bluetooth, dictation,
+  and a non-security lock preview. No real locker, compositor restart, or live
+  desktop config changes.
+- Supplemental source-only process-lifecycle review scored 6 (not part of the
+  r3 panel median; no runtime tests). Unsafe signal-handler cleanup in
+  `tools/dictation/src/main.rs` and unscoped swaybg termination in
+  `src/library.rs` were confirmed. Fixed signal handling to publish an atomic
+  terminate flag and defer cleanup to the event-loop thread. Reworked wallpaper
+  restart to validate exact `/proc/<pid>/cmdline` argv, validate the full process
+  snapshot first, and signal verified instances with pidfds; process discovery and
+  launch now run off the UI thread and fail closed with diagnostics. Four exact-argv
+  unit tests pass. Supervisor rotation concern was retracted: current rotation
+  occurs between child runs; only a single long-lived child can exceed 1 MiB.
+- Verification: `cargo test --release --offline swaybg_ownership_tests` passes
+  (4); dictation crate `cargo test --release --offline` passes (103, 2 ignored);
+  supervisor `bash -n` and structural single-rotate/single-loop checks pass;
+  `git diff --check` passes. Dictation clippy with `-D warnings` is not a clean
+  gate because pre-existing unused standalone pill-module code raises 40 errors.
+  No live dictation signals or wallpaper restart were exercised.
+- r3 implementation and 15-slot critic panel remain open; do not declare a gate
+  until the fixer completes, the merged tree is tested, and all critics return.
+
+### R3 verified merge — critic panel pending
+
+- Failed UI child: `The model is temporarily unavailable.` Its unrequested
+  redesign was removed: the governing brief remains a close independent replica,
+  not a new rounded-rectangle/left-aligned-clock identity. Retained only measured
+  Power typography and lock-capsule/dot-size fixes, plus parent lifecycle repairs.
+- Test policy: wall-time region benchmark is opt-in on an idle host; the normal
+  suite now deterministically checks unchanged out-of-damage pixels. 332 tests
+  pass, one ignored; opt-in ratio 0.247 passes the unchanged 0.35 bound. Dictation
+  103 pass / 2 ignored; 64 panel build warnings remain.
+- Startup diagnosis (chain 1t): Wayland sent layer-surface `closed` because the
+  output was asleep (`active=false`, dimensions 0), not because Rust crashed.
+  Woke only the monitor; did not restart Mango or invoke a locker. PID 15556's
+  executable matched the release target inode 24380677.
+- Verified merged build: 1207 stress cases / 6179 assertions / 0 failures;
+  accepted p95 26.2 ms; collapsed Pss baseline 39 MB, tail growth 0.0 MB,
+  peak +1.3 MB. Halo 8/8 (zero holes), render 9/9, motion selftest pass.
+  Six fresh current-build screenshots are in `docs/reviews/r3/`.
+- Motion is NOT green: poses [11,14,13], relative settle 277.3 ms, no reversals
+  or overshoot; capture pacing/drops/duplicates/soft edges fail, absolute
+  presentation latency unresolved. Raw `/tmp/r3-motion.json` supplied to critics.
+- Panel dispatch decision (chain 3t): fifteen independent read-only lenses,
+  primarily requested DeepSeek routes; cheap verified Hy4 for visuals, GLM for
+  source checks. Scope and evidence in `docs/r3-panel-brief.md`. No shared live
+  capture/command/signal/restart operations, one full-test slot only. Freeze source
+  until all results arrive; median is still unscored and the >=9 gate is OPEN.

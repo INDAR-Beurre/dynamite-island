@@ -1,22 +1,41 @@
-# Session restart checklist — for when the display is back
+# Verify and recover the shell session
 
-The panel survived a compositor crash and the screen is still dead. When anyone
-starts work again, run these FIRST:
+Start by checking the current session; a past outage is not a reason to restart it.
 
-1. **Restart mango yourself.** The panel (pid from pgrep -f dynamite-rust) is
-   alive but the screen is frozen; only a compositor restart brings it back.
-   Verify: `timeout 12 grim /tmp/p.png` returns rc 0.
-2. **Rebuild and restart the panel** so the running binary matches `HEAD`:
-   `cargo build --release --offline`
-   kill old, `setsid nohup ./target/release/dynamite-rust </dev/null >/tmp/panel.log 2>&1 & disown`
-3. **Check two instances did not stack**: `mmsg get all-layers` must list
-   `dynamite-rust` once.
-4. Run every gate and record rows (the one that could not run after the fix):
-   - `python3 scripts/stress/stress.py` (new `load_leak` already has collapsed baseline; growth was -32.2 from the expanded-baseline artifact, now reads 0)
-   - `python3 scripts/halo_check.py` (after restart, result may differ)
+1. Check `mmsg get all-monitors`, then run `mmsg get all-layers` and
+   `timeout 12 grim /tmp/dynamite-check.png`.
+   An inactive monitor with zero dimensions is asleep, not proof of a compositor
+   crash: wake it with normal input (or `mmsg dispatch wakeup_monitor` for verification)
+   before launching the panel. Mango closes new layer surfaces when no output is active.
+   If capture succeeds and the `dynamite-rust` layer is present, leave MangoWM running.
+   If the compositor does not answer, stop capture attempts and let the owner recover
+   the desktop. **Do not restart MangoWM, log out, or run a real locker remotely.**
+2. Build the panel with `cargo build --release --offline` and check that the running
+   executable matches `target/release/dynamite-rust`. Only restart the panel when it
+   is stale. Use the existing supervisor if it is running; do not start a second one.
+3. Confirm that `mmsg get all-layers` lists exactly one `dynamite-rust` layer and that
+   the Unix datagram socket belongs to that panel process.
+4. With no build or other load-heavy job running, verify:
+   - `cargo test --release --offline`
+   - `python3 scripts/stress/stress.py`
+   - `python3 scripts/stress/mutation_gate.py`
+   - `python3 scripts/halo_check.py`
    - `python3 scripts/render_check.py`
-   - `python3 scripts/motion/motion.py` for the pose-hold trend
-   - `python3 scripts/measure.py`; `python3 scripts/scorecard.py --label renice`
-5. Visual deltas still open (blocked on live screen): #2 upper-panel fill grey 9 vs ref 0, Power text 35–50% large (`src/power_panel.rs:106-110`); #3 lock capsule 1.098× wide / 0.886× tall, dot dia 1.352× (`src/lockscreen.rs:247-249,263,281-293,1131-1175`); #1 pill ~3.9% narrow (`collapsed_width` 67).
+   - `python3 scripts/motion/selftest.py`
+   - `python3 scripts/motion/motion.py --source wf --trials 3 --state controlcenter --burst 1.6`
+   - `python3 scripts/measure.py` and `python3 scripts/scorecard.py --label recovery`
 
-**Round 2 score: median 7 vs gate ≥9 — do NOT dispatch fixers purely by r2 minors; the median account must be re-measured on a live screen first.**
+The stress suite includes transport-return assertions; its count is not a count
+of distinct UI behaviors. Record the separate visual and mutation checks too.
+Recorder PTS cannot establish absolute command-to-screen latency; use the grim
+capture path for onset and report its sampling limitation.
+
+The optional `upscale_region_perf` wall-time benchmark requires an idle host:
+`cargo test --release --offline upscale_region_perf -- --ignored --test-threads=1 --nocapture`.
+The regular suite checks region output and unchanged out-of-damage pixels without
+using scheduler-dependent timing as a correctness assertion.
+
+The lock screen is a **visual preview, not a security boundary**. Never invoke
+`swaylock`, add PAM/session-lock integration, or enable lock-at-boot as part of
+this recovery procedure. Round 2's council median was 7/10; the >=9 gate remains
+open until a new independent panel has reviewed the verified build.

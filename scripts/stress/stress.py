@@ -20,6 +20,7 @@ Exit code 0 only if every group passed.
 
 import argparse
 import glob
+import json
 import os
 import re
 import socket
@@ -122,8 +123,9 @@ class App:
         except Exception:
             return None
         for line in out.splitlines():
-            if "dynamite-rust.sock" in line:
-                m = re.search(r"pid=(\d+)", line)
+            fields = line.split()
+            if self.path in fields:
+                m = re.search(r"pid=(\d+)", line[len(line.split('users:', 1)[0]):])
                 if m:
                     return int(m.group(1))
         return None
@@ -138,10 +140,8 @@ class App:
         """
         try:
             for line in open("/proc/net/unix").read().splitlines():
-                if not line.endswith("dynamite-rust.sock"):
-                    continue
                 f = line.split()
-                if len(f) >= 5:
+                if len(f) >= 8 and f[-1] == self.path:
                     return {"0002": "dgram", "0001": "stream"}.get(f[4])
         except OSError:
             return None
@@ -159,18 +159,7 @@ class App:
             if time.time() >= deadline:
                 break
             time.sleep(0.1)
-        # no socket: is a process even running?
-        try:
-            out = subprocess.run(["pgrep", "-x", "dynamite-rust"],
-                                 capture_output=True, text=True).stdout
-        except Exception:
-            out = ""
-        pids = [int(x) for x in out.split()]
-        pids = [p for p in pids if is_live(p)]
-        if not pids:
-            raise Restart("gone", "no live dynamite-rust process and no socket")
-        self.pid = pids[0]
-        return pids[0]
+        raise Restart("gone", f"no live owner for {self.path}")
 
     def alive(self):
         return self.pid is not None and is_live(self.pid)
@@ -255,25 +244,11 @@ class App:
 
     # -- metrics -----------------------------------------------------
     def rss_kb(self):
-        """Proportional memory in kB: Pss if available, else VmRSS.
-
-        VmRSS counts every shm page the compositor also maps, so a lock
-        surface reads +51 MB that is shared, not owned. Pss divides each
-        shared page by its number of sharers, which is what "as little RAM
-        as possible" actually means. The metric name is reported so a reader
-        never mistakes one for the other.
-        """
+        """Proportional memory in kB. RSS would double-count shared buffers."""
         try:
             with open(f"/proc/{self.pid}/smaps_rollup") as f:
                 for line in f:
                     if line.startswith("Pss:"):
-                        return int(line.split()[1])
-        except OSError:
-            pass
-        try:
-            with open(f"/proc/{self.pid}/status") as f:
-                for line in f:
-                    if line.startswith("VmRSS:"):
                         return int(line.split()[1])
         except OSError:
             pass
@@ -433,7 +408,10 @@ class App:
 
     # -- screen ------------------------------------------------------
     def screenshot(self, path):
-        p = subprocess.run(["grim", path], capture_output=True, text=True)
+        try:
+            p = subprocess.run(["grim", path], capture_output=True, timeout=5)
+        except (OSError, subprocess.TimeoutExpired):
+            return False
         return p.returncode == 0 and os.path.exists(path)
 
     def pill_metrics(self, png):
@@ -580,15 +558,14 @@ class App:
                                capture_output=True, text=True, timeout=5)
             if p.returncode != 0:
                 return None                     # cannot tell
-            n = p.stdout.count('"name":"dynamite-rust"')
-            if n == 0:
-                n = p.stdout.count("dynamite")
+            n = sum(layer.get("name") == "dynamite-rust"
+                    for layer in json.loads(p.stdout)["layers"])
             # TWO instances bind the same socket path: words reach whichever
             # bound last while pgrep -n picks the newest pid, so the process
             # we measure need not be the one we drove. Seen 03:50. Refuse.
             self.instances = n
             return n == 1
-        except (OSError, subprocess.SubprocessError):
+        except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError):
             return None
 
     def pill_present(self):
@@ -1296,7 +1273,7 @@ GROUPS = [
 
 
 MIN_ASSERTS = 1000
-MEM_METRIC = "Pss"   # rss_kb() prefers Pss; falls back to VmRSS if unavailable
+MEM_METRIC = "Pss"
 
 
 class Out:

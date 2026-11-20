@@ -12,7 +12,8 @@ Mutations (each runs the real group against the real live panel):
   fake-latency every effect witness reports 3000 ms      -> latency/state FAIL
 
 Control: the unmutated state_machine group must still PASS, otherwise a
-"caught" mutation proves nothing.
+"caught" mutation proves nothing. The counted assertions include transport-level
+checks, so treat this as mutation coverage rather than semantic test coverage.
 
 Nothing here edits tracked files or the panel; mutations live in this process.
 

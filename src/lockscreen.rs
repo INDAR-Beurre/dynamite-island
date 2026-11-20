@@ -244,23 +244,13 @@ pub fn veil_transmission(y: f32, h: f32) -> f32 {
 }
 
 pub const PILL_TOP_1080: f32 = 42.0; // lock pill top margin @1080
-pub const PILL_W_1080: f32 = 57.0; // idle lock pill width @1080
-pub const PILL_H_1080: f32 = 27.0; // lock pill height @1080 (all states)
+pub const PILL_W_1080: f32 = 52.0; // resting lock pill, height-normalised reference
+pub const PILL_H_1080: f32 = 30.0; // lock pill height @1080 (all states)
 pub const DOT_PITCH_1080: f32 = 12.0; // password-dot pitch @1080
-// ^^ iter13 re-measurement (was 13.5): dot CENTRES read directly off
-// the f0635 y=19 row — bright peaks at x 304,308,312,316,320,324,328,
-// 332,336 (@640) = 4.0 px pitch @640 = 12.0 @1080; f0639 confirms
-// (301,305,309,313,317,322,326,330,334,338, pitch ~4.1 @640). The old
-// 13.5 came from the pill-width arithmetic (145-57)/8, which mixed the
-// mid-animation lagging width in as a settled width. The pill width
-// itself ramps smoothly (~+1.8 px/frame @640, f0620-f0639) because the
-// width animates ~120 ms per dot while dots arrive ~1/1.2 frames —
-// per-frame widths are LAGGING indicators, never settled widths, so
-// pitch must come from dot centres, not from width/dots. Dot diameter
-// stays 9.0 @1080 (bright core ~2-3 px @640 on the y=19 row).
-// Settled width(9) = 57 + 8*12 = 153 @1080; the f0635 mid-animation
-// true width ~141 @1080 is ~1 dot behind that — consistent.
-pub const DOT_D_1080: f32 = 9.0; // password-dot diameter @1080 (8-10 measured)
+// Dot centres are measured separately from the capsule width, which lags
+// while typing. Height-normalised targets are ~8.5 px diameter / 16.2 px
+// pitch at 1440; nine dots grow the settled capsule to 52 + 8*12 at 1080.
+pub const DOT_D_1080: f32 = 6.7; // dot diameter, height-normalised reference
 pub const LOCK_GLYPH_PX_1080: f32 = 16.0; // padlock glyph size @1080
 pub const ISLAND_TOP_GAP: f32 = 15.0; // island pill top gap, Surface logical
 pub const ISLAND_PILL_W: f32 = 90.0; // island collapsed pill width, logical
@@ -1416,17 +1406,19 @@ mod tests {
 
     #[test]
     fn pill_width_grows_per_dot() {
-        assert_eq!(pill_width_1080(0), 57.0);
-        assert_eq!(pill_width_1080(1), 57.0);
-        assert!((pill_width_1080(9) - 153.0).abs() < 1e-6); // 57 + 8*12.0
+        assert_eq!(pill_width_1080(0), 52.0);
+        assert_eq!(pill_width_1080(1), 52.0);
+        assert!((pill_width_1080(9) - 148.0).abs() < 1e-6); // 52 + 8*12.0
         // Video f0635: 9 dots, core 44 px @640 -> true ~47 @640 ->
         // ~141 @1080. That width is MID-ANIMATION (the pill ramps
         // ~120 ms per dot while dots arrive ~1/1.2 frames, so it lags
-        // ~1 dot behind the count); the settled width is 153 @1080.
+        // ~1 dot behind the count); the settled width is 148 @1080.
         // Dot pitch 12.0 comes from the dot CENTRES (f0635 y=19 row:
         // peaks at x 304,308,...,336 @640), not from this width.
         let l = lockscreen_layout(1504, H, 9, &clock_test_font(), "11:28");
-        assert!(l.pill.w > 138.0 && l.pill.w < 146.0); // 153 * 1002/1080
+        assert!((l.pill.w - 148.0 * H as f32 / REF_H).abs() < 1e-4);
+        assert!((l.pill.h / H as f32 - 40.0 / 1440.0).abs() < 0.001);
+        assert!((DOT_D_1080 / DOT_PITCH_1080 - 8.5 / 16.2).abs() < 0.04);
     }
 
     fn clock_test_font() -> Font {

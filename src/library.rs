@@ -24,6 +24,9 @@
 //! persists `theme=`; it does NOT change the wallpaper.
 
 use std::collections::{HashMap, VecDeque};
+use std::ffi::{OsStr, OsString};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 use std::sync::{OnceLock, RwLock};
 
@@ -503,76 +506,179 @@ pub fn save_config_keys(pairs: &[(&str, &str)]) -> std::io::Result<()> {
 // Apply paths
 // ---------------------------------------------------------------------------
 
-/// Restart swaybg on the current wallpaper.png, detached: the island
-/// never waits on it (freeze rule — no blocking command on the input
-/// or render path).
+/// Restart only the exact swaybg instances started for our wallpaper.
+/// Process discovery and argv checks fail closed; pidfds prevent PID reuse
+/// from redirecting a signal to a different process.
 fn restart_swaybg() {
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
-    let png = home.join(".config/mango/wallpaper/wallpaper.png");
-    // r2 #10c: `pkill -x swaybg` killed ANY swaybg, including one the user
-    // started with a different wallpaper or mode. Only restart when every
-    // running swaybg is ours; if a foreign one is present, leave the
-    // desktop alone rather than fight it (the file is already written, so
-    // the user's own setter picks it up on its next reload).
-    let listed = std::process::Command::new("pgrep")
-        .args(["-a", "-x", "swaybg"])
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
         .unwrap_or_default();
-    if !may_restart_swaybg(&listed, &png.display().to_string()) {
-        eprintln!(
-            "dynamite-rust: another swaybg is running a different wallpaper; \
-             leaving it alone (wallpaper.png updated)"
-        );
-        return;
+    let png = home.join(".config/mango/wallpaper/wallpaper.png");
+    if let Err(e) = std::thread::Builder::new()
+        .name("dynamite-swaybg".into())
+        .spawn(move || restart_swaybg_inner(png))
+    {
+        eprintln!("dynamite-rust: cannot start wallpaper restart worker: {e}");
     }
-    let cmd = format!(
-        "pkill -x swaybg; sleep 0.3; exec swaybg -i {} -m fill",
-        png.display()
-    );
-    let _ = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(format!("setsid -f sh -c {cmd:?} >/dev/null 2>&1"))
+}
+
+fn restart_swaybg_inner(png: PathBuf) {
+    // Only restart our own wallpaper; unknown or foreign instances are left alone.
+    let listed = match std::process::Command::new("pgrep")
+        .args(["-x", "swaybg"])
+        .output()
+    {
+        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).into_owned(),
+        Ok(out) if out.status.code() == Some(1) && out.stdout.is_empty() => String::new(),
+        Ok(out) => {
+            eprintln!("dynamite-rust: pgrep swaybg failed ({})", out.status);
+            return;
+        }
+        Err(e) => {
+            eprintln!("dynamite-rust: cannot inspect swaybg processes: {e}");
+            return;
+        }
+    };
+    let mut owned = Vec::new();
+    for line in listed.lines() {
+        let Ok(pid) = line.parse::<libc::pid_t>() else {
+            eprintln!("dynamite-rust: invalid PID from pgrep; leaving wallpaper processes alone");
+            return;
+        };
+        let pidfd = match open_pidfd(pid) {
+            Ok(fd) => fd,
+            Err(e) if e.raw_os_error() == Some(libc::ESRCH) => continue,
+            Err(e) => {
+                eprintln!("dynamite-rust: cannot safely inspect swaybg pid {pid}: {e}");
+                return;
+            }
+        };
+        let argv = match read_cmdline(pid) {
+            Ok(args) => args,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => {
+                eprintln!("dynamite-rust: cannot read swaybg pid {pid}: {e}");
+                return;
+            }
+        };
+        if !owns_swaybg_args(&argv, png.as_os_str()) {
+            eprintln!(
+                "dynamite-rust: foreign swaybg is running; leaving wallpaper processes alone"
+            );
+            return;
+        }
+        owned.push((pid, pidfd));
+    }
+    for (pid, pidfd) in owned {
+        let result = unsafe {
+            libc::syscall(
+                libc::SYS_pidfd_send_signal,
+                pidfd.as_raw_fd(),
+                libc::SIGTERM,
+                std::ptr::null::<libc::siginfo_t>(),
+                0,
+            )
+        };
+        if result < 0 {
+            let e = std::io::Error::last_os_error();
+            if e.raw_os_error() != Some(libc::ESRCH) {
+                eprintln!("dynamite-rust: cannot stop owned swaybg pid {pid}: {e}");
+                return;
+            }
+        }
+    }
+    start_swaybg(&png);
+}
+
+fn open_pidfd(pid: libc::pid_t) -> std::io::Result<OwnedFd> {
+    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) as libc::c_int };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+fn read_cmdline(pid: libc::pid_t) -> std::io::Result<Vec<OsString>> {
+    let bytes = std::fs::read(format!("/proc/{pid}/cmdline"))?;
+    Ok(bytes
+        .split(|b| *b == 0)
+        .filter(|arg| !arg.is_empty())
+        .map(|arg| OsStr::from_bytes(arg).to_os_string())
+        .collect())
+}
+
+fn owns_swaybg_args(argv: &[OsString], png: &OsStr) -> bool {
+    argv.len() == 5
+        && argv[1] == OsStr::new("-i")
+        && argv[2] == png
+        && argv[3] == OsStr::new("-m")
+        && argv[4] == OsStr::new("fill")
+}
+
+fn start_swaybg(png: &std::path::Path) {
+    if let Err(e) = std::process::Command::new("setsid")
+        .args([
+            "-f",
+            "sh",
+            "-c",
+            "sleep 0.3; exec swaybg -i \"$1\" -m fill",
+            "dynamite-swaybg",
+        ])
+        .arg(png)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .spawn();
-}
-
-/// True when restarting swaybg would only touch instances of OURS.
-/// Pure so the ownership rule is testable without spawning processes
-/// (a fake swaybg can't be simulated: `pkill -f` also matches the test
-/// shell's own command line).
-fn may_restart_swaybg(pgrep_output: &str, our_png: &str) -> bool {
-    let needle = format!("-i {our_png}");
-    pgrep_output.trim().is_empty() || pgrep_output.lines().all(|l| l.contains(&needle))
+        .spawn()
+    {
+        eprintln!("dynamite-rust: cannot spawn wallpaper restart: {e}");
+    }
 }
 
 #[cfg(test)]
 mod swaybg_ownership_tests {
-    use super::may_restart_swaybg;
+    use super::owns_swaybg_args;
+    use std::ffi::{OsStr, OsString};
     const OURS: &str = "/home/u/.config/mango/wallpaper/wallpaper.png";
 
-    #[test]
-    fn no_swaybg_running_means_start_ours() {
-        assert!(may_restart_swaybg("", OURS));
+    fn argv(path: &str) -> Vec<OsString> {
+        ["swaybg", "-i", path, "-m", "fill"]
+            .into_iter()
+            .map(OsString::from)
+            .collect()
     }
 
     #[test]
-    fn only_our_instance_may_be_restarted() {
-        let out = format!("4242 swaybg -i {OURS} -m fill\n");
-        assert!(may_restart_swaybg(&out, OURS));
+    fn exact_generated_argv_is_owned() {
+        assert!(owns_swaybg_args(&argv(OURS), OsStr::new(OURS)));
     }
 
     #[test]
-    fn a_foreign_wallpaper_is_left_alone() {
-        assert!(!may_restart_swaybg("4242 swaybg -i /home/u/other.png -m fill\n", OURS));
+    fn foreign_wallpaper_is_not_owned() {
+        assert!(!owns_swaybg_args(
+            &argv("/home/u/other.png"),
+            OsStr::new(OURS)
+        ));
     }
 
     #[test]
-    fn a_mix_still_leaves_the_desktop_alone() {
-        let out = format!("4242 swaybg -i {OURS} -m fill\n4343 swaybg -i /x.png\n");
-        assert!(!may_restart_swaybg(&out, OURS));
+    fn duplicate_or_trailing_wallpaper_arguments_are_not_owned() {
+        let mut args = argv(OURS);
+        args.push(OsString::from("-i"));
+        args.push(OsString::from("/home/u/other.png"));
+        assert!(!owns_swaybg_args(&args, OsStr::new(OURS)));
+    }
+
+    #[test]
+    fn wallpaper_paths_with_spaces_are_matched_as_one_argument() {
+        let path = OsString::from("/home/u/My Wallpapers/wallpaper.png");
+        let args = vec![
+            OsString::from("swaybg"),
+            OsString::from("-i"),
+            path.clone(),
+            OsString::from("-m"),
+            OsString::from("fill"),
+        ];
+        assert!(owns_swaybg_args(&args, &path));
     }
 }
 
