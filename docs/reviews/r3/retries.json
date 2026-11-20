@@ -1,5 +1,5 @@
 {
-  "reason": "Unusable original slots 4,5,7,8,10,13; each excluded with one retry, not scored. Slot10 retry failed: missing portability verdict.",
+  "reason": "Unusable originals excluded; one retry each. Retries 7 and 10 failed: coverage gaps, no scores.",
   "retries": [
     {
       "slot": 4,
@@ -23,7 +23,8 @@
       "retry": 1,
       "previousTaskId": "node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3Ac05fd1f1-8af1-4bde-8ba3-77118ef7ff1e",
       "isError": false,
-      "reviewState": "awaiting wake"
+      "reviewState": "failed; retry exhausted; coverage gap",
+      "failure": "The model is temporarily unavailable."
     },
     {
       "slot": 8,

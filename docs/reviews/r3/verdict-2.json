@@ -1,0 +1,25 @@
+{
+  "score": 7,
+  "summary": "Read the brief and critic guide in full, then inspected src/power_panel.rs, the Power fill/draw and CC device hit-test paths in src/main.rs, and src/controlcenter_panel.rs Bluetooth drawing. Pixel-measured the three bounded PNGs at native resolution: shared top edge is row 19 in both; ref panel bbox 540x201 at 2560x1440 vs current 474x178 at 2256x1504 matches after 0.881 width scaling; no square halo was observed once the puzzle-piece wallpaper behind the corners was accounted for. Bluetooth tile in controlcenter.png is visually consistent with the 2x2 grid (glyph ink/d=0.514, vertically centred). Ran only focused tests captions_keep_the_reference_proportions and bt_submenu_press_hits_back_power_and_rows; both passed. Unverified: Bluetooth submenu/device rows are not present in the bounded image set, no live/motion capture was used, and the full suite was not run. Verdict: geometry is close, but the fill gradient, focal lock glyph, and caption are measured visual tells, so I would not ship this at 9 under this lens.",
+  "findings": [
+    {
+      "severity": "major",
+      "title": "Power panel fill is a grey vertical gradient, not the reference's flat black",
+      "detail": "Empty interior boxes in docs/reference/panel-power.png are median RGB (0,0,0) with luminance p10/p50/p90 0/0/0; corresponding boxes in docs/reviews/r3/power.png are (11,11,12) top-left, (8,8,8) and (10,11,11) between discs, (8,9,9) right, but (0,0,0) bottom. Mechanism: src/main.rs:2700 sends Power through the live-backdrop branch and src/main.rs:2749 passes wallpaper_blur::FROST_ALPHA (0.92) to frost_fill_px_blur, whose src/main.rs:1020-1024 base is bg*(1-fa)+high-pass; pure black is returned only when fill_alpha>=1.0 at src/main.rs:1005-1007. Counterexample considered: the 0-2 fill rule is documented for the collapsed pill and menu frost is intentional elsewhere, but the assigned ground-truth power panel itself has exact-zero flat regions, so codec band-limiting cannot explain a native-PNG 8-12 gradient. Fix: exclude Power from the live-backdrop branch (or pass fill_alpha 1.0 for Power) while preserving rounded alpha and content blending.",
+      "where": "/home/alex/rust-island-build/src/main.rs:2700,2749,1005-1024; /home/alex/rust-island-build/docs/reviews/r3/power.png panel interior"
+    },
+    {
+      "severity": "major",
+      "title": "Centre lock glyph is too large and too light",
+      "detail": "Same-disc measurements: reference glyph core bbox 16x21 on d=54 => 0.295x0.387 of the disc; current bbox 18x24 on d=48 => 0.378x0.504, about +28%/+30%. Reference low-red core has median of darkest decile (0,20,50) and modal (29,52,93); current core is flat LOCK_GLYPH (49,84,149). Counterexample considered: the module comment cites an earlier (49,84,149) sample and video codecs soften edges, but the bounded ground-truth frame has a much darker interior core, and codec band-limiting does not brighten a flat native-render core. Fix: reduce CENTRE_ICON_PX from 18.1 toward ~14 logical and darken LOCK_GLYPH toward the bounded reference core, keeping white only for genuinely dark theme accents, then re-measure normalized bbox and core colour.",
+      "where": "/home/alex/rust-island-build/src/power_panel.rs:100,112,547-549; /home/alex/rust-island-build/docs/reviews/r3/power.png centre disc"
+    },
+    {
+      "severity": "minor",
+      "title": "Lock caption sits high and its core is dim",
+      "detail": "The string is the same in both images, so this is directly comparable: reference ink bbox y=173..183 (top+154..164 of H=201, centre fraction 0.791H); current y=149..158 (top+130..139 of H=178, centre fraction 0.756H), roughly 6 physical px too high after height normalization. Core median is (203,208,229) reference vs (187,192,216) current. Width is not the issue: 31/540=0.0574 ref vs 29/474=0.0612 current and the compact-width test passes. Counterexample considered: LABEL_TOP_FRAC was derived from an older 150-row canvas, but the image-based ink offset and same-string colour comparison expose the residual. Fix: raise LABEL_TOP_FRAC from 0.7136 by roughly 0.035 and lift LABEL_TEXT by ~16 channels, then re-measure.",
+      "where": "/home/alex/rust-island-build/src/power_panel.rs:98,110,565-572; /home/alex/rust-island-build/docs/reviews/r3/power.png Lock caption"
+    }
+  ],
+  "what_would_make_it_a_10": "Make the expanded Power fill uniformly opaque black like the reference while keeping the rounded top edge; retune the centre lock glyph to the bounded reference's normalized bbox (~0.30x0.39 of disc) and darker navy core; move and brighten the Lock caption to the measured ink position/colour; then re-run the same native-PNG measurements. Add a bounded screenshot of the Bluetooth submenu/device rows and measure that against a reference before claiming visual fidelity for that path."
+}

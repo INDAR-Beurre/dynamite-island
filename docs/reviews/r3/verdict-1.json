@@ -1,0 +1,18 @@
+{
+  "score": 8,
+  "summary": "Read docs/r3-panel-brief.md and docs/critic-guide.md, then src/lock_timer.rs and the collapsed-pill paths in src/main.rs (geometry, draw_top_row_2x, draw_text_centred_in, draw, draw_if_ready). Inspected only docs/reference/pill-settled.png and docs/reviews/r3/pill.png plus two small /tmp crops; measured actual pixels with PIL/numpy/scipy and ran three focused Rust geometry tests (3 passed). Core pill is close: ref 112x42 at 2560x1440 (4.375% width, aspect 2.667) vs current 100x37 at 2256x1504 (4.433%, aspect 2.703), both centred -0.5 px; fill median RGB(0,0,0) in both; current ink p90 is (188,214,255) matching the fixed token; AA is sharper but codec band-limiting was not treated as a target. Strict verdict: the core pill would ship, but the persistent workspace/tray row is a major replica failure. Unverified: same-string clock metrics because the captures show 00:05 vs 09:49, live motion/AA, expanded states, and full-suite results from this slot.",
+  "findings": [
+    {
+      "severity": "major",
+      "title": "Collapsed frame paints persistent workspace and tray decorations absent from the reference",
+      "detail": "src/main.rs:3029-3041 unconditionally draws four numbered workspace discs and the tray cluster inside draw_top_row_2x, called for every settled collapsed frame at src/main.rs:6394; src/main.rs:3464-3470 does the same for pill-row states, and top_row_rect at src/main.rs:1391 includes those additions. The r3 screenshot visibly shows discs 6/7/8/9 left of the pill and a bright tray glyph right of it; the reference top-centre region contains only the black pill. Counterexample: preserving workspaces/Bluetooth is required, so an affordance is legitimate, but preserving function does not justify permanently doubling the top-row visual span in a frame meant to replicate a bare pill. Fix: make the reference-state collapsed frame pill-only; keep workspace/tray input and hotkeys, and reveal them on hover/click or a separate transient menu, or gate painting behind a default-off setting.",
+      "where": "/home/alex/rust-island-build/src/main.rs:3029-3041; /home/alex/rust-island-build/docs/reviews/r3/pill.png top row left/right of pill; /home/alex/rust-island-build/docs/reference/pill-settled.png top-centre pill region"
+    },
+    {
+      "severity": "minor",
+      "title": "Clock ink width relative to pill is wider than reference; needs same-string confirmation",
+      "detail": "Using identical PNG masks (pill core max(RGB)<80, ink measured in a central 10%/15% crop), reference ink bbox is 54x15 in a 112x42 pill (w/pill 0.482, h/pill 0.357); current is 54x15 in a 100x37 pill (w/pill 0.540, h/pill 0.405). Coverage-weighted cap ratios are ref 14/42=0.333 and current 13/37=0.351, so cap size is close to the guide target 0.357 and the reference low value is plausibly codec/threshold-dependent; I did not treat AA softness as a defect. Counterexample: the strings differ (00:05 vs 09:49), so digit identity could affect ink bbox, and lock_timer.rs:265/src/main.rs:3069 apply tracking that may already be tuned by fontcheck. Severity is minor/candidate, not a blocker. Fix: capture or render both with the same string; only if it persists, adjust tracking or font advance until w/pill is about 0.486 while keeping cap/pill about 0.357, without shrinking or blurring glyphs to chase codec artefacts.",
+      "where": "/home/alex/rust-island-build/src/lock_timer.rs:265; /home/alex/rust-island-build/src/main.rs:3069; /home/alex/rust-island-build/docs/reference/pill-settled.png pill text; /home/alex/rust-island-build/docs/reviews/r3/pill.png pill text"
+    }
+  ]
+}

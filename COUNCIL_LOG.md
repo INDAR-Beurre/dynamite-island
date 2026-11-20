@@ -2538,7 +2538,17 @@ started in one turn; no dispatch failure. Full task/link records are in
 | 14 | accessibility | magpie/group/hy4 | node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3Aafcd4dee-8067-4ece-8917-4d0676306f28 | awaiting verdict |
 | 15 | interaction-contracts | magpie/group/deepseek-v4.1-flash-1017 | node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3A74f06005-31c6-4ecc-9ba1-0a31ac024d9f | awaiting verdict |
 
+#### Delivered visual/accessibility verdicts — merge pending
+
+- #1 pill: score 8 (wake chain 2t); real pixel measurements / 3 focused tests. Core geometry, black fill and #BCD6FF match. Its major asking to hide workspace/tray additions conflicts with the explicit owner requirement; preserve those additions and raise the scope objection at merge. Mixed-string width remains an unverified minor; do not retune tracking from it. JSON omits `what_would_make_it_a_10`, noted rather than invented. Raw `docs/reviews/r3/verdict-1.json`.
+- #2 panels: score 7 (wake chain 2t); measured top fill 8–12 vs reference 0, live-backdrop FROST_ALPHA 0.92 branch survives the menu constant fix; lock icon roughly 28–30% oversized/lighter; Lock caption about 6 device px high/dim. Two focused tests pass. Raw `verdict-2.json`; findings await merge/verification, no source edits during the panel.
+- #3 lock visuals: score 8 (wake chain 2t); 13 tests pass, capsule/pitch/cap close. Source-rendered Quicksand 1 stem/cap .184 vs reference .272–.276 supports giant-clock weight gap; blue frosting clipping is wallpaper-dependent minor. Raw `verdict-3.json`.
+- #14 accessibility: score 7 (wake chain 2t); controls visible/high contrast and focused tests pass, but preview cannot receive Escape (`keyboard_mode_for=None`) and pointer events are skipped. Parent verified both code paths. USER-FACING EXIT IS A HIGH-PRIORITY FIX at merge; current state remains collapsed. No real locker or authentication requested. Raw `verdict-14.json`. Minor focus activation / all-icon coverage gaps recorded.
+- Four delivered scores are not a finished panel or a median. Nine slots still await wakes; #7/#10 retries exhausted with coverage gaps. Source frozen until the panel is accounted for; >=9 gate OPEN.
+
 #### Early unusable replies — excluded, not scored
+
+- #7b also failed: `The model is temporarily unavailable.` Retry exhausted, no independent signal-safety verdict (failure chain 2t), no third dispatch.
 
 - #10b also failed: `AiError: AiError: Service temporarily at capacity (47928462-9f8e-4f27-a12f-8960e993c380)` after another plan-only message. Retry exhausted, no score; portability lens coverage is missing (failure chain 2t). No third dispatch.
 

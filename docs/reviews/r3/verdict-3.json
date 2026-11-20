@@ -1,0 +1,19 @@
+{
+  "score": 8,
+  "summary": "Inspected all four assigned PNGs at native resolution, read docs/r3-panel-brief.md, docs/critic-guide.md, docs/lockscreen-spec.md and src/lockscreen.rs, and ran `cargo test --release --offline lockscreen::tests::` (13 passed; full suite left to test-integrity slot). HEAD was one docs-only commit above the stated frozen head; lockscreen source and captures were unchanged. Height-normalised geometry is close: resting capsule 70x40@1504 vs reference 68x41@1440, dot pitch .01114H vs .01111H, clock cap .1948H vs .1938H, centre offset about +1x/+2.5y; same-string proportional advance controls and wallpaper-driven material sampling are present. Wallpaper registration against the owner's unlocked image, temporal dot lag/lock-in flight, live compositor behavior, and exact absolute colour across different wallpapers/strings were unverified, so no success is claimed for those. Strict verdict: structurally close preview, but not ship-worthy under visual lock because the giant clock is visibly too light/thin and the bright-wallpaper frosting clips blue.",
+  "findings": [
+    {
+      "severity": "major",
+      "title": "Giant clock stroke weight is materially under the reference",
+      "detail": "Measured from the actual PNGs, current round `0` stems are 51–52 px with 293 px cap height (.174–.178 stem/cap), while the reference round `8` strokes are 84 px with 279 px cap (.301) and reference `1` stems are 76–77 px (.272–.276). Different glyphs and unavailable SF Compact are counterexamples, but a source-rendered Quicksand-Bold `1` is also only 53/288=.184, so this is a real heavy-rounded proportion gap rather than a font-name demand. Concrete fix: expand only the giant-clock glyph mask by the measured amount (target roughly .25–.27 stem/cap) or use a licensed heavier rounded face, preserving proportional advances and rounded terminals; do not alter the small pill clock.",
+      "where": "/home/alex/rust-island-build/src/lockscreen.rs:699 and /home/alex/rust-island-build/docs/reviews/r3/lock-resting.png giant-clock glyph region"
+    },
+    {
+      "severity": "minor",
+      "title": "Wallpaper frosting pins blue on bright wallpaper",
+      "detail": "The current material is not flat: glyph interiors vary and per-digit medians differ, so the registered-wallpaper sampling works. However, in eroded current glyph interiors 86.9% of blue samples are 255 with only 5 unique blue values, versus 0% saturated and 37 unique blue values in the reference. Mechanism: /home/alex/rust-island-build/src/lockscreen.rs:839-855 scales all channels by 255/hi when any affine channel overflows, preserving hue but flattening blue on this bright wallpaper. Different wallpaper prevents a blocker, but the frosting loses one channel of texture. Concrete fix: add highlight headroom or compress overflow per channel while retaining hue and the existing fit for dark wallpapers.",
+      "where": "/home/alex/rust-island-build/src/lockscreen.rs:839-855 and /home/alex/rust-island-build/docs/reviews/r3/lock-resting.png giant-clock glyph interiors"
+    }
+  ],
+  "what_would_make_it_a_10": "Raise the giant-clock stroke to the measured reference weight without restoring tabular spacing or inventing a new identity; keep the wallpaper-sampled frosting but add highlight headroom so no channel pins at 255; then verify registration against the owner's unlocked wallpaper and confirm same-string/typing geometry and capsule lag on matched captures."
+}
