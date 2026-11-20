@@ -2603,6 +2603,6 @@ started in one turn; no dispatch failure. Full task/link records are in
 #### Round 4 — retry reconciliation (panel still open)
 
 - Resume audit checked the task inventory and child threads before starting replacements. No duplicate retries or live actions. Source remains frozen at `33d1b9f`.
-- #4, #5, #6, #7, #8, #9, #10, #11 and #15 have exhausted their one retry without a usable verdict; record these nine slots as unscored coverage gaps. Provider errors are not product findings.
-- Only #12 render exactness and #13 verification integrity retries remain running. No further retries are authorized for exhausted slots. Exact task IDs/status are tracked in `docs/reviews/r4/tasks.json`.
-- Four scores retained ([9,9,7,9]); nine unscored gaps and two retries outstanding. No round result or gate pass.
+- #4, #5, #6, #7, #8, #9, #10, #11, #12 and #15 have exhausted their one retry without a usable verdict; record these ten slots as unscored coverage gaps. Provider errors are not product findings.
+- Only #13 verification integrity retry remains running. No further retries are authorized for exhausted slots. Exact task IDs/status are tracked in `docs/reviews/r4/tasks.json`.
+- Four scores retained ([9,9,7,9]); ten unscored gaps and one retry outstanding. No round result or gate pass.

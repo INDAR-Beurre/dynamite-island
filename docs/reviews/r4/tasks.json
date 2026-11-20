@@ -3,7 +3,7 @@
   "reviewedHead": "33d1b9f5d6f80906d5fa5072562033499d3a2c94",
   "gate": "open; incomplete panel, no round result",
   "threshold": 9,
-  "note": "Current panel state: four scored; nine unscored gaps; slots 12 and 13 retries remain in progress. No source changes while those reviews run.",
+  "note": "Current panel state: four scored; ten unscored gaps; only slot 13 retry remains in progress. No source changes while review runs.",
   "tasks": [
     {
       "slot": 1,
@@ -176,7 +176,7 @@
       "childThreadId": "thread:delegated-task:command%3Amcp%3Ad5650c85-af2a-47e1-bf14-149bea2ba1de%3Adelegate-task%3Ar4-critic-12-render-path",
       "link": "[Council r4 #12: render exactness](t3-thread://v2/699b4b1c-474b-4871-82f1-d1eb0c374204/thread:delegated-task:command%3Amcp%3Ad5650c85-af2a-47e1-bf14-149bea2ba1de%3Adelegate-task%3Ar4-critic-12-render-path)",
       "dispatchStatus": "starting",
-      "reviewState": "first attempt failed; retry dispatched",
+      "reviewState": "retry exhausted; unscored coverage gap",
       "status": "failed",
       "failure": "logfare DNS failure (502)",
       "retryTaskId": "node:delegated-task:command%3Amcp%3A362140bd-3a4e-46e2-a8c8-b41ae32eab40%3Adelegate-task%3Ar4-retry-12-render-path",
@@ -323,7 +323,8 @@
       "model": "magpie/fasfas-ai/deepseek-v4.1-flash",
       "taskId": "node:delegated-task:command%3Amcp%3A362140bd-3a4e-46e2-a8c8-b41ae32eab40%3Adelegate-task%3Ar4-retry-12-render-path",
       "link": "[Council r4 #12b: render exactness](t3-thread://v2/699b4b1c-474b-4871-82f1-d1eb0c374204/thread:delegated-task:command%3Amcp%3A362140bd-3a4e-46e2-a8c8-b41ae32eab40%3Adelegate-task%3Ar4-retry-12-render-path)",
-      "status": "starting"
+      "status": "failed",
+      "failure": "FasFas stream decoding error before review; no JSON verdict"
     },
     {
       "slot": 13,
