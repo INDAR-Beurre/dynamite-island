@@ -62,7 +62,9 @@
       "status": "starting",
       "link": "[Council r3 #6: memory-lifecycle](t3-thread://v2/699b4b1c-474b-4871-82f1-d1eb0c374204/thread:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3A3eef9506-05d1-4235-bf9b-e0fdbbac86d5)",
       "isError": false,
-      "reviewState": "awaiting wake"
+      "reviewState": "verdict delivered",
+      "score": 9,
+      "verdict": "verdict-6.json"
     },
     {
       "slot": 7,
