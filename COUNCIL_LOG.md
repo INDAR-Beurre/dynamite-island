@@ -2515,3 +2515,25 @@ docs/restart-checklist.md):
   source checks. Scope and evidence in `docs/r3-panel-brief.md`. No shared live
   capture/command/signal/restart operations, one full-test slot only. Freeze source
   until all results arrive; median is still unscored and the >=9 gate is OPEN.
+
+Reviewed head: `eb40eee17e80d4869c71b84050933c313348ad73`. All 15 slots
+started in one turn; no dispatch failure. Full task/link records are in
+`docs/reviews/r3/tasks.json`. Source is frozen; bookkeeping only while they run.
+
+| Slot | Lens | Model | Task ID | State |
+|---|---|---|---|---|
+| 1 | pill-fidelity | magpie/group/hy4 | node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3A0900cc81-4059-4a1a-a285-ab8e8a64673f | awaiting verdict |
+| 2 | panel-fidelity | magpie/group/hy4 | node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3A7717bef1-ad4e-4fba-a4e3-1db565534e3b | awaiting verdict |
+| 3 | lock-fidelity | magpie/group/hy4 | node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3Ad4ba37ca-59d7-40e6-8844-92433adc623f | awaiting verdict |
+| 4 | motion-integrity | magpie/fasfas-ai/deepseek-v4.1-flash | node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3A0c4bbf14-6364-42b1-ae0e-95e929a57683 | awaiting verdict |
+| 5 | idle-performance | magpie/group/deepseek-v4.1-flash-1017 | node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3A4a130cef-d294-4018-8cd2-f0c5a20f63c0 | awaiting verdict |
+| 6 | memory-lifecycle | magpie/logfare/glm-5.3 | node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3A3eef9506-05d1-4235-bf9b-e0fdbbac86d5 | awaiting verdict |
+| 7 | dictation-signal-safety | magpie/fasfas-ai/deepseek-v4.1-flash | node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3Ac05fd1f1-8af1-4bde-8ba3-77118ef7ff1e | awaiting verdict |
+| 8 | process-ownership | magpie/logfare/glm-5.3-flash | node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3A47eb5d7c-3e0d-447b-84d2-ae5ce8555231 | awaiting verdict |
+| 9 | packaging-installer | magpie/group/deepseek-v4.1-flash-1017 | node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3Ae43314e6-2d67-46c5-a2ad-71329786234e | awaiting verdict |
+| 10 | portability-errors | magpie/fasfas-ai/deepseek-v4.1-flash | node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3A297625ac-1f01-4987-b557-01c509f518d5 | awaiting verdict |
+| 11 | rust-correctness | magpie/logfare/glm-5.3 | node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3A596e05c8-a98f-4acc-81d1-c367348eaa07 | awaiting verdict |
+| 12 | render-fast-path | magpie/group/deepseek-v4.1-flash-1017 | node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3A8aa9fa47-4e1f-40fd-bf1c-7484dcf9aa04 | awaiting verdict |
+| 13 | test-integrity | magpie/fasfas-ai/deepseek-v4.1-flash | node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3A75484603-0b64-464e-b243-c9c0bd3d9bdc | awaiting verdict |
+| 14 | accessibility | magpie/group/hy4 | node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3Aafcd4dee-8067-4ece-8917-4d0676306f28 | awaiting verdict |
+| 15 | interaction-contracts | magpie/group/deepseek-v4.1-flash-1017 | node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3A74f06005-31c6-4ecc-9ba1-0a31ac024d9f | awaiting verdict |
