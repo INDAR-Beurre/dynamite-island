@@ -350,13 +350,7 @@ fn slider_accent() -> (u8, u8, u8) {
 }
 
 fn accent_glyph() -> (u8, u8, u8) {
-    let a = accent();
-    let lum = (0.299 * a.0 as f32 + 0.587 * a.1 as f32 + 0.114 * a.2 as f32) / 255.0;
-    if lum < 0.5 {
-        (255, 255, 255)
-    } else {
-        C_TOGGLE_ON_GLYPH
-    }
+    crate::theme::ink_on(accent(), C_TOGGLE_ON_GLYPH)
 }
 
 pub const C_TOGGLE_ON: (u8, u8, u8) = (147, 164, 245); // #93A4F5, video
@@ -987,7 +981,8 @@ fn ensure_cc_refresher() {
                 }
             }
             refresh_cc_cache();
-            crate::wallpaper_blur::park_while_closed(CC_REFRESH_INTERVAL);
+            // Opening wakes the parked thread; it must not bypass the poll interval.
+            std::thread::sleep(CC_REFRESH_INTERVAL);
         });
     });
 }
@@ -3287,7 +3282,8 @@ pub fn draw_controlcenter_panel(
     let level = live_power_level() as usize;
     for (i, btn) in l.power_buttons.iter().enumerate() {
         let (bg, fg) = if i == level {
-            (accent(), C_TOGGLE_ON_GLYPH)
+            let bg = accent();
+            (bg, crate::theme::ink_on(bg, C_TOGGLE_ON_GLYPH))
         } else {
             (C_PILL_BG, C_SECONDARY)
         };

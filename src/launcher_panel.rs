@@ -1111,12 +1111,14 @@ fn draw_app_icon(
 ) {
     // Real icon first — see launcher_icons.rs for sources/digests.
     if let Some(rgba) = crate::launcher_icons::icon_bytes_for(app.name) {
+        let scale = scale_of(w);
         crate::launcher_icons::blit_icon(
             canvas,
             w,
             h,
-            (cx - crate::launcher_icons::ICON_W as f32 / 2.0).round() as i32,
-            (cy - crate::launcher_icons::ICON_H as f32 / 2.0).round() as i32,
+            ((cx - crate::launcher_icons::ICON_W as f32 / 2.0) * scale).round() as i32,
+            ((cy - crate::launcher_icons::ICON_H as f32 / 2.0) * scale).round() as i32,
+            scale,
             rgba,
         );
         return;
@@ -1668,6 +1670,40 @@ mod tests {
             query: String::new(),
             selected: 0,
             offset: 0,
+        }
+    }
+
+    #[test]
+    fn embedded_icon_stays_in_its_row_at_device_scale() {
+        let font = Font::from_bytes(
+            include_bytes!("../assets/fonts/Quicksand-Bold.ttf") as &[u8],
+            fontdue::FontSettings::default(),
+        )
+        .unwrap();
+        let app = data_with_names(&["Keyguard"]).apps[0];
+        let slot = launcher_layout_for_count(ROW_COUNT).icon_slots[3];
+        for scale in [1, 2] {
+            let (w, h) = (PANEL_W * scale, PANEL_H * scale);
+            set_scale(w);
+            let mut canvas = vec![0; (w * h * 4) as usize];
+            draw_app_icon(&mut canvas, w, h, &font, None, &app, slot.cx(), slot.cy());
+            let cx = slot.cx() * scale as f32;
+            let cy = slot.cy() * scale as f32;
+            let mut count = 0;
+            for (i, p) in canvas.chunks_exact(4).enumerate().filter(|(_, p)| p[3] != 0) {
+                let (x, y) = ((i % w as usize) as f32, (i / w as usize) as f32);
+                assert!((x - cx).abs() <= 12.0 * scale as f32 + 0.5, "scale {scale}: icon x={x}");
+                assert!((y - cy).abs() <= 12.0 * scale as f32 + 0.5, "scale {scale}: icon y={y}");
+                assert_eq!(p[3], 255);
+                count += 1;
+            }
+            let source_pixels = crate::launcher_icons::icon_bytes_for(app.name)
+                .unwrap()
+                .chunks_exact(4)
+                .filter(|p| p[3] != 0)
+                .count();
+            assert!(source_pixels > 0);
+            assert_eq!(count, source_pixels * (scale * scale) as usize);
         }
     }
 

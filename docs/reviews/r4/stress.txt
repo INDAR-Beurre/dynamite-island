@@ -1,0 +1,29 @@
+target: pid 20517 socket /run/user/1000/dynamite-rust.sock (dgram)
+GROUP protocol_fuzz  PASS  tests=636 fails=0 (11.9s)
+      rapid-fire music: 1000 sends in 3 ms (1000 queued, 0 backpressure), process alive + responding
+      rapid-fire collapsed: 1000 sends in 10 ms (1000 queued, 0 backpressure), process alive + responding
+      rapid-fire themes: 1000 sends in 8 ms (1000 queued, 0 backpressure), process alive + responding
+      rapid-fire controlcenter: 1000 sends in 4 ms (1000 queued, 0 backpressure), process alive + responding
+      liveness after protocol_fuzz: pill OK (x[1081,1174] y[20,55] w=93 inside=0.83 outside=0.00 ink=0.098)
+GROUP state_machine  PASS  tests=246 fails=0 (16.7s)
+      note: forward-sweep: collapsed confirmed by pixels
+      note: reverse-sweep: traymenu already current; no-op expected
+      note: pair-prepare: collapsed confirmed by pixels
+      note: lock-cycle-1: locktype is a sub-state command; no morph line expected
+      liveness after state_machine: pill OK (x[1081,1174] y[20,55] w=93 inside=0.83 outside=0.00 ink=0.098)
+GROUP load_leak      PASS  tests=200 fails=0 (68.5s)
+      Pss MB: first=74 warmup_max=74 post20=73 last=32 peak=74 growth_after_warmup=+0.0 peak_delta=+1.3 bound=8
+      baseline=collapsed (32 MB)
+      one-time allocations (i20-40 -> i40-60): +0.0 MB
+      Pss curve (every 20th iter, MB): 74 73 73 73 73 73 73 73 73 73
+      liveness after load_leak: pill OK (x[1081,1174] y[20,55] w=93 inside=0.79 outside=0.00 ink=0.107)
+GROUP latency        PASS  tests=120 fails=0 (3.7s)
+      send->accepted ms: n=120 min=0.6 p50=0.6 p95=0.7 p99=10.0 max=11.6 bound_p95=400
+      liveness after latency: pill OK (x[1081,1174] y[20,55] w=93 inside=0.79 outside=0.00 ink=0.107)
+GROUP liveness       PASS  tests=5 fails=0 (2.4s)
+      responsive: themes accepted in 0.6 ms after resume
+      pill on screen: x[1081,1174] y[20,55] w=93 inside=0.79 outside=0.00 ink=0.107
+      event loop live: +62 cpu ticks while drawing
+      liveness after liveness: pill OK (x[1081,1174] y[20,55] w=93 inside=0.79 outside=0.00 ink=0.107)
+TOTAL tests=1207 asserts=6179 fails=0 groups=5
+RESULT PASS

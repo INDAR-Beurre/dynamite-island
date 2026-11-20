@@ -1,0 +1,22 @@
+control: unmutated state_machine must PASS
+  ok   tests=246 asserts=245 fails=0
+
+mutation: drop calendar  (group state_machine) must FAIL
+  ok   tests=246 asserts=245 fails=16 (56s)
+       caught: forward-sweep calendar: NO EFFECT — no '-> Calendar' morph line within 2.0s (last confirmed state b'music'); command dropped or state broken
+       caught: reverse-sweep calendar: NO EFFECT — no '-> Calendar' morph line within 2.0s (last confirmed state b'controlcenter'); command dropped or state broken
+       caught: pair[collapsed->calendar] calendar: NO EFFECT — no '-> Calendar' morph line within 2.0s (last confirmed state b'music'); command dropped or state broken
+
+mutation: drop lock  (group state_machine) must FAIL
+  ok   tests=246 asserts=245 fails=15 (51s)
+       caught: forward-sweep lock: NO EFFECT — no '-> Lock' morph line within 2.0s (last confirmed state b'dictation'); command dropped or state broken
+       caught: reverse-sweep lock: NO EFFECT — no '-> Lock' morph line within 2.0s (last confirmed state b'power'); command dropped or state broken
+       caught: pair[collapsed->lock] lock: NO EFFECT — no '-> Lock' morph line within 2.0s (last confirmed state b'dictation'); command dropped or state broken
+
+mutation: fake 3000ms latency  (group latency) must FAIL
+  ok   tests=120 asserts=121 fails=121 (4s)
+       caught: sample 0: accepted in 3000 ms (> 1500 ms)
+       caught: sample 1: accepted in 3000 ms (> 1500 ms)
+       caught: sample 2: accepted in 3000 ms (> 1500 ms)
+
+RESULT PASS

@@ -1,0 +1,94 @@
+{
+ "rows": [
+  {
+   "state": "power",
+   "panel": [
+    891,
+    20,
+    1364,
+    87
+   ],
+   "hole_px": 0,
+   "blobs": []
+  },
+  {
+   "state": "music",
+   "panel": [
+    670,
+    20,
+    1586,
+    87
+   ],
+   "hole_px": 0,
+   "blobs": []
+  },
+  {
+   "state": "calendar",
+   "panel": [
+    872,
+    20,
+    1383,
+    87
+   ],
+   "hole_px": 0,
+   "blobs": []
+  },
+  {
+   "state": "controlcenter",
+   "panel": [
+    800,
+    20,
+    1455,
+    87
+   ],
+   "hole_px": 0,
+   "blobs": []
+  },
+  {
+   "state": "launcher",
+   "panel": [
+    750,
+    20,
+    1505,
+    87
+   ],
+   "hole_px": 0,
+   "blobs": []
+  },
+  {
+   "state": "wallpaper",
+   "panel": [
+    373,
+    20,
+    1882,
+    87
+   ],
+   "hole_px": 0,
+   "blobs": []
+  },
+  {
+   "state": "themes",
+   "panel": [
+    679,
+    20,
+    1576,
+    87
+   ],
+   "hole_px": 0,
+   "blobs": []
+  },
+  {
+   "state": "clipboard",
+   "panel": [
+    751,
+    20,
+    1505,
+    87
+   ],
+   "hole_px": 0,
+   "blobs": []
+  }
+ ],
+ "holes": 0
+}
+RESULT PASS

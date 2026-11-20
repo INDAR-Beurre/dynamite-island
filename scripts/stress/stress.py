@@ -939,6 +939,13 @@ def group_state(app, out):
                     out.fails += 1
                     problems.append(f"{ctx} {word.decode()}: process died")
                 return
+            if word == b"collapsed" and app.pill_present():
+                # Dictation's lease can collapse it while a previous no-op
+                # waits for its log budget. Reconfirm the visible state,
+                # rather than trusting a now-stale command history.
+                confirmed["state"] = word
+                out.notes.append(f"{ctx}: collapsed confirmed by pixels")
+                return
             if confirmed["state"] == word:
                 # Provably already there: no transition is expected.
                 out.notes.append(

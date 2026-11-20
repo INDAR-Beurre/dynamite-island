@@ -115,6 +115,7 @@ mod dictation_canvas; // waveform rendered inside the island pill
 mod launcher_panel;
 mod launcher_icons; // iter17: real video-set icons (blitted by launcher_panel.rs)
 mod clipboard_panel; // iter39: Clipboard view (a9)
+mod theme;
 mod library; // iter36 a6b: wallpaper + theme library (themes.json, apply paths)
 mod lock_timer;
 mod lockscreen;
@@ -307,8 +308,7 @@ fn cfg() -> IslandConfig {
 }
 
 fn config_path() -> PathBuf {
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
-    home.join(".config/dynamite-rust/config.conf")
+    theme::config_home().join("dynamite-rust/config.conf")
 }
 
 fn parse_config(text: &str) -> IslandConfig {
@@ -701,8 +701,11 @@ pub(crate) fn upscale_canvas_2x_region(
         upscale_rows(src, wu, hu, dst, dy0, dy1, dx0, dx1, row_bytes);
         return;
     }
+    // Horizontal source coordinates and weights are identical in every band.
+    let cols: Vec<_> = (dx0..dx1).map(|dx| upscale_col_blend(dx, wu)).collect();
     let band = (dy1 - dy0).div_ceil(threads);
     std::thread::scope(|scope| {
+        let cols = &cols;
         let mut off = 0usize;
         let mut bands = dst[(dy0 * row_bytes)..(dy1 * row_bytes)].chunks_mut(band * row_bytes);
         while off < dy1 - dy0 {
@@ -713,7 +716,7 @@ pub(crate) fn upscale_canvas_2x_region(
                 let src = &src[..];
                 scope.spawn(move || {
                     // Absolute destination index: `slice` starts at row `a`.
-                    upscale_rows_band(src, wu, hu, slice, a, b, dx0, dx1, row_bytes);
+                    upscale_rows_band(src, wu, hu, slice, a, b, dx0, cols, row_bytes);
                 });
             }
         }
@@ -760,7 +763,7 @@ fn upscale_rows_band(
     a: usize,
     b: usize,
     dx0: usize,
-    dx1: usize,
+    cols: &[(usize, usize, u32, u32)],
     row_bytes: usize,
 ) {
     let mut k = 0usize;
@@ -768,8 +771,7 @@ fn upscale_rows_band(
         let (y0, y1, wy0, wy1) = upscale_row_blend(dy, hu);
         let rb0 = y0 * wu * 4;
         let rb1 = y1 * wu * 4;
-        for dx in dx0..dx1 {
-            let (x0, x1, wx0, wx1) = upscale_col_blend(dx, wu);
+        for (dx, &(x0, x1, wx0, wx1)) in (dx0..).zip(cols) {
             let di = k * row_bytes + dx * 4;
             let (t0, t1) = (rb0 + x0 * 4, rb0 + x1 * 4);
             let (b0, b1) = (rb1 + x0 * 4, rb1 + x1 * 4);
@@ -1156,6 +1158,7 @@ const WS_NUMBER_PX: f32 = 11.0;
 /// Active-workspace fill: the island accent, bound to the one
 /// definition in library.rs so the disc and the CC toggles can never
 /// drift into two periwinkles side by side.
+#[cfg(test)]
 const WS_ACTIVE_FILL: (u8, u8, u8) = library::ISLAND_ACCENT;
 /// Glyph on the active (periwinkle) fill: dark navy, as the CC toggle glyph.
 const WS_ACTIVE_GLYPH: (u8, u8, u8) = (11, 27, 58);
@@ -2689,94 +2692,18 @@ fn draw_panel_into(
         && state != IslandState::Launcher
         && state != IslandState::Lockscreen
     {
-        // Fake frost (iter29): blurred wallpaper under the flat fill.
-        // None => iter28 black fill (wallpaper unreadable).
-        let bg = wallpaper_blur::ensure_loaded();
-        // iter101 (Option 2): live-backdrop frost — the blurred LIVE
-        // compositor backdrop behind this panel, frozen at open (see
-        // wallpaper_blur.rs). Per-pixel below: variation is the point.
-        // The pill/lock/lockscreen keep the wallpaper path (their
-        // rects in the clean frame contain the island itself).
-        let live = if matches!(
-            state,
-            IslandState::Collapsed
-                | IslandState::Dictation
-                | IslandState::Lock
-                | IslandState::Lockscreen
-        ) {
-            None
-        } else {
-            wallpaper_blur::live_backdrop()
-        };
-        // iter33 (a3 blur-only): ONE frost sample per panel, taken at
-        // the panel centre. A box blur cannot flatten a smooth
-        // wallpaper gradient — its symmetric window averages a linear
-        // ramp to the centre value — so per-pixel sampling left the
-        // pill tip ~17% brighter than its interior and the music panel
-        // two-toned (156 vs ~94). Sampling once is blur taken to its
-        // limit (fully homogenised frost): same fill formula, same
-        // neutralise + backdrop-factor pipeline, just one sample point
-        // — no tint, no glass. The dark floor is untouched (sample
-        // collapses to black on a dark backdrop, fill stays ~18).
-        let uniform_bg: [u8; 3] = match &bg {
-            Some(bw) => {
-                let (lwf, lhf) = (wf / s, hf / s);
-                bw.sample_frost_uniform(bg_origin.0 + lwf / 2.0, bg_origin.1 + lhf / 2.0)
-            }
-            None => [0, 0, 0],
-        };
+        // Opaque black is the reference material; sampling a backdrop here
+        // both tinted the upper panel and did work whose result should be zero.
         for y in 0..h {
             for x in 0..w {
                 let px = x as f32 + 0.5;
                 let py = y as f32 + 0.5;
-                // SDF once; alpha is (0.5 - d) clamped — the same math
-                // as rounded_rect_alpha.
                 let d = rounded_rect_sdf(px, py, wf, hf, radius * s);
                 let a = (0.5 - d).clamp(0.0, 1.0);
                 let i = ((y * w + x) * 4) as usize;
-                let p = match (&live, &bg) {
-                    (Some(lb), _) => frost_fill_px_blur(
-                        a,
-                        d,
-                        px,
-                        py,
-                        wf,
-                        hf,
-                        // iter103: the live path uses the shared
-                        // FROST_ALPHA const (0.92 — the same value
-                        // as frost_alpha(state) for every menu
-                        // state, and the single fa knob).
-                        crate::wallpaper_blur::FROST_ALPHA,
-                        // Live sample: NEUTRALISED at capture
-                        // (iter103 — the frame stored in
-                        // LiveBackdrop is neutralise_sample plus
-                        // its BoxBlur(25) local mean, so the panel
-                        // reads neutral dark, B-R approx +3).
-                        lb.sample(bg_origin.0 + px / s, bg_origin.1 + py / s),
-                        lb.local_mean(bg_origin.0 + px / s, bg_origin.1 + py / s),
-                    ),
-                    (None, Some(_)) => frost_fill_px_blur(
-                        a,
-                        d,
-                        px,
-                        py,
-                        wf,
-                        hf,
-                        frost_alpha(state),
-                        uniform_bg,
-                        uniform_bg,
-                    ),
-                    (None, None) => frost_fill_px(a, d, px, py, wf, hf, frost_alpha(state)),
-                };
-                // iter91: p is RGB (frost_fill_px_blur computes p[0]
-                // from bg[0] = R), but the canvas is BGRA - swap on
-                // write: p[2]->B, p[1]->G, p[0]->R. The old straight
-                // write flipped R/B, so a blue-sky wallpaper displayed
-                // warm. Same fix as controlcenter_panel.rs iter91.
-                canvas[i] = p[2]; // B
-                canvas[i + 1] = p[1]; // G
-                canvas[i + 2] = p[0]; // R
-                canvas[i + 3] = p[3]; // A
+                canvas[i..i + 4].copy_from_slice(&frost_fill_px(
+                    a, d, px, py, wf, hf, frost_alpha(state),
+                ));
             }
         }
     }
@@ -3129,13 +3056,13 @@ fn draw_workspace_disc_flat_2x(
     let s = RENDER_SCALE as f32;
     let r = WS_DISC_R * s;
     let (fr, fg, fb) = if active {
-        WS_ACTIVE_FILL
+        library::theme_accent()
     } else if occupied {
         WS_OCCUPIED_FILL
     } else {
         WS_INACTIVE_FILL
     };
-    let glyph_rgb = if active { WS_ACTIVE_GLYPH } else { WS_INACTIVE_GLYPH };
+    let glyph_rgb = if active { theme::ink_on((fr, fg, fb), WS_ACTIVE_GLYPH) } else { WS_INACTIVE_GLYPH };
     let x0 = ((cx - r - 1.0).floor() as i32).max(0);
     let x1 = ((cx + r + 1.0).ceil() as i32).min(bw as i32);
     let y0 = ((cy - r - 1.0).floor() as i32).max(0);
@@ -3674,14 +3601,14 @@ fn draw_workspace_disc(
     op: f32,
 ) {
     let (fr, fg, fb) = if active {
-        WS_ACTIVE_FILL
+        library::theme_accent()
     } else if occupied {
         WS_OCCUPIED_FILL
     } else {
         WS_INACTIVE_FILL
     };
     let glyph_rgb = if active {
-        WS_ACTIVE_GLYPH
+        theme::ink_on((fr, fg, fb), WS_ACTIVE_GLYPH)
     } else {
         WS_INACTIVE_GLYPH
     };
@@ -5530,6 +5457,7 @@ impl Island {
         self.lock_dots = 0;
         self.lock_wrong = false;
         self.lock_wallpaper = None;
+        lockscreen::drop_lock_materials();
         // iter125: same treatment for scale_scratch — a lockscreen draw
         // grows it to lockscreen size (1504x1002x4 = 6,028,032 B) and
         // it never shrinks. Free it here; the next draw_if_ready
@@ -6663,14 +6591,19 @@ impl PointerHandler for Island {
         events: &[PointerEvent],
     ) {
         for event in events {
-            // Only our own layer surface (there is exactly one
-            // surface, but never trust a stray event), and never
-            // during the lockscreen preview — it owns the screen.
+            // Only our own layer surface may consume pointer events.
             let ours = match &self.layer {
                 Some(layer) => event.surface == *layer.wl_surface(),
                 None => false,
             };
-            if !ours || self.state == IslandState::Lockscreen {
+            if !ours {
+                continue;
+            }
+            // A visual preview must be dismissible without grabbing the keyboard.
+            if self.state == IslandState::Lockscreen {
+                if matches!(event.kind, PointerEventKind::Press { button: BTN_LEFT, .. }) {
+                    self.request_state(IslandState::Collapsed);
+                }
                 continue;
             }
             // Track the pointer position on every event except Leave:
@@ -7292,6 +7225,20 @@ fn main() {
         libc::mallopt(libc::M_TRIM_THRESHOLD, 128 * 1024);
     }
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("--apply-theme") {
+        if args.len() != 3 {
+            eprintln!("usage: dynamite-rust --apply-theme NAME");
+            std::process::exit(2);
+        }
+        match library::apply_theme(&args[2]) {
+            Ok(accent) => {
+                let _ = send_command("reload");
+                println!("Applied {} ({accent:?}). Restart GTK apps and your browser to load their new colours.", args[2]);
+                return;
+            }
+            Err(e) => { eprintln!("dynamite-rust: {e}"); std::process::exit(1); }
+        }
+    }
     if args.len() > 1 {
         let word = args[1].as_str();
         if word == "quit"

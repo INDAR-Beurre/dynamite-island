@@ -279,7 +279,7 @@ def main() -> int:
 
         anim, tail = m.product_timing()
         check("timing", "MORPH_DURATION_MS", anim, 233.0)
-        check("timing", "SETTLE_MS", tail, 150.0)
+        check("timing", "SETTLE_MS", tail, 0.0)
 
         def series(heights, step_ms, onset_idx):
             """Frames with a known onset; `heights` is the total_h sequence."""

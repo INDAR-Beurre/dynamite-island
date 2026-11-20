@@ -9,15 +9,9 @@
 //!
 //! One morph = 233 ms interpolation between two geometries
 //! `(width, height, corner_radius)` plus a staggered two-phase content
-//! cross-fade, followed (on growing dimensions) by a ~150 ms settle
-//! overshoot that decays quadratically back to the target (r1d §2:
-//! reference peak 825x188 settling to 816x186, i.e. +1.1% width /
-//! +1.08% height decaying over ~9 frames of the 60 fps measurement;
-//! `docs/reference-motion-60fps.md` fits easeOutQuad the best of all
-//! candidate curves, MSE 0.00259 vs 0.01201 cubic). The same machine
-//! drives expand and collapse in every state (`island_expand` with
-//! `from`/`to` swapped — collapse is the same ease-out quad, NOT a
-//! time-reversed easing).
+//! cross-fade. The reference has a ~150 ms, ~1% overshoot, but the
+//! overshoot factors in this build are disabled, so the live morph ends
+//! at the 233 ms growth endpoint without an empty settle tail.
 //! CORRECTION (iter10 integrator): an earlier draft of this header
 //! claimed collapse is the EXACT TIME-REVERSE of expand (geometry and
 //! both opacities). That identity cannot hold with role-based fade
@@ -98,20 +92,11 @@ use std::time::{Duration, Instant};
 /// the motion reads as a jump-cut, which the owner calls "laggy").
 pub const MORPH_DURATION_MS: u64 = 233;
 
-/// Settle tail after the growth phase, on dimensions that GREW: the panel
-/// peaks at `to * (1 + OVERSHOOT)` at raw progress 1.0 and decays back to
-/// the target over this window (r1d §2: peak frame decays over ~9 frames =
-/// ~150 ms of the 60 fps measurement). Quadratic decay — no invented
-/// oscillator; the reference shows ONE overshoot and a smooth landing.
-///
-/// r1f measured the live build overshooting ~15% instead of the reference's
-/// ~1.1%, which reads as a bounce, so the overshoot is currently OFF. The
-/// envelope machinery (overshoot_at, settle_t, the settle tail in frame_at)
-/// is kept because the timing contract — done waits for the tail on a
-/// growing morph — still holds. To restore it set the two factors below to
-/// the measured reference values in the comments and re-check with
-/// `scripts/motion/run_all.sh`: `overshoot_frac` must land near 0.011.
-pub const SETTLE_MS: u64 = 150;
+/// Settle tail after the growth phase, on dimensions that GREW. The live
+/// overshoot factors below are zero, so geometry is already at its target
+/// at the growth endpoint and no additional frames are needed. Keep a tail
+/// only when measured overshoot is enabled.
+pub const SETTLE_MS: u64 = 0;
 /// Width overshoot as a fraction of the target width. Reference measured:
 /// peak 825 device px -> rest 816 device px (825/816 - 1 = 0.01103).
 /// 0.0 = disabled, see above.
@@ -402,17 +387,16 @@ impl Morph {
         (elapsed.as_secs_f32() / self.duration.as_secs_f32()).clamp(0.0, 1.0)
     }
 
-    /// True once the morph's growth AND settle tail are over. Morphs whose
-    /// target only shrinks (or stays equal — pill -> pill retargets) have
-    /// no settle and finish at `duration`; morphs with a growing dimension
-    /// hold the overshoot for SETTLE_MS past `duration` and finish then.
+    /// True once growth has reached its endpoint and any measured settle
+    /// tail is complete. With the current zero overshoot/tail, this is the
+    /// same instant that growth reaches duration.
     pub fn is_done(&self, now: Instant) -> bool {
         self.raw_progress(now) >= 1.0 && self.settle_t(now) >= 1.0
     }
 
-    /// Settle time progress at `now`: 0 during growth (and for its first
-    /// instant), then 0..1 across the SETTLE_MS tail, 1 (topped out) after.
-    /// Morphs with no growing dimension report 1.0 the moment growth ends.
+    /// Settle progress is 0 during growth; after growth it is 1 for the
+    /// current zero-tail configuration, or progresses across SETTLE_MS if a
+    /// measured overshoot is enabled again. Non-growing morphs always report 1.
     fn settle_t(&self, now: Instant) -> f32 {
         let elapsed = now.duration_since(self.start);
         if elapsed < self.duration {
@@ -423,6 +407,9 @@ impl Morph {
             return 1.0;
         }
         let tail = elapsed - self.duration;
+        if SETTLE_MS == 0 {
+            return 1.0;
+        }
         (tail.as_secs_f32() / (SETTLE_MS as f32 / 1000.0)).clamp(0.0, 1.0)
     }
 
@@ -505,9 +492,8 @@ impl Morph {
         // opens at raw ~0.55 (~129 ms of 233) — the reference content
         // itself only appears in the last ~30% of the growth poses.
         let in_t = smoothstep(INCOMING_FADE_START, 1.0, p);
-        // During the settle tail progress is eased-pinned at 1.0, so
-        // in_t is 1.0 and out_t is 0.0: settled content stays fully
-        // opaque while the geometry envelope decays.
+        // During an optional measured settle tail progress is eased-pinned
+        // at 1.0, so content stays fully opaque while geometry lands.
         MorphFrame {
             width: geom.width,
             height: geom.height,
@@ -598,18 +584,13 @@ mod tests {
         assert_eq!(f1.outgoing_opacity, 0.0);
         assert_eq!(f1.incoming_opacity, 1.0);
         assert_eq!(f1.incoming_scale, 1.0);
-        assert!(!f1.done, "settle tail must hold done=false at growth end");
-        // Settle ends 150 ms later: exact target geometry, done.
-        let f2 = m.frame_at(at(start, MORPH_DURATION_MS + SETTLE_MS));
-        assert_eq!((f2.width, f2.height, f2.radius), (342.0, 300.0, 20.0));
-        assert!(f2.done);
+        assert!(f1.done, "zero overshoot has no settle tail");
         // Well past the end clamps to the settled state.
         let f3 = m.frame_at(at(start, 900));
         assert_eq!((f3.width, f3.height, f3.radius), (342.0, 300.0, 20.0));
         assert!(f3.done);
-        // The overshoot decays monotonically over the tail (no spring).
-        let mut prev = f32::MAX;
-        for ms in (MORPH_DURATION_MS..=MORPH_DURATION_MS + SETTLE_MS).step_by(10) {
+        let mut prev = f1.width;
+        for ms in MORPH_DURATION_MS..=MORPH_DURATION_MS + 10 {
             let w = m.frame_at(at(start, ms)).width;
             assert!(w <= prev + f32::EPSILON, "settle not monotone at {ms} ms");
             prev = w;
@@ -742,7 +723,7 @@ mod tests {
         // The fade never goes backwards: no flicker mid-morph.
         let (m, start) = morph_at(Geometry::collapsed(), Geometry::new(342.0, 300.0, 20.0));
         let mut prev = 0.0f32;
-        for ms in (0..=(MORPH_DURATION_MS + SETTLE_MS)).step_by(10) {
+        for ms in (0..MORPH_DURATION_MS).step_by(10).chain([MORPH_DURATION_MS]) {
             let v = m.frame_at(at(start, ms)).incoming_opacity;
             assert!(v >= prev - f32::EPSILON, "incoming dipped at {ms} ms");
             prev = v;
@@ -838,8 +819,8 @@ mod tests {
         let approx = |got: f32, want: f32| (got - want).abs() < 0.02;
         assert!(approx(top.height, 300.0 * (1.0 + H_OVERSHOOT)));
         assert_eq!(top.width, 342.0, "shrinking dim must NOT overshoot");
-        assert!(!top.done);
-        let done = m.frame_at(at(start, MORPH_DURATION_MS + SETTLE_MS));
+        assert!(top.done, "zero overshoot has no settle tail");
+        let done = m.frame_at(at(start, MORPH_DURATION_MS));
         assert_eq!((done.width, done.height), (342.0, 300.0));
         assert!(done.done);
     }

@@ -17,11 +17,9 @@
 //! chosen library image over `~/.config/mango/wallpaper/wallpaper.png`
 //! (the current one is preserved in `wallpaper.png.bak-iter36` on the
 //! first apply), restarts swaybg detached, persists `wallpaper=` +
-//! `theme=` in `config.conf`. The island accent is a FIXED periwinkle
-//! #7CA2F5 (see `ISLAND_ACCENT`) — it is NOT derived from any theme
-//! palette: palette slot 3 is arbitrary per theme (everblush green
-//! #8CCF7E) and only feeds the themes-panel dot rows. Applying a theme
-//! persists `theme=`; it does NOT change the wallpaper.
+//! `theme=` in `config.conf`. Theme selection generates GTK and website
+//! styles from that palette and updates the shell's active controls.
+//! It does not replace the wallpaper or the browser's toolbar theme.
 
 use std::collections::{HashMap, VecDeque};
 use std::ffi::{OsStr, OsString};
@@ -30,24 +28,13 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 use std::sync::{OnceLock, RwLock};
 
-/// Fixed island accent — periwinkle (121, 161, 245) #79A1F5.
-/// NOT derived from any theme palette: theme palette slot 3 is
-/// arbitrary per theme (everblush green #8CCF7E, violet-tide slate
-/// #2E4580) and must never drive the island again. This is both the
-/// fallback and the live accent (see [`ISLAND_ACCENT`]) — keep the two
-/// equal: ONE accent value, not one per theme.
-/// r1d finding 4: the reference's active power disc reads
-/// (121, 161, 245); the old (124, 162, 245) was 3/1/0 too bright.
+/// Reference accent used when no valid theme is selected.
 pub const DEFAULT_ACCENT: (u8, u8, u8) = (121, 161, 245);
 
-/// Alias for the fixed island accent — the single source of truth for
-/// the live accent colour. [`accent_for_theme`] returns this for every
-/// theme name, known or unknown.
+/// Default accent kept for the reference rendering and its fixtures.
 pub const ISLAND_ACCENT: (u8, u8, u8) = DEFAULT_ACCENT;
 
-/// Live island accent, always the fixed periwinkle [`ISLAND_ACCENT`].
-/// Panels read it via [`theme_accent()`] (power centre disc,
-/// Control Centre toggle-on + slider fills, wallpaper outline).
+/// Panels and workspace indicators share the selected accent.
 static ACCENT: RwLock<(u8, u8, u8)> = RwLock::new(DEFAULT_ACCENT);
 
 pub fn theme_accent() -> (u8, u8, u8) {
@@ -59,8 +46,7 @@ pub fn set_theme_accent(rgb: (u8, u8, u8)) {
 }
 
 pub fn library_dir() -> PathBuf {
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
-    home.join(".config/dynamite-rust/library")
+    crate::theme::config_home().join("dynamite-rust/library")
 }
 
 fn wallpaper_png_path() -> PathBuf {
@@ -224,8 +210,7 @@ fn parse_hex6(s: &str) -> Option<(u8, u8, u8)> {
 #[derive(Debug, Clone)]
 pub struct Theme {
     pub name: String,
-    /// 6-colour palette; slot 3 (index 2) feeds the themes-panel dot
-    /// row only — it is NOT the island accent (see [`ISLAND_ACCENT`]).
+    /// Six source colours; the shared theme derives readable foregrounds.
     pub palette: [(u8, u8, u8); 6],
     pub wallpapers: Vec<String>,
 }
@@ -357,23 +342,16 @@ pub fn manifest() -> Option<&'static Manifest> {
         .as_ref()
 }
 
-/// Fixed island accent for a theme name — always [`ISLAND_ACCENT`]
-/// (#7CA2F5), regardless of the theme. The name is accepted (and
-/// ignored) so the `apply_theme` / `apply_wallpaper` / refresh call
-/// sites need no edits; theme palettes still render in the themes
-/// panel dot rows, but they never drive the island accent.
+/// Unknown or unset themes retain the reference accent.
 pub fn accent_for_theme(name: &str) -> (u8, u8, u8) {
-    let _ = name;
-    ISLAND_ACCENT
+    manifest().and_then(|m| m.theme(name))
+        .map(|t| crate::theme::Palette::from_swatches(&t.palette).accent)
+        .unwrap_or(DEFAULT_ACCENT)
 }
 
-/// Apply the fixed island accent (startup / `reload`). The config
-/// theme is still read (empty resolves to "anime") so the selected
-/// theme persists, but it no longer affects the accent colour.
+/// Restore the selected shell accent on startup/reload without rewriting files.
 pub fn refresh_accent_from_config() {
-    let theme = crate::cfg().theme.clone();
-    let theme = if theme.is_empty() { "anime" } else { theme.as_str() };
-    set_theme_accent(accent_for_theme(theme));
+    set_theme_accent(accent_for_theme(&crate::cfg().theme));
 }
 
 // ---------------------------------------------------------------------------
@@ -498,8 +476,12 @@ pub fn save_config_keys_str(text: &str, pairs: &[(&str, &str)]) -> String {
 
 pub fn save_config_keys(pairs: &[(&str, &str)]) -> std::io::Result<()> {
     let path = crate::config_path();
-    let text = std::fs::read_to_string(&path).unwrap_or_default();
-    std::fs::write(path, save_config_keys_str(&text, pairs))
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e),
+    };
+    crate::theme::atomic_write(&path, save_config_keys_str(&text, pairs).as_bytes())
 }
 
 // ---------------------------------------------------------------------------
@@ -730,24 +712,23 @@ pub fn apply_wallpaper(filename: &str) -> Result<String, String> {
         return Err("post-copy verify mismatch".to_string());
     }
     // iter89 F2: strict order — rename, then config, then restart.
-    let _ = save_config_keys(&[("wallpaper", filename), ("theme", theme.as_str())]);
+    save_config_keys(&[("wallpaper", filename)])
+        .map_err(|e| format!("wallpaper config: {e}"))?;
     restart_swaybg();
-    set_theme_accent(accent_for_theme(&theme));
+    apply_theme(&theme)?;
     Ok(theme)
 }
 
-/// Apply theme `name` for real: set the fixed island accent
-/// ([`ISLAND_ACCENT`]) and persist `theme=`. Does NOT change the
-/// wallpaper.
+/// Apply one palette to the shell, GTK 3/4, and the installed website stylesheet.
+/// The wallpaper and browser toolbar theme are independent.
 pub fn apply_theme(name: &str) -> Result<(u8, u8, u8), String> {
-    let m = manifest().ok_or_else(|| "library manifest not loaded".to_string())?;
-    if m.theme(name).is_none() {
-        return Err(format!("{name} is not in the library"));
-    }
-    let accent = accent_for_theme(name);
-    set_theme_accent(accent);
-    let _ = save_config_keys(&[("theme", name)]);
-    Ok(accent)
+    let theme = manifest().and_then(|m| m.theme(name))
+        .ok_or_else(|| format!("{name} is not in the library"))?;
+    let palette = crate::theme::Palette::from_swatches(&theme.palette);
+    crate::theme::apply_at(&crate::theme::config_home(), palette)?;
+    save_config_keys(&[("theme", name)]).map_err(|e| format!("theme config: {e}"))?;
+    set_theme_accent(palette.accent);
+    Ok(palette.accent)
 }
 
 #[cfg(test)]
@@ -803,14 +784,13 @@ mod tests {
     }
 
     #[test]
-    fn accent_is_fixed_periwinkle_for_any_theme() {
-        // iter96: the island accent is decoupled from theme palettes —
-        // everblush slot 3 is mint green #8CCF7E and must never surface.
-        // r1d: re-measured from the reference at (121,161,245) = #79A1F5.
-        assert_eq!(accent_for_theme("everblush"), (121, 161, 245));
-        assert_eq!(accent_for_theme("anime"), (121, 161, 245));
-        assert_eq!(accent_for_theme("nonexistent"), (121, 161, 245));
+    fn unknown_theme_keeps_the_reference_accent() {
+        assert_eq!(accent_for_theme("nonexistent"), DEFAULT_ACCENT);
         assert_eq!(ISLAND_ACCENT, DEFAULT_ACCENT);
+        let m = parse_manifest(SAMPLE).unwrap();
+        let anime = crate::theme::Palette::from_swatches(&m.themes[0].palette);
+        let sakura = crate::theme::Palette::from_swatches(&m.themes[1].palette);
+        assert_ne!(anime.accent, sakura.accent);
     }
 
     #[test]

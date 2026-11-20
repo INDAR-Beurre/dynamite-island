@@ -1,0 +1,187 @@
+{
+  "scope": "merged renderer/performance/theme implementation; no final council score yet",
+  "live_verified_executable": {
+    "pid": 12168,
+    "device_inode": "66307:24382994",
+    "supervisor": 1651,
+    "mango": 1582,
+    "theme": "everforest"
+  },
+  "panel_tests": [
+    "test result: ok. 336 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 1.71s"
+  ],
+  "motion": {
+    "instrument": "scripts/motion/motion.py",
+    "state": "controlcenter",
+    "anim_ms_config": 233.0,
+    "settle_ms_config": 0.0,
+    "capture_method": "wf-recorder -D (no-damage) ffv1, PTS from the compositor",
+    "source": "wf",
+    "summary": {
+      "trials_run": 5,
+      "screening_weak": false,
+      "screening_clean": 5,
+      "trials_suspect": 0,
+      "trials_used": 5,
+      "ref_target_total_h": 670,
+      "travel_px": 633,
+      "latency_ms_worst": null,
+      "settle_ms_worst": null,
+      "settle_duration_ms_worst": 216.8,
+      "reversals_worst": 0,
+      "overshoot_frac": 0.0,
+      "duplicate_ratio": 0.087,
+      "edge_ramp_px_median": 2.0,
+      "settled_trials": 0,
+      "curve_resolved": true,
+      "in_flight_samples_max": 13,
+      "dt_bins_10ms": 42,
+      "aligned_samples": 210
+    },
+    "checks": [
+      {
+        "metric": "capture_effective_fps",
+        "value": 59.7,
+        "bound": ">= 10 fps",
+        "pass": true,
+        "resolved": true,
+        "why": "below 10 fps a 160 ms morph gets <2 samples"
+      },
+      {
+        "metric": "interval_p95_over_median",
+        "value": 1.25,
+        "bound": "<= 3.0x median",
+        "pass": true,
+        "resolved": true,
+        "why": "uneven spacing smears the time-aligned series"
+      },
+      {
+        "metric": "dropped_frame_ratio",
+        "value": 0.0,
+        "bound": "<= 0.15",
+        "pass": true,
+        "resolved": true,
+        "why": "sampler stalls bias every metric"
+      },
+      {
+        "metric": "travel_px",
+        "value": 633,
+        "bound": ">= 20.0 px",
+        "pass": true,
+        "resolved": true,
+        "why": "no travel means the morph never happened / wrong signal. UNRESOLVED when the panel merged with a dark window behind it"
+      },
+      {
+        "metric": "latency_ms",
+        "value": null,
+        "bound": "<= 363 ms (worst trial)",
+        "pass": false,
+        "resolved": false,
+        "why": "UNRESOLVED for wf-recorder: its PTS has no trustworthy wall-clock anchor. Relative pose timing remains measured."
+      },
+      {
+        "metric": "settle_ms",
+        "value": null,
+        "bound": "<= 363 ms from command (anim 233 + 1 interval + slack), never-settled <= 1 trials",
+        "pass": false,
+        "resolved": false,
+        "why": "UNRESOLVED for wf-recorder: command-relative settle would inherit the same invalid wall-clock offset. Use settle_duration_ms instead."
+      },
+      {
+        "metric": "settle_duration_ms",
+        "value": 216.8,
+        "bound": "<= 363 ms of MOTION (anim 233 + 1 capture interval + 30 ms)",
+        "pass": true,
+        "resolved": true,
+        "why": "the animation's own cost, independent of dispatch. UNRESOLVED whenever no intermediate geometry was captured: a 0.0 ms reading then means the sampler missed the motion, not that it was instantaneous. UNRESOLVED too when the capture interval exceeds a third of the morph: at that rate the reading is the sampler's, not the panel's"
+      },
+      {
+        "metric": "width_reversals",
+        "value": 0,
+        "bound": "<= 1 (worst trial)",
+        "pass": true,
+        "resolved": true,
+        "why": "the easing is EaseOutCubic (src/main.rs:4835), which is monotone; a reversal is stutter or a re-triggered morph"
+      },
+      {
+        "metric": "overshoot_frac",
+        "value": 0.0,
+        "bound": "0.00..0.05 of travel",
+        "pass": true,
+        "resolved": true,
+        "why": "EaseOutCubic does not overshoot by design, so anything past ~2 px (0.05 of 48 px travel) is quantisation noise or a bounce"
+      },
+      {
+        "metric": "in_flight_samples",
+        "value": 13,
+        "bound": ">= 2 intermediate geometries in at least one trial",
+        "pass": true,
+        "resolved": true,
+        "why": "below this the curve shape is not observable at all. UNRESOLVED too when the panel merged with a dark window behind it: the extent then belongs to the desktop, not the island"
+      },
+      {
+        "metric": "duplicate_ratio",
+        "value": 0.087,
+        "bound": "<= 0.1 of 69 pairs inside the observed motion windows [[102.0, 335.0], [102.0, 335.0], [103.3, 336.3], [102.0, 335.0], [103.4, 336.4]] (onset .. onset + 233 ms)",
+        "pass": true,
+        "resolved": true,
+        "why": "identical frames while a morph is in flight = animation not advancing. UNRESOLVED when no in-flight geometry was captured: at <60 fps the still frames before and after the morph dominate the ratio, so it grades the sampler, not the panel. UNRESOLVED too when no trial had an observed onset: the window would then be guesswork"
+      },
+      {
+        "metric": "edge_ramp_px",
+        "value": 2.0,
+        "bound": "<= 3.0 px (reference ~1.5 px)",
+        "pass": true,
+        "resolved": true,
+        "why": "wide ramp = soft/blurred capsule edges. UNRESOLVED with 0 measurable edges: that means the capsule overflowed the crop, not that it is sharp"
+      },
+      {
+        "metric": "soft_edge_frames",
+        "value": 23,
+        "bound": "<= 25 % of 258 frames",
+        "pass": true,
+        "resolved": true,
+        "why": "edge softness must not be systematic"
+      },
+      {
+        "metric": "morph_poses",
+        "value": 17,
+        "bound": ">= 8 distinct poses in the morph window (233 ms @ 60 Hz = 14.0 slots)",
+        "pass": true,
+        "resolved": true,
+        "why": "THE smoothness number: distinct images presented while animating. 2-3 poses = the animation steps, one per display frame = smooth. UNRESOLVED when the window fell back to the whole burst: that count includes idle frames and cannot fail a paused-then-jump build"
+      },
+      {
+        "metric": "pose_hold_median_ms",
+        "value": 16.7,
+        "bound": "<= 24 ms (3 display intervals)",
+        "pass": true,
+        "resolved": true,
+        "why": "how long one pose is held; a hold longer than ~3 display intervals on a 233 ms morph is a visible step"
+      },
+      {
+        "metric": "dt_coverage",
+        "value": 42,
+        "bound": ">= 40 aligned samples in 5 x 10 ms bins",
+        "pass": true,
+        "resolved": true,
+        "why": "without spread the morph curve is a single point"
+      }
+    ],
+    "unresolved": [
+      "latency_ms",
+      "settle_ms"
+    ]
+  },
+  "motion_source_note": "Recorded before theme integration; identical morph implementation. Absolute command-to-screen latency is unresolved. All resolved gates pass.",
+  "performance_before_after": {
+    "controlcenter_one_core_pct_before": 52.0,
+    "controlcenter_one_core_pct_after": 2.83,
+    "window_seconds": 6,
+    "note": "self plus child CPU measured in settled CC; not a full benchmark distribution"
+  },
+  "stress_note": "1207 cases and 6179 assertions include roughly 4000 transport send results; not 6179 distinct semantic behaviors.",
+  "browser_verification": "scripts/theme_selftest.py --browser: two local HTTP fixture palettes rendered exact backgrounds and unchanged red image; no personal profile browser restart.",
+  "installer_verification": "scripts/install_selftest.py: temp HOME/XDG only; include parsed by Mango; dry run, invalid args, idempotence, custom files and exact legacy migration tested.",
+  "screenshots": "Crops of shell on verified empty tag 9; tag 1 restored. lock-preview.png is downsampled 0.5; other crops preserve device resolution but omit screen width. Full display is 2256x1504."
+}

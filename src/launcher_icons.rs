@@ -435,26 +435,38 @@ pub fn icon_bytes_for(name: &str) -> Option<&'static [u8; ICON_BYTES]> {
 }
 
 /// Blit one 24x24 straight-alpha RGBA icon onto the BGRA
-/// premultiplied canvas, with its top-left corner at (`x0`, `y0`).
+/// premultiplied canvas, magnified by `scale` from a device-pixel top-left.
 /// Source-over blend; destination is opaque inside the panel, so
-/// alpha is left at 255 — the same shortcut `blend_pixel` in
-/// launcher_panel.rs uses. Fully transparent source pixels are
-/// skipped; out-of-bounds pixels are clipped, never wrapped.
-/// The caller centres the 24 px icon on the 20 px slot (x0 = cx-12,
-/// y0 = cy-12); the 2 px overshoot stays inside the 42 px row.
-pub fn blit_icon(canvas: &mut [u8], w: u32, h: u32, x0: i32, y0: i32, rgba: &[u8]) {
+/// alpha is left at 255. Fully transparent source pixels are skipped;
+/// out-of-bounds pixels are clipped, never wrapped.
+pub fn blit_icon(
+    canvas: &mut [u8],
+    w: u32,
+    h: u32,
+    x0: i32,
+    y0: i32,
+    scale: f32,
+    rgba: &[u8],
+) {
     debug_assert_eq!(rgba.len(), ICON_BYTES);
-    for sy in 0..ICON_H as i32 {
-        let y = y0 + sy;
+    let scale = scale.max(1.0);
+    let (dw, dh) = (
+        (ICON_W as f32 * scale).round() as i32,
+        (ICON_H as f32 * scale).round() as i32,
+    );
+    for dy in 0..dh {
+        let y = y0 + dy;
         if y < 0 || y >= h as i32 {
             continue;
         }
-        for sx in 0..ICON_W as i32 {
-            let x = x0 + sx;
+        let sy = ((dy as f32 / scale) as usize).min(ICON_H - 1);
+        for dx in 0..dw {
+            let x = x0 + dx;
             if x < 0 || x >= w as i32 {
                 continue;
             }
-            let si = (sy as usize * ICON_W + sx as usize) * 4;
+            let sx = ((dx as f32 / scale) as usize).min(ICON_W - 1);
+            let si = (sy * ICON_W + sx) * 4;
             let sa = rgba[si + 3] as f32 / 255.0;
             if sa <= 0.0 {
                 continue;
@@ -465,10 +477,10 @@ pub fn blit_icon(canvas: &mut [u8], w: u32, h: u32, x0: i32, y0: i32, rgba: &[u8
             }
             // Source is straight-alpha RGBA; dest is BGRA, opaque.
             let inv = 1.0 - sa;
-            canvas[i] = (rgba[si + 2] as f32 * sa + canvas[i] as f32 * inv) as u8; // B
-            canvas[i + 1] = (rgba[si + 1] as f32 * sa + canvas[i + 1] as f32 * inv) as u8; // G
-            canvas[i + 2] = (rgba[si] as f32 * sa + canvas[i + 2] as f32 * inv) as u8; // R
-            canvas[i + 3] = 255; // A
+            canvas[i] = (rgba[si + 2] as f32 * sa + canvas[i] as f32 * inv) as u8;
+            canvas[i + 1] = (rgba[si + 1] as f32 * sa + canvas[i + 1] as f32 * inv) as u8;
+            canvas[i + 2] = (rgba[si] as f32 * sa + canvas[i + 2] as f32 * inv) as u8;
+            canvas[i + 3] = 255;
         }
     }
 }

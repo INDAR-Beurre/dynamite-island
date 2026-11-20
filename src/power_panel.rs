@@ -93,11 +93,10 @@ const WHITE: [u8; 3] = [0xFF, 0xFF, 0xFF];
 // r1d finding 4 / brief §11: the reference's cool-neutral text ramp.
 // "Lock" label core reads (201, 207, 233) in the reference (B-R = 32),
 // not pure white; uptime reads (112, 112, 120).
-/// "Lock" label colour. Peak channel measured 233 on the 2x path against
-/// the reference's 222, so the triple is scaled by 222/233 (hue kept).
-const LABEL_TEXT: [u8; 3] = [0xC0, 0xC5, 0xDE]; // (192, 197, 222)
-// Dark navy lock glyph on the periwinkle disc (reference pixel, iter8).
-const LOCK_GLYPH: [u8; 3] = [0x31, 0x54, 0x95]; // #315495 (49,84,149)
+/// Cool label ink measured in the reference's center caption.
+const LABEL_TEXT: [u8; 3] = [201, 207, 233];
+// Navy glyph measured inside the reference's periwinkle disc.
+const LOCK_GLYPH: [u8; 3] = [29, 52, 93];
 // r1d finding 4: reference inactive disc fill (25, 26, 31).
 const BUTTON_BG: [u8; 3] = [0x19, 0x1A, 0x1F]; // (25, 26, 31)
 // Brief §11: reference uptime ink (112, 112, 120).
@@ -107,9 +106,9 @@ const UPTIME_PX: f32 = 8.0;
 // Fraction of the panel height (22/150 and 107/150, scaled by 118/150).
 const UPTIME_TOP_FRAC: f32 = 0.1466;
 const LABEL_PX: f32 = 9.0;
-const LABEL_TOP_FRAC: f32 = 0.7136;
+const LABEL_TOP_FRAC: f32 = 0.7486;
 const ICON_PX: f32 = 14.3;
-const CENTRE_ICON_PX: f32 = 18.1;
+const CENTRE_ICON_PX: f32 = 14.0;
 // r1d §17: disc geometry as FRACTIONS of the panel bbox, measured on the
 // reference capture (538x200 device): diameter 54/538 = 0.1004 of W,
 // constants survive any future width change (the pixel values below at
@@ -502,7 +501,7 @@ pub fn draw_power_panel(
         "power panel canvas {w}x{h} is not a scaled {PANEL_W}x{PANEL_H}"
     );
 
-    // (a) Uptime line: 11px, (112,112,120), centred, top y=17.3.
+    // (a) Quiet uptime line, centred above the controls.
     let uptime = if uptime_text.is_empty() {
         uptime_string()
     } else {
@@ -534,19 +533,9 @@ pub fn draw_power_panel(
         let centre = idx == 2;
         // Single centreline: every disc at 0.5175xH (r1d §17).
         let (r, fill, icon_px, glyph_rgb) = if centre {
-            // iter36 a6b: the centre disc IS the island accent — it
-            // follows the current theme live (library palette slot 3;
-            // library::DEFAULT_ACCENT #7C96D5 when no theme is set).
-            // The navy glyph only reads on a light disc; on a dark /
-            // saturated accent (e.g. anime #2B7DE9) it flips to white.
             let accent = crate::library::theme_accent();
-            let lum = (0.299 * accent.0 as f32
-                + 0.587 * accent.1 as f32
-                + 0.114 * accent.2 as f32)
-                / 255.0;
-            let glyph = if lum < 0.5 { WHITE } else { LOCK_GLYPH };
-            // (fill is [u8; 3] here, like BUTTON_BG — convert.)
-            (btn_r, [accent.0, accent.1, accent.2], CENTRE_ICON_PX, glyph)
+            let (r, g, b) = crate::theme::ink_on(accent, LOCK_GLYPH.into());
+            (btn_r, accent.into(), CENTRE_ICON_PX, [r, g, b])
         } else {
             (btn_r, BUTTON_BG, ICON_PX, WHITE)
         };
@@ -557,9 +546,7 @@ pub fn draw_power_panel(
         }
     }
 
-    // (c) "Lock" label under the centre circle: 12.5px Bold,
-    //     cool-neutral (201,207,233) — brief §11 — top y=84.2 (was
-    //     pure white at 107 on the 400x150 panel).
+    // (c) The centre caption sits below the disc row.
     draw_text_centred(
         canvas,
         w,
@@ -640,6 +627,17 @@ pub fn action_command(i: usize) -> (&'static str, &'static str) {
 #[cfg(test)]
 mod typography_tests {
     use super::*;
+
+    #[test]
+    fn lock_glyph_fits_the_reference_disc_at_both_scales() {
+        let font = icon_font().expect("embedded icon font parses");
+        let disc_diameter = DISC_DIAM_FRAC * PANEL_W as f32;
+        for scale in [1.0, 2.0] {
+            let height = font.metrics(ICON_LOCK, CENTRE_ICON_PX * scale).height as f32;
+            let ratio = height / (disc_diameter * scale);
+            assert!((0.35..0.49).contains(&ratio), "glyph height / disc at {scale}x: {ratio}");
+        }
+    }
 
     #[test]
     fn captions_keep_the_reference_proportions() {

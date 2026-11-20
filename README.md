@@ -18,6 +18,7 @@ into the focused window and the island shows a live level bar.
 | Need | Why | Arch/Artix package |
 |---|---|---|
 | Rust **1.88+** (edition 2021) | both crates — locked deps need 1.88 | `rust` |
+| C compiler and linker (`cc`) | native dependencies including dictation TLS | `base-devel` |
 | `libxkbcommon` + headers | keymap handling | `libxkbcommon` |
 | `libasound` + headers | dictation microphone capture | `alsa-lib` |
 | `pkg-config` | locating the two above | `pkgconf` |
@@ -25,8 +26,8 @@ into the focused window and the island shows a live level bar.
 **Runtime:** a compositor implementing `wlr-layer-shell`. **Tested on MangoWM
 0.18.3 only.** The workspace discs and the wallpaper picker are Mango-specific
 (`mmsg`, `~/.config/mango/wallpaper/`), so on Hyprland or sway expect the pill
-and panels to work and those two integrations to be empty. `ext-session-lock-v1`
-is *not* used yet.
+and panels to work and those two integrations to be empty. The
+`ext_session_lock_v1` protocol is not used.
 
 **Dictation additionally needs** evdev access to the keyboard and a writable
 `/dev/uinput` — normally the `input` group:
@@ -35,7 +36,11 @@ is *not* used yet.
 sudo usermod -aG input "$USER"      # then log out and back in
 ```
 
-Without it push-to-talk silently does nothing. See `tools/dictation/README.md`.
+Load `uinput` if `/dev/uinput` is missing (`sudo modprobe uinput`), then check
+its permissions. Dictation sends speech to `api.groq.com` and requires a Groq
+API key in `GROQ_API_KEY` or a private `static-dictation/api_key` file under your
+config directory. See [`tools/dictation/README.md`](tools/dictation/README.md)
+for setup and [`deploy/README.md`](deploy/README.md#dictation) for autostart.
 
 **Optional external tools.** Every one is invoked defensively — a missing tool
 degrades to an empty row rather than crashing, which also means **a missing tool
@@ -53,6 +58,9 @@ looks identical to "no data"**. Install what you want to see:
 | `mmsg` | MangoWM workspace + output state | workspaces don't track |
 | `grim` | wallpaper frost sampling for the lock screen | flat lock background |
 | `curl` | wallpaper download in the themes panel | download fails quietly |
+| `swaybg` | display wallpaper selections | saved selection is not displayed |
+| `socat` | manual socket command examples below | use the panel's CLI state argument |
+| Python 3 | one-time browser profile theme setup | generated website CSS is not imported |
 | `wtype` *(or `xdotool` on X11)* | dictation types into the focused window | transcription goes nowhere |
 
 Check what you have:
@@ -74,6 +82,10 @@ would force one of them onto a version it was not built against.
 ./build.sh          # builds both, fails loudly if either fails
 ```
 
+The first build needs network access to fetch locked Rust dependencies. Only
+part of the dependency tree is vendored; `--offline` works after Cargo's cache
+is populated. This is not a fully vendored offline distribution.
+
 Or by hand:
 
 ```sh
@@ -92,8 +104,9 @@ the repo, so keep the checkout where you build it.
 ```
 
 Installs the key bindings (`SUPER+space` launcher, `SUPER+v` clipboard), the
-layer rule, and an autostart wrapper — **appending** to your existing
-`bind.conf` / `rule.conf`, never overwriting them. See `deploy/README.md`.
+layer rule, and an autostart wrapper. Unrelated `bind.conf` / `rule.conf` entries
+and customized wrappers are preserved; obsolete Dynamite includes are repaired.
+See [`deploy/README.md`](deploy/README.md).
 
 ## Run
 
@@ -146,21 +159,47 @@ value cannot break startup.
 | `expanded_height` | 150 | 60–800 | panel height |
 | `gap_top` | 3 | 0–200 | gap above the capsule |
 | `inner_padding` | 14 | 0–64 | panel inset |
-| `anim_ms` | 160 | ≤1000 | morph duration |
+| `anim_ms` | 160 | ≤1000 | legacy key; morph currently uses a fixed 233 ms duration |
 | `hover_open` | true | bool | expand on pointer hover |
 | `hover_state` | controlcenter | state name | which panel hover opens |
-| `scroll_cycle` | true | bool | scroll wheel cycles workspaces |
+| `scroll_cycle` | true | bool | scroll wheel cycles panels |
 | `clock_24h` | true | bool | 24-hour clock |
 | `notch_mode` | 0 | 0/1 | notch-style geometry |
 | `wallpaper` | — | filename | wallpaper for frost sampling |
-| `theme` | — | name | palette |
+| `theme` | — | name | selected palette for shell accents, GTK and websites |
+
+## Themes
+
+Click a row in **Themes**, or run `target/release/dynamite-rust --apply-theme NAME`.
+The shell accent changes immediately. Restart open GTK 3/4 apps to pick up the
+new styles. Apps that do not use GTK or that paint their own interface may not
+follow the palette. Selecting a theme does not change the wallpaper.
+
+To enable the same colours in your browser, find **Profile Directory** in
+`about:support`, then run:
+
+```sh
+python3 deploy/waterfox-theme.py /path/to/waterfox/profile
+```
+
+Restart the browser after enabling it and after selecting a new palette. The
+stylesheet applies to HTTP and HTTPS pages, not the browser toolbar or internal
+pages. It changes common backgrounds, text, links and controls. Images and
+videos keep their original colours, and some sites draw parts of their own UI
+that the stylesheet cannot cover. There is no extension or background service.
+To detach it, run the same command with `--remove` and restart the browser.
+
+GTK imports are added to `gtk-3.0/gtk.css` and `gtk-4.0/gtk.css` under your config
+directory. To remove the desktop overrides, delete the Dynamite `@import` line
+from those files and restart the affected apps. Any pre-existing files changed by
+setup are backed up alongside the originals with a `.before-dynamite` suffix.
 
 ## Lock screen
 
 **The lock screen is a visual replica, not a security boundary.** It draws the
-giant clock and lock pill, but there is **no `ext-session-lock-v1` surface, no
-PAM, and no keyboard input** (`src/main.rs:9`, `src/lockscreen.rs:8`). It cannot
-authenticate anyone and it does not block input to other windows.
+giant clock and lock pill, but there is **no `ext_session_lock_v1` surface, no
+PAM, and no keyboard grab**. Click the preview to return to the capsule. It
+cannot authenticate anyone and it does not block input to other windows.
 
 - Do **not** bind it to a screen-lock hotkey expecting it to secure the session.
 - Do **not** enable lock-at-boot: a lock client that cannot authenticate would

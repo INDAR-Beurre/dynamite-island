@@ -1,0 +1,141 @@
+{
+ "rows": [
+  {
+   "state": "power",
+   "ok": true,
+   "why": "",
+   "panel": [
+    891,
+    20,
+    1363,
+    196
+   ],
+   "w": 473,
+   "h_lower_bound": 66,
+   "width_frac": 0.2097,
+   "ink_frac": 0.0303
+  },
+  {
+   "state": "music",
+   "ok": true,
+   "why": "",
+   "panel": [
+    670,
+    20,
+    1585,
+    244
+   ],
+   "w": 916,
+   "h_lower_bound": 66,
+   "width_frac": 0.406,
+   "ink_frac": 0.0242
+  },
+  {
+   "state": "calendar",
+   "ok": true,
+   "why": "",
+   "panel": [
+    872,
+    20,
+    1383,
+    412
+   ],
+   "w": 512,
+   "h_lower_bound": 68,
+   "width_frac": 0.227,
+   "ink_frac": 0.0332
+  },
+  {
+   "state": "controlcenter",
+   "ok": true,
+   "why": "",
+   "panel": [
+    802,
+    20,
+    1457,
+    689
+   ],
+   "w": 656,
+   "h_lower_bound": 68,
+   "width_frac": 0.2908,
+   "ink_frac": 0.0888
+  },
+  {
+   "state": "launcher",
+   "ok": true,
+   "why": "",
+   "panel": [
+    755,
+    20,
+    1510,
+    568
+   ],
+   "w": 756,
+   "h_lower_bound": 68,
+   "width_frac": 0.3351,
+   "ink_frac": 0.03
+  },
+  {
+   "state": "wallpaper",
+   "ok": true,
+   "why": "",
+   "panel": [
+    375,
+    20,
+    1884,
+    424
+   ],
+   "w": 1510,
+   "h_lower_bound": 68,
+   "width_frac": 0.6693,
+   "ink_frac": 0.2024
+  },
+  {
+   "state": "themes",
+   "ok": true,
+   "why": "",
+   "panel": [
+    685,
+    20,
+    1580,
+    568
+   ],
+   "w": 896,
+   "h_lower_bound": 49,
+   "width_frac": 0.3972,
+   "ink_frac": 0.0393
+  },
+  {
+   "state": "clipboard",
+   "ok": true,
+   "why": "",
+   "panel": [
+    756,
+    20,
+    1509,
+    319
+   ],
+   "w": 754,
+   "h_lower_bound": 68,
+   "width_frac": 0.3342,
+   "ink_frac": 0.0462
+  },
+  {
+   "state": "traymenu",
+   "ok": true,
+   "why": "",
+   "panel": [
+    826,
+    61,
+    1427,
+    192
+   ],
+   "w": 602,
+   "h_lower_bound": 27,
+   "width_frac": 0.2668,
+   "ink_frac": 0.0098
+  }
+ ],
+ "failed": 0
+}
+RESULT PASS
