@@ -2589,3 +2589,20 @@ started in one turn; no dispatch failure. Full task/link records are in
 - Evidence: `docs/reviews/r4/evidence.json`, gate reports and empty-workspace shell crops. Rust 336 pass / 1 ignored; theme profile/real-browser fixture pass; installer selftest/Mango parser pass. Previous merged-theme live stress 1207 cases / 6179 assertions / 0 failures; ~4000 checks are transport, Pss growth 0.0MB, acceptance p95 0.7ms. Halo8/8 and render9/9 pass. These live reports precede the last theme-ink/BOM refinement; final Rust/browser tests cover that refinement.
 - Motion: unchanged morph implementation from five recorded trials, 15/17/16/16/15 poses, 16.7ms hold, 216.8ms relative settle, duplicate .087, 0 dropped frames; all resolved gates pass. Absolute presentation latency remains unresolved. No fabricated 340ms claim or claim of perfect website coverage.
 - Latest live panel PID12168 matches release inode24382994 under supervisor1651; Mango1582 retained. No strict lint-clean claim. Source about to freeze for independent review; gate OPEN.
+
+
+#### Round 4 — first critic wakes (panel still open)
+
+- Slot #1 pill fidelity: score 9, `docs/reviews/r4/verdict-1.json`. Scale-normalized pill width 4.255% vs 4.336%, aspect 2.667 vs 2.643, black fill and fixed ink match. No findings; requested workspace/tray row explicitly retained. Different clock string remains a minor comparison limitation.
+- Slot #2 panel fidelity: score 9, `docs/reviews/r4/verdict-2.json`. Power bbox 472x176 vs ref 537x200 with matching aspect/fill/disc pitch; launcher 756x548 vs expected 756x549, native icons/no holes. One minor: launcher selection bar still fixed #79A1F5 while selected Everforest accent is #E69875 (`src/launcher_panel.rs:197,1299-1311`).
+- Slot #3 lock preview: score 7, `docs/reviews/r4/verdict-3.json`. Safe click exit/no keyboard/no locker verified. Major: same-string reference '11:28' visible ink bbox about 868x279 vs current Quicksand 821x277 at same cap height; colon dots also visibly under-sized. Existing test pins advance width rather than raster ink (`src/lockscreen.rs:436-449,699-732,1448-1462`). Candidate future correction: optical glyph/font weight only; keep CLOCK_PX_FRAC and small pill clock unchanged.
+- Slot #14 accessibility: score 9, `docs/reviews/r4/verdict-14.json`. Adaptive theme accent and active toggle contrast are strong; theme highlight has additional white/text/thumb state cues. Two minors: uptime contrast 4.28:1 vs 4.5 AA at `src/power_panel.rs:103,105,510-520`; Lock caption remains fixed blue under the active orange theme at `src/power_panel.rs:535-560`. The latter overlaps conceptually with slot #2's stale launcher accent; deduplicate by source mechanism at final merge.
+- First four scored slots [9,9,7,9]; interim median 9 is **not a gate result**. Eleven scored slots or retry coverage remain outstanding. No source fixes during panel.
+- Original slot #6 memory, #11 interactions and #15 process critics failed before inspection with provider availability errors; one retry each dispatched to group DeepSeek v4.1 Flash. Exact retry IDs and links in `docs/reviews/r4/tasks.json`. No score inferred from failure.
+
+#### Round 4 — retry reconciliation (panel still open)
+
+- Resume audit checked the task inventory and child threads before starting replacements. No duplicate retries or live actions. Source remains frozen at `33d1b9f`.
+- Availability/transport failures (wake and retry decisions): #4, #6, #7, #8, #11 and #15 exhausted their one council retry with no usable verdict; record as unscored gaps. Provider capacity/HTTP errors are not product findings.
+- #5 performance, #9 packaging, #10 website CSS, #12 render exactness and #13 verification integrity failed on their first attempt (HTTP 503 or DNS error). One alternate-route retry each started on FasFas DeepSeek v4.1 Flash with short, read-only scopes. Task IDs and exact outcomes are tracked in `docs/reviews/r4/tasks.json`.
+- Four scores retained, five retries dispatched, six unscored gaps. No round result or gate pass.
