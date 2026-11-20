@@ -3,7 +3,7 @@
   "reviewedHead": "33d1b9f5d6f80906d5fa5072562033499d3a2c94",
   "gate": "open; incomplete panel, no round result",
   "threshold": 9,
-  "note": "Dispatch status is historical. Read results only after a completion wake. Keep implementation frozen until all review slots are accounted for.",
+  "note": "All current attempts are terminal except retry slots still marked starting. Each unscored provider failure is a coverage gap, never a score. Source frozen; no result until all remaining attempts settle.",
   "tasks": [
     {
       "slot": 1,
@@ -131,7 +131,7 @@
       "childThreadId": "thread:delegated-task:command%3Amcp%3Ad5650c85-af2a-47e1-bf14-149bea2ba1de%3Adelegate-task%3Ar4-critic-09-packaging",
       "link": "[Council r4 #9: clean install](t3-thread://v2/699b4b1c-474b-4871-82f1-d1eb0c374204/thread:delegated-task:command%3Amcp%3Ad5650c85-af2a-47e1-bf14-149bea2ba1de%3Adelegate-task%3Ar4-critic-09-packaging)",
       "dispatchStatus": "starting",
-      "reviewState": "first attempt failed; retry dispatched",
+      "reviewState": "retry exhausted; unscored coverage gap",
       "status": "failed",
       "failure": "logfare HTTP 503",
       "retryTaskId": "node:delegated-task:command%3Amcp%3A362140bd-3a4e-46e2-a8c8-b41ae32eab40%3Adelegate-task%3Ar4-retry-09-packaging",
@@ -146,7 +146,7 @@
       "childThreadId": "thread:delegated-task:command%3Amcp%3Ad5650c85-af2a-47e1-bf14-149bea2ba1de%3Adelegate-task%3Ar4-critic-10-web-css",
       "link": "[Council r4 #10: website CSS behavior](t3-thread://v2/699b4b1c-474b-4871-82f1-d1eb0c374204/thread:delegated-task:command%3Amcp%3Ad5650c85-af2a-47e1-bf14-149bea2ba1de%3Adelegate-task%3Ar4-critic-10-web-css)",
       "dispatchStatus": "starting",
-      "reviewState": "first attempt failed; retry dispatched",
+      "reviewState": "retry exhausted; unscored coverage gap",
       "status": "failed",
       "failure": "503: logfare temporarily unavailable",
       "retryTaskId": "node:delegated-task:command%3Amcp%3A362140bd-3a4e-46e2-a8c8-b41ae32eab40%3Adelegate-task%3Ar4-retry-10-web-css",
@@ -304,7 +304,8 @@
       "model": "magpie/fasfas-ai/deepseek-v4.1-flash",
       "taskId": "node:delegated-task:command%3Amcp%3A362140bd-3a4e-46e2-a8c8-b41ae32eab40%3Adelegate-task%3Ar4-retry-09-packaging",
       "link": "[Council r4 #9b: clean install](t3-thread://v2/699b4b1c-474b-4871-82f1-d1eb0c374204/thread:delegated-task:command%3Amcp%3A362140bd-3a4e-46e2-a8c8-b41ae32eab40%3Adelegate-task%3Ar4-retry-09-packaging)",
-      "status": "starting"
+      "status": "failed",
+      "failure": "FasFas stream decoding error before review; no JSON verdict"
     },
     {
       "slot": 10,
@@ -312,7 +313,8 @@
       "model": "magpie/fasfas-ai/deepseek-v4.1-flash",
       "taskId": "node:delegated-task:command%3Amcp%3A362140bd-3a4e-46e2-a8c8-b41ae32eab40%3Adelegate-task%3Ar4-retry-10-web-css",
       "link": "[Council r4 #10b: website stylesheet](t3-thread://v2/699b4b1c-474b-4871-82f1-d1eb0c374204/thread:delegated-task:command%3Amcp%3A362140bd-3a4e-46e2-a8c8-b41ae32eab40%3Adelegate-task%3Ar4-retry-10-web-css)",
-      "status": "starting"
+      "status": "failed",
+      "failure": "FasFas stream decoding error before review; no JSON verdict"
     },
     {
       "slot": 12,
