@@ -2604,5 +2604,15 @@ started in one turn; no dispatch failure. Full task/link records are in
 
 - Resume audit checked the task inventory and child threads before starting replacements. No duplicate retries or live actions. Source remains frozen at `33d1b9f`.
 - #4, #5, #6, #7, #8, #9, #10, #11, #12 and #15 have exhausted their one retry without a usable verdict; record these ten slots as unscored coverage gaps. Provider errors are not product findings.
-- Only #13 verification integrity retry remains running. No further retries are authorized for exhausted slots. Exact task IDs/status are tracked in `docs/reviews/r4/tasks.json`.
-- Four scores retained ([9,9,7,9]); ten unscored gaps and one retry outstanding. No round result or gate pass.
+- Only #13 verification integrity retry remained running at this reconciliation point. Exact task IDs/status are tracked in `docs/reviews/r4/tasks.json`; the closeout below supersedes this historical pending state.
+- Four scores retained ([9,9,7,9]); ten unscored gaps and one retry outstanding at this point. No gate decision was made before the final result.
+
+#### Round 4 — terminal closeout: configured gate passed, limited review coverage
+
+- #13b verification integrity completed with **8/10**; raw result `docs/reviews/r4/verdict-13.json`. Intake decision chain 2t: credible reproducibility findings, not new product failures; countered its assumption that all non-rapid-fire assertions are semantic.
+- All 15 slots are terminal: scores **#1=9, #2=9, #3=7, #13=8, #14=9**; ten exhausted provider-failure gaps **#4/#5/#6/#7/#8/#9/#10/#11/#12/#15**, never scored. No running child or further retry.
+- Merged findings chain 10t: three major follow-ups (same-string lock ink, committed GTK parse test, committed self+child CPU sampler) and seven minor groups. No delivered blocker. Full qualified merge in `docs/reviews/r4/closeout.md`; raw verdicts remain unchanged.
+- Bound correction: 363 ms is **233 + 100 ms allowed capture-interval ceiling + 30 slack**, not 233 + the observed ~17 ms interval. Existing artifacts are preserved as archived; unresolved absolute presentation metrics remain unresolved. The 6,179 mixed assertions do not establish 6,179 semantic checks.
+- Gate decision chain 3t: **median 9 >= threshold 9, no reported blocker, five surviving critics (minimum two per skill) => configured gate PASSED** for frozen `33d1b9f5d6f80906d5fa5072562033499d3a2c94`. The ten failed lenses prevent a claim of full fifteen-lens coverage or perfect replication. Ship assessment retains the explicit fidelity/provenance follow-ups; provider failures are not product evidence.
+- Final report decision chain 1t: report the limited pass and remaining majors prominently, no new implementation edits or live-system actions. Closeout accounting: **4 chains / 16 steps** (2+10+3+1). Historical lifetime chain count is incomplete; do not invent a total.
+- Progression: r1 median 4.5; r2 7; r3 superseded/incomplete (usable median 7); r4 **9 from five delivered reviews**. Full result/task inventory in `docs/reviews/r4/tasks.json`. Council ends on the configured gate; follow-ups remain documented, not silently marked fixed.

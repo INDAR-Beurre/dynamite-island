@@ -3,7 +3,7 @@
   "reviewedHead": "33d1b9f5d6f80906d5fa5072562033499d3a2c94",
   "gate": "open; incomplete panel, no round result",
   "threshold": 9,
-  "note": "Current panel state: four scored; ten unscored gaps; only slot 13 retry remains in progress. No source changes while review runs.",
+  "note": "All attempts terminal. Median/no-blocker gate passed on five surviving reviews; ten provider-failure coverage gaps remain. No claim of complete fifteen-lens review or perfect fidelity.",
   "tasks": [
     {
       "slot": 1,
@@ -191,11 +191,13 @@
       "childThreadId": "thread:delegated-task:command%3Amcp%3Ad5650c85-af2a-47e1-bf14-149bea2ba1de%3Adelegate-task%3Ar4-critic-13-tests",
       "link": "[Council r4 #13: verification integrity](t3-thread://v2/699b4b1c-474b-4871-82f1-d1eb0c374204/thread:delegated-task:command%3Amcp%3Ad5650c85-af2a-47e1-bf14-149bea2ba1de%3Adelegate-task%3Ar4-critic-13-tests)",
       "dispatchStatus": "starting",
-      "reviewState": "first attempt failed; retry dispatched",
+      "reviewState": "retry verdict delivered",
       "status": "failed",
       "failure": "logfare HTTP 503",
       "retryTaskId": "node:delegated-task:command%3Amcp%3A362140bd-3a4e-46e2-a8c8-b41ae32eab40%3Adelegate-task%3Ar4-retry-13-tests",
-      "retryLink": "[Council r4 #13b: verification integrity](t3-thread://v2/699b4b1c-474b-4871-82f1-d1eb0c374204/thread:delegated-task:command%3Amcp%3A362140bd-3a4e-46e2-a8c8-b41ae32eab40%3Adelegate-task%3Ar4-retry-13-tests)"
+      "retryLink": "[Council r4 #13b: verification integrity](t3-thread://v2/699b4b1c-474b-4871-82f1-d1eb0c374204/thread:delegated-task:command%3Amcp%3A362140bd-3a4e-46e2-a8c8-b41ae32eab40%3Adelegate-task%3Ar4-retry-13-tests)",
+      "score": 8,
+      "verdict": "verdict-13.json"
     },
     {
       "slot": 14,
@@ -332,7 +334,53 @@
       "model": "magpie/fasfas-ai/deepseek-v4.1-flash",
       "taskId": "node:delegated-task:command%3Amcp%3A362140bd-3a4e-46e2-a8c8-b41ae32eab40%3Adelegate-task%3Ar4-retry-13-tests",
       "link": "[Council r4 #13b: verification integrity](t3-thread://v2/699b4b1c-474b-4871-82f1-d1eb0c374204/thread:delegated-task:command%3Amcp%3A362140bd-3a4e-46e2-a8c8-b41ae32eab40%3Adelegate-task%3Ar4-retry-13-tests)",
-      "status": "starting"
+      "status": "completed",
+      "score": 8,
+      "verdict": "verdict-13.json"
     }
-  ]
+  ],
+  "result": {
+    "implementation": "33d1b9f5d6f80906d5fa5072562033499d3a2c94",
+    "scores": [
+      {
+        "slot": 1,
+        "score": 9
+      },
+      {
+        "slot": 2,
+        "score": 9
+      },
+      {
+        "slot": 3,
+        "score": 7
+      },
+      {
+        "slot": 13,
+        "score": 8
+      },
+      {
+        "slot": 14,
+        "score": 9
+      }
+    ],
+    "median": 9,
+    "threshold": 9,
+    "reported_blockers": 0,
+    "gate": "passed",
+    "usable_reviewers": 5,
+    "dispatched_slots": 15,
+    "unscored_gaps": [
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      15
+    ],
+    "limitations": "Three major follow-ups remain: lock raster fidelity, committed GTK parser test, committed self+child CPU sampler. Gate applies to the frozen implementation only."
+  }
 }
