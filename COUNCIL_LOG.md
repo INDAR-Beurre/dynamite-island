@@ -2537,3 +2537,10 @@ started in one turn; no dispatch failure. Full task/link records are in
 | 13 | test-integrity | magpie/fasfas-ai/deepseek-v4.1-flash | node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3A75484603-0b64-464e-b243-c9c0bd3d9bdc | awaiting verdict |
 | 14 | accessibility | magpie/group/hy4 | node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3Aafcd4dee-8067-4ece-8917-4d0676306f28 | awaiting verdict |
 | 15 | interaction-contracts | magpie/group/deepseek-v4.1-flash-1017 | node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3A74f06005-31c6-4ecc-9ba1-0a31ac024d9f | awaiting verdict |
+
+#### Early unusable replies — excluded, not scored
+
+- #4 FasFas: `stream_error` / `[acp-proxy: the turn degenerated again after the continuation nudge]`; no usable review (wake chain 2t).
+- #7, #10, #13 FasFas: returned only "I’ll start by reading...", no JSON or inspection result; parse failures, excluded (each wake chain 2t).
+- #8 GLM Flash: `503: logfare: Service temporarily unavailable`; excluded (wake chain 2t).
+- One fresh retry each (#4b/#7b/#10b via logfare DeepSeek, #8b via group DeepSeek, #13b via GLM 5.3), all started together. Full replacement task IDs/links are in `docs/reviews/r3/retries.json`. No second retry if these fail; record the coverage gap. Original dispatch rows above are historical, not current running-state claims. All surviving slots remain outstanding; no median or pass declared.

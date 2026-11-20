@@ -1,0 +1,60 @@
+{
+  "reason": "FasFas stream/plan-only replies; logfare GLM Flash 503. No usable scores. One retry per affected slot.",
+  "retries": [
+    {
+      "slot": 4,
+      "lens": "motion-integrity",
+      "model": "magpie/logfare/deepseek-v4.1-flash-1017",
+      "taskId": "node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3Abd4f46e2-de8d-4e64-8a40-ed91bea4b80b",
+      "link": "[Council r3 #4b: motion-integrity](t3-thread://v2/699b4b1c-474b-4871-82f1-d1eb0c374204/thread:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3Abd4f46e2-de8d-4e64-8a40-ed91bea4b80b)",
+      "status": "starting",
+      "retry": 1,
+      "previousTaskId": "node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3A0c4bbf14-6364-42b1-ae0e-95e929a57683",
+      "isError": false
+    },
+    {
+      "slot": 7,
+      "lens": "dictation-signal-safety",
+      "model": "magpie/logfare/deepseek-v4.1-flash-1017",
+      "taskId": "node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3A769277a9-11c0-4891-930e-d02e5bd8e357",
+      "link": "[Council r3 #7b: dictation-signal-safety](t3-thread://v2/699b4b1c-474b-4871-82f1-d1eb0c374204/thread:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3A769277a9-11c0-4891-930e-d02e5bd8e357)",
+      "status": "starting",
+      "retry": 1,
+      "previousTaskId": "node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3Ac05fd1f1-8af1-4bde-8ba3-77118ef7ff1e",
+      "isError": false
+    },
+    {
+      "slot": 8,
+      "lens": "process-ownership",
+      "model": "magpie/group/deepseek-v4.1-flash-1017",
+      "taskId": "node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3A8c9ff40e-df48-4b64-941d-7f090e490c7a",
+      "link": "[Council r3 #8b: process-ownership](t3-thread://v2/699b4b1c-474b-4871-82f1-d1eb0c374204/thread:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3A8c9ff40e-df48-4b64-941d-7f090e490c7a)",
+      "status": "starting",
+      "retry": 1,
+      "previousTaskId": "node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3A47eb5d7c-3e0d-447b-84d2-ae5ce8555231",
+      "isError": false
+    },
+    {
+      "slot": 10,
+      "lens": "portability-errors",
+      "model": "magpie/logfare/deepseek-v4.1-flash-1017",
+      "taskId": "node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3A80effa13-19a2-4a12-8dd1-d4c7da102d10",
+      "link": "[Council r3 #10b: portability-errors](t3-thread://v2/699b4b1c-474b-4871-82f1-d1eb0c374204/thread:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3A80effa13-19a2-4a12-8dd1-d4c7da102d10)",
+      "status": "starting",
+      "retry": 1,
+      "previousTaskId": "node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3A297625ac-1f01-4987-b557-01c509f518d5",
+      "isError": false
+    },
+    {
+      "slot": 13,
+      "lens": "test-integrity",
+      "model": "magpie/logfare/glm-5.3",
+      "taskId": "node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3Abbcb5ceb-a1ab-40fa-a8cb-1e0b0f2b5fbf",
+      "link": "[Council r3 #13b: test-integrity](t3-thread://v2/699b4b1c-474b-4871-82f1-d1eb0c374204/thread:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3Abbcb5ceb-a1ab-40fa-a8cb-1e0b0f2b5fbf)",
+      "status": "starting",
+      "retry": 1,
+      "previousTaskId": "node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3A75484603-0b64-464e-b243-c9c0bd3d9bdc",
+      "isError": false
+    }
+  ]
+}
