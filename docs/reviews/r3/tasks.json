@@ -2,7 +2,7 @@
   "round": 3,
   "reviewedHead": "eb40eee17e80d4869c71b84050933c313348ad73",
   "gate": "open",
-  "note": "status is historical dispatch snapshot. Delivered verdicts under verdict-N.json; never polled running tasks.",
+  "note": "Dispatch history snapshot; current retries and verdicts are in retries.json and verdict-N.json. Do not poll running tasks.",
   "tasks": [
     {
       "slot": 1,
@@ -129,7 +129,8 @@
       "status": "starting",
       "link": "[Council r3 #12: render-fast-path](t3-thread://v2/699b4b1c-474b-4871-82f1-d1eb0c374204/thread:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3A8aa9fa47-4e1f-40fd-bf1c-7484dcf9aa04)",
       "isError": false,
-      "reviewState": "awaiting wake"
+      "reviewState": "unusable original and retry; exhausted; coverage gap",
+      "failure": "The model is temporarily unavailable."
     },
     {
       "slot": 13,
