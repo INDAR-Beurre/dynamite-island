@@ -101,6 +101,10 @@ layer rule, and an autostart wrapper — **appending** to your existing
 ./target/release/dynamite-rust
 ```
 
+If the panel re-attaches after a compositor crash while the screen is still
+blank, see `docs/restart-checklist.md` — bring the compositor up BEFORE
+judging any visual gate.
+
 It creates its control socket at `$XDG_RUNTIME_DIR/dynamite-rust.sock` and
 anchors a layer surface to the top edge, centred horizontally by the compositor.
 
