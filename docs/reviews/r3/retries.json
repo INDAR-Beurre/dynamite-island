@@ -37,7 +37,9 @@
       "retry": 1,
       "previousTaskId": "node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3A47eb5d7c-3e0d-447b-84d2-ae5ce8555231",
       "isError": false,
-      "reviewState": "awaiting wake"
+      "reviewState": "verdict delivered",
+      "score": 7,
+      "verdict": "verdict-8.json"
     },
     {
       "slot": 10,
@@ -135,6 +137,17 @@
       "waitTimedOut": false,
       "next": "Completion wakes this thread. Do not wait on it or poll it. Continue other work, and end your turn when none is left.",
       "reviewState": "awaiting wake"
+    },
+    {
+      "slot": 12,
+      "retry": 1,
+      "lens": "render-fast-path",
+      "model": "magpie/logfare/deepseek-v4.1-flash-1017",
+      "previousTaskId": "node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3A8aa9fa47-4e1f-40fd-bf1c-7484dcf9aa04",
+      "taskId": "node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3Aaa2bd7c3-f438-473c-8e9f-d62978b28177",
+      "link": "[Council r3 #12b: render-fast-path](t3-thread://v2/699b4b1c-474b-4871-82f1-d1eb0c374204/thread:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3Aaa2bd7c3-f438-473c-8e9f-d62978b28177)",
+      "reviewState": "awaiting completion wake",
+      "originalFailure": "The model is temporarily unavailable."
     }
   ]
 }

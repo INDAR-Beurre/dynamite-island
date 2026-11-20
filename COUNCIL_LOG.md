@@ -2560,6 +2560,8 @@ started in one turn; no dispatch failure. Full task/link records are in
 
 #### Early unusable replies — excluded, not scored
 
+- #12 render-fast-path: `The model is temporarily unavailable.` Original failed with no verdict; excluded (wake/dispatch decisions 2t each). Inventory confirms first failure for this slot. One #12b retry on logfare DeepSeek started, exact task/link in `docs/reviews/r3/retries.json`. No third attempt if it fails. Nine scored slots, exhausted gaps4/7/10, outstanding11/12b/15. Source remains frozen; no median/pass.
+
 - #4b motion retry: `The model is temporarily unavailable.` Excluded, retry exhausted (wake chain 2t), coverage gap. No score and no third attempt. Four scored verdicts delivered, three exhausted slots, eight outstanding; no r3 gate calculation yet.
 
 - #11 GLM: `The model is temporarily unavailable.` Excluded (wake chain 2t); one #11b retry via group DeepSeek, exact task/link in `docs/reviews/r3/retries.json`. Original source untouched.
