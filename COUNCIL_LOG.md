@@ -2540,6 +2540,10 @@ started in one turn; no dispatch failure. Full task/link records are in
 
 #### Early unusable replies — excluded, not scored
 
+- #10b also failed: `AiError: AiError: Service temporarily at capacity (47928462-9f8e-4f27-a12f-8960e993c380)` after another plan-only message. Retry exhausted, no score; portability lens coverage is missing (failure chain 2t). No third dispatch.
+
+- #5 group DeepSeek: `Service temporarily unavailable`; excluded (wake chain 2t). One #5b retry via logfare DeepSeek, recorded in `docs/reviews/r3/retries.json`.
+
 - #4 FasFas: `stream_error` / `[acp-proxy: the turn degenerated again after the continuation nudge]`; no usable review (wake chain 2t).
 - #7, #10, #13 FasFas: returned only "I’ll start by reading...", no JSON or inspection result; parse failures, excluded (each wake chain 2t).
 - #8 GLM Flash: `503: logfare: Service temporarily unavailable`; excluded (wake chain 2t).

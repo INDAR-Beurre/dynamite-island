@@ -2,6 +2,7 @@
   "round": 3,
   "reviewedHead": "eb40eee17e80d4869c71b84050933c313348ad73",
   "gate": "open",
+  "note": "status is dispatch snapshot; reviewState tracks delivered results only, never polled.",
   "tasks": [
     {
       "slot": 1,
@@ -10,7 +11,8 @@
       "taskId": "node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3A0900cc81-4059-4a1a-a285-ab8e8a64673f",
       "status": "starting",
       "link": "[Council r3 #1: pill-fidelity](t3-thread://v2/699b4b1c-474b-4871-82f1-d1eb0c374204/thread:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3A0900cc81-4059-4a1a-a285-ab8e8a64673f)",
-      "isError": false
+      "isError": false,
+      "reviewState": "awaiting wake"
     },
     {
       "slot": 2,
@@ -19,7 +21,8 @@
       "taskId": "node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3A7717bef1-ad4e-4fba-a4e3-1db565534e3b",
       "status": "starting",
       "link": "[Council r3 #2: panel-fidelity](t3-thread://v2/699b4b1c-474b-4871-82f1-d1eb0c374204/thread:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3A7717bef1-ad4e-4fba-a4e3-1db565534e3b)",
-      "isError": false
+      "isError": false,
+      "reviewState": "awaiting wake"
     },
     {
       "slot": 3,
@@ -28,7 +31,8 @@
       "taskId": "node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3Ad4ba37ca-59d7-40e6-8844-92433adc623f",
       "status": "starting",
       "link": "[Council r3 #3: lock-fidelity](t3-thread://v2/699b4b1c-474b-4871-82f1-d1eb0c374204/thread:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3Ad4ba37ca-59d7-40e6-8844-92433adc623f)",
-      "isError": false
+      "isError": false,
+      "reviewState": "awaiting wake"
     },
     {
       "slot": 4,
@@ -37,7 +41,9 @@
       "taskId": "node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3A0c4bbf14-6364-42b1-ae0e-95e929a57683",
       "status": "starting",
       "link": "[Council r3 #4: motion-integrity](t3-thread://v2/699b4b1c-474b-4871-82f1-d1eb0c374204/thread:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3A0c4bbf14-6364-42b1-ae0e-95e929a57683)",
-      "isError": false
+      "isError": false,
+      "reviewState": "unusable/excluded",
+      "failure": "stream_error: turn degenerated after continuation nudge"
     },
     {
       "slot": 5,
@@ -46,7 +52,9 @@
       "taskId": "node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3A4a130cef-d294-4018-8cd2-f0c5a20f63c0",
       "status": "starting",
       "link": "[Council r3 #5: idle-performance](t3-thread://v2/699b4b1c-474b-4871-82f1-d1eb0c374204/thread:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3A4a130cef-d294-4018-8cd2-f0c5a20f63c0)",
-      "isError": false
+      "isError": false,
+      "reviewState": "unusable/excluded",
+      "failure": "Service temporarily unavailable"
     },
     {
       "slot": 6,
@@ -55,7 +63,8 @@
       "taskId": "node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3A3eef9506-05d1-4235-bf9b-e0fdbbac86d5",
       "status": "starting",
       "link": "[Council r3 #6: memory-lifecycle](t3-thread://v2/699b4b1c-474b-4871-82f1-d1eb0c374204/thread:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3A3eef9506-05d1-4235-bf9b-e0fdbbac86d5)",
-      "isError": false
+      "isError": false,
+      "reviewState": "awaiting wake"
     },
     {
       "slot": 7,
@@ -64,7 +73,9 @@
       "taskId": "node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3Ac05fd1f1-8af1-4bde-8ba3-77118ef7ff1e",
       "status": "starting",
       "link": "[Council r3 #7: dictation-signal-safety](t3-thread://v2/699b4b1c-474b-4871-82f1-d1eb0c374204/thread:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3Ac05fd1f1-8af1-4bde-8ba3-77118ef7ff1e)",
-      "isError": false
+      "isError": false,
+      "reviewState": "unusable/excluded",
+      "failure": "plan-only final; invalid scoring JSON"
     },
     {
       "slot": 8,
@@ -73,7 +84,9 @@
       "taskId": "node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3A47eb5d7c-3e0d-447b-84d2-ae5ce8555231",
       "status": "starting",
       "link": "[Council r3 #8: process-ownership](t3-thread://v2/699b4b1c-474b-4871-82f1-d1eb0c374204/thread:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3A47eb5d7c-3e0d-447b-84d2-ae5ce8555231)",
-      "isError": false
+      "isError": false,
+      "reviewState": "unusable/excluded",
+      "failure": "503 logfare Service temporarily unavailable"
     },
     {
       "slot": 9,
@@ -82,7 +95,8 @@
       "taskId": "node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3Ae43314e6-2d67-46c5-a2ad-71329786234e",
       "status": "starting",
       "link": "[Council r3 #9: packaging-installer](t3-thread://v2/699b4b1c-474b-4871-82f1-d1eb0c374204/thread:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3Ae43314e6-2d67-46c5-a2ad-71329786234e)",
-      "isError": false
+      "isError": false,
+      "reviewState": "awaiting wake"
     },
     {
       "slot": 10,
@@ -91,7 +105,9 @@
       "taskId": "node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3A297625ac-1f01-4987-b557-01c509f518d5",
       "status": "starting",
       "link": "[Council r3 #10: portability-errors](t3-thread://v2/699b4b1c-474b-4871-82f1-d1eb0c374204/thread:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3A297625ac-1f01-4987-b557-01c509f518d5)",
-      "isError": false
+      "isError": false,
+      "reviewState": "unusable/excluded",
+      "failure": "plan-only final; invalid scoring JSON"
     },
     {
       "slot": 11,
@@ -100,7 +116,8 @@
       "taskId": "node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3A596e05c8-a98f-4acc-81d1-c367348eaa07",
       "status": "starting",
       "link": "[Council r3 #11: rust-correctness](t3-thread://v2/699b4b1c-474b-4871-82f1-d1eb0c374204/thread:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3A596e05c8-a98f-4acc-81d1-c367348eaa07)",
-      "isError": false
+      "isError": false,
+      "reviewState": "awaiting wake"
     },
     {
       "slot": 12,
@@ -109,7 +126,8 @@
       "taskId": "node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3A8aa9fa47-4e1f-40fd-bf1c-7484dcf9aa04",
       "status": "starting",
       "link": "[Council r3 #12: render-fast-path](t3-thread://v2/699b4b1c-474b-4871-82f1-d1eb0c374204/thread:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3A8aa9fa47-4e1f-40fd-bf1c-7484dcf9aa04)",
-      "isError": false
+      "isError": false,
+      "reviewState": "awaiting wake"
     },
     {
       "slot": 13,
@@ -118,7 +136,9 @@
       "taskId": "node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3A75484603-0b64-464e-b243-c9c0bd3d9bdc",
       "status": "starting",
       "link": "[Council r3 #13: test-integrity](t3-thread://v2/699b4b1c-474b-4871-82f1-d1eb0c374204/thread:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3A75484603-0b64-464e-b243-c9c0bd3d9bdc)",
-      "isError": false
+      "isError": false,
+      "reviewState": "unusable/excluded",
+      "failure": "plan-only final; invalid scoring JSON"
     },
     {
       "slot": 14,
@@ -127,7 +147,8 @@
       "taskId": "node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3Aafcd4dee-8067-4ece-8917-4d0676306f28",
       "status": "starting",
       "link": "[Council r3 #14: accessibility](t3-thread://v2/699b4b1c-474b-4871-82f1-d1eb0c374204/thread:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3Aafcd4dee-8067-4ece-8917-4d0676306f28)",
-      "isError": false
+      "isError": false,
+      "reviewState": "awaiting wake"
     },
     {
       "slot": 15,
@@ -136,7 +157,8 @@
       "taskId": "node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3A74f06005-31c6-4ecc-9ba1-0a31ac024d9f",
       "status": "starting",
       "link": "[Council r3 #15: interaction-contracts](t3-thread://v2/699b4b1c-474b-4871-82f1-d1eb0c374204/thread:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3A74f06005-31c6-4ecc-9ba1-0a31ac024d9f)",
-      "isError": false
+      "isError": false,
+      "reviewState": "awaiting wake"
     }
   ]
 }

@@ -1,5 +1,5 @@
 {
-  "reason": "FasFas stream/plan-only replies; logfare GLM Flash 503. No usable scores. One retry per affected slot.",
+  "reason": "Unusable original slots 4,5,7,8,10,13; each excluded with one retry, not scored. Slot10 retry failed: missing portability verdict.",
   "retries": [
     {
       "slot": 4,
@@ -10,7 +10,8 @@
       "status": "starting",
       "retry": 1,
       "previousTaskId": "node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3A0c4bbf14-6364-42b1-ae0e-95e929a57683",
-      "isError": false
+      "isError": false,
+      "reviewState": "awaiting wake"
     },
     {
       "slot": 7,
@@ -21,7 +22,8 @@
       "status": "starting",
       "retry": 1,
       "previousTaskId": "node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3Ac05fd1f1-8af1-4bde-8ba3-77118ef7ff1e",
-      "isError": false
+      "isError": false,
+      "reviewState": "awaiting wake"
     },
     {
       "slot": 8,
@@ -32,7 +34,8 @@
       "status": "starting",
       "retry": 1,
       "previousTaskId": "node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3A47eb5d7c-3e0d-447b-84d2-ae5ce8555231",
-      "isError": false
+      "isError": false,
+      "reviewState": "awaiting wake"
     },
     {
       "slot": 10,
@@ -43,7 +46,9 @@
       "status": "starting",
       "retry": 1,
       "previousTaskId": "node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3A297625ac-1f01-4987-b557-01c509f518d5",
-      "isError": false
+      "isError": false,
+      "reviewState": "failed; retry exhausted; coverage gap",
+      "failure": "AiError: AiError: Service temporarily at capacity (47928462-9f8e-4f27-a12f-8960e993c380)"
     },
     {
       "slot": 13,
@@ -54,7 +59,42 @@
       "status": "starting",
       "retry": 1,
       "previousTaskId": "node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3A75484603-0b64-464e-b243-c9c0bd3d9bdc",
-      "isError": false
+      "isError": false,
+      "reviewState": "awaiting wake"
+    },
+    {
+      "slot": 5,
+      "retry": 1,
+      "lens": "idle-performance",
+      "model": "magpie/logfare/deepseek-v4.1-flash-1017",
+      "previousTaskId": "node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3A4a130cef-d294-4018-8cd2-f0c5a20f63c0",
+      "taskId": "node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3Aa8c4faf4-a890-40e3-b1fc-50e214d3719f",
+      "childThreadId": "thread:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3Aa8c4faf4-a890-40e3-b1fc-50e214d3719f",
+      "link": "[Council r3 #5b: idle-performance](t3-thread://v2/699b4b1c-474b-4871-82f1-d1eb0c374204/thread:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3Aa8c4faf4-a890-40e3-b1fc-50e214d3719f)",
+      "childRunId": "run:thread:thread%3Adelegated-task%3Acommand%253Amcp%253Af7887082-e156-4a20-b6c5-f8afbef7988c%253Adelegate-task%253Aa8c4faf4-a890-40e3-b1fc-50e214d3719f:ordinal:1",
+      "childNodeId": "node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3Aa8c4faf4-a890-40e3-b1fc-50e214d3719f",
+      "status": "starting",
+      "workState": "working",
+      "hasPendingChildRuns": false,
+      "latestTerminalRunId": null,
+      "latestTerminalStatus": null,
+      "latestTerminalSummary": null,
+      "latestTerminalResultContextTransferId": null,
+      "providerInstanceId": "pi",
+      "executedModel": null,
+      "options": [
+        {
+          "id": "thinking",
+          "value": "high"
+        }
+      ],
+      "summary": null,
+      "resultContextTransferId": null,
+      "hasPendingQuestion": false,
+      "pendingApproval": null,
+      "waitTimedOut": false,
+      "next": "Completion wakes this thread. Do not wait on it or poll it. Continue other work, and end your turn when none is left.",
+      "reviewState": "awaiting wake"
     }
   ]
 }
