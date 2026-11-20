@@ -35,7 +35,8 @@ The optional `upscale_region_perf` wall-time benchmark requires an idle host:
 The regular suite checks region output and unchanged out-of-damage pixels without
 using scheduler-dependent timing as a correctness assertion.
 
-The lock screen is a **visual preview, not a security boundary**. Never invoke
-`swaylock`, add PAM/session-lock integration, or enable lock-at-boot as part of
-this recovery procedure. Round 2's council median was 7/10; the >=9 gate remains
-open until a new independent panel has reviewed the verified build.
+The panel's lock preview is **not a security boundary**. The optional real
+locker has its own [setup and attended tests](../deploy/README.md#dynamite-session-lock).
+Do not invoke it, change authentication, or enable lock-at-boot as part of this
+remote recovery procedure. For isolated regressions, use
+`python3 scripts/keyboard_selftest.py` and `python3 scripts/lock_selftest.py`.

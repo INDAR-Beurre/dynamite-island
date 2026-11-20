@@ -420,21 +420,11 @@ const TYPING_STATES: [IslandState; 4] = [
     IslandState::Themes,
 ];
 
-/// Keyboard grab per state (r2 accessibility critic).
-///
-/// Every menu state used to take `Exclusive`, so Music, ControlCenter,
-/// Calendar, Power and TrayMenu stole the keyboard from the focused window
-/// and then swallowed every keystroke: they have no key handler at all.
-/// Those five now take `OnDemand` — keys reach them while the pointer is
-/// inside (which it is, since they are opened by clicking), so Esc and the
-/// arrow cycle still work, and typing goes to the owner's window otherwise.
-/// The four typing states keep `Exclusive` so a search field never loses a
-/// keystroke to the client behind it.
+/// Open menus need compositor keyboard focus for Esc and arrow navigation.
+/// OnDemand does not grant focus just because the pointer is inside a menu.
 fn keyboard_mode_for(state: IslandState) -> KeyboardInteractivity {
-    if TYPING_STATES.contains(&state) {
+    if MENU_CYCLE.contains(&state) || state == IslandState::TrayMenu {
         KeyboardInteractivity::Exclusive
-    } else if MENU_CYCLE.contains(&state) || state == IslandState::TrayMenu {
-        KeyboardInteractivity::OnDemand
     } else {
         KeyboardInteractivity::None
     }
@@ -7212,6 +7202,35 @@ fn send_command(word: &str) -> std::io::Result<()> {
 }
 
 
+/// Offline export for the maintained session locker; never connects to Wayland.
+fn export_lock_background(path: &std::path::Path, w: u32, h: u32) -> Result<(), String> {
+    if !(64..=8192).contains(&w) || !(64..=8192).contains(&h)
+        || u64::from(w) * u64::from(h) > 16_777_216
+    {
+        return Err("lock image must be 64..8192 pixels per side and at most 16 megapixels".into());
+    }
+    let wallpaper = std::env::var_os("HOME").and_then(|home| {
+        let src = PathBuf::from(home).join(".config/mango/wallpaper/wallpaper.png");
+        wallpaper_blur::decode_wallpaper_rgb(&src, w as usize, h as usize)
+    }).map(|rgb| rgb.chunks_exact(3).flat_map(|p| [p[0], p[1], p[2], 255]).collect::<Vec<_>>());
+    let font = load_ui_font();
+    let mut data = lockscreen::LockscreenData::video_defaults(h);
+    data.time_hhmm = hhmm();
+    let mut pixels = vec![0; w as usize * h as usize * 4];
+    lockscreen::draw_lock_background(&mut pixels, w, h, &font, wallpaper.as_deref(), &data);
+    for pixel in pixels.chunks_exact_mut(4) { pixel.swap(0, 2); }
+    let mut png_bytes = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut png_bytes, w, h);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder.set_compression(png::Compression::Fast);
+        let mut writer = encoder.write_header().map_err(|e| e.to_string())?;
+        writer.write_image_data(&pixels).map_err(|e| e.to_string())?;
+    }
+    theme::atomic_write(path, &png_bytes).map_err(|e| e.to_string())
+}
+
 fn main() {
     // F-A/F-B: pin glibc's large-allocation policy. With the default
     // dynamic threshold a single ~10 MB free raises the mmap threshold
@@ -7225,6 +7244,18 @@ fn main() {
         libc::mallopt(libc::M_TRIM_THRESHOLD, 128 * 1024);
     }
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("--render-lock-background") {
+        load_config();
+        let result = if args.len() == 5 {
+            args[3].parse::<u32>().and_then(|w| args[4].parse::<u32>().map(|h| (w, h)))
+                .map_err(|e| e.to_string())
+                .and_then(|(w, h)| export_lock_background(std::path::Path::new(&args[2]), w, h))
+        } else {
+            Err("usage: dynamite-rust --render-lock-background PATH WIDTH HEIGHT".into())
+        };
+        if let Err(e) = result { eprintln!("dynamite-rust: {e}"); std::process::exit(2); }
+        return;
+    }
     if args.get(1).map(String::as_str) == Some("--apply-theme") {
         if args.len() != 3 {
             eprintln!("usage: dynamite-rust --apply-theme NAME");
@@ -9346,41 +9377,14 @@ mod iter36_tests {
         assert_eq!(power_panel::action_command(4), ("poweroff", "loginctl poweroff"));
     }
 
-    /// r2 accessibility: only the states that consume typing may take the
-    /// keyboard away from the focused window.
     #[test]
-    fn keyboard_grab_matches_which_states_consume_typing() {
-        for st in TYPING_STATES {
-            assert_eq!(
-                keyboard_mode_for(st),
-                KeyboardInteractivity::Exclusive,
-                "{st:?} has a search field and must keep every keystroke"
-            );
+    fn menu_keyboard_focus_survives_arrow_navigation_and_releases_on_close() {
+        for st in MENU_CYCLE.into_iter().chain([IslandState::TrayMenu]) {
+            assert_eq!(keyboard_mode_for(st), KeyboardInteractivity::Exclusive, "{st:?}");
         }
-        for st in MENU_CYCLE {
-            if TYPING_STATES.contains(&st) {
-                continue;
-            }
-            assert_eq!(
-                keyboard_mode_for(st),
-                KeyboardInteractivity::OnDemand,
-                "{st:?} understands only Esc/Left/Right; it must not steal \
-                 the keyboard from the focused window"
-            );
+        for st in [IslandState::Collapsed, IslandState::Dictation, IslandState::Lock, IslandState::Lockscreen] {
+            assert_eq!(keyboard_mode_for(st), KeyboardInteractivity::None, "{st:?}");
         }
-        assert_eq!(
-            keyboard_mode_for(IslandState::TrayMenu),
-            KeyboardInteractivity::OnDemand
-        );
-        assert_eq!(
-            keyboard_mode_for(IslandState::Collapsed),
-            KeyboardInteractivity::None
-        );
-        assert_eq!(
-            keyboard_mode_for(IslandState::Lockscreen),
-            KeyboardInteractivity::None,
-            "the lock preview is not a security boundary and must never grab"
-        );
     }
 
 }

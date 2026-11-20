@@ -196,15 +196,14 @@ setup are backed up alongside the originals with a `.before-dynamite` suffix.
 
 ## Lock screen
 
-**The lock screen is a visual replica, not a security boundary.** It draws the
-giant clock and lock pill, but there is **no `ext_session_lock_v1` surface, no
-PAM, and no keyboard grab**. Click the preview to return to the capsule. It
-cannot authenticate anyone and it does not block input to other windows.
+The panel's lock preview is **not a security boundary**. It has no keyboard
+grab or authentication; click it to return to the capsule.
 
-- Do **not** bind it to a screen-lock hotkey expecting it to secure the session.
-- Do **not** enable lock-at-boot: a lock client that cannot authenticate would
-  leave you with an untypeable locked session.
-- For a real lock, use your compositor's own locker or `swaylock`.
+For a real lock, the optional Dynamite launcher gives Hyprlock the same
+wallpaper and clock. Hyprlock owns the session lock and password field; the
+dedicated PAM service tries your existing Howdy setup first, then the normal
+password stack. See the [setup and attended test](deploy/README.md#dynamite-session-lock).
+The panel installer does not enable the new locker or replace your shortcut.
 
 ## Development
 

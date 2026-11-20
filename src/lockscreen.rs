@@ -1,183 +1,21 @@
-//! lockscreen — giant-clock lockscreen draw for dynamite-rust.
+//! Wallpaper-sampled clock and capsule for the lock preview and real locker.
 //!
-//! The lockscreen's giant clock + lock pill, drawn into a FULLSCREEN
-//! canvas (one per output, logical px — Surface: 1504x1003), NOT into the
-//! island pill. This module is draw-only: it renders one locked frame
-//! (wallpaper blit + radial scrim + giant clock + lock pill) and the pure
-//! morph parameters for the lock-in / unlock-out animations. Everything
-//! compositor-level lives OUTSIDE this file — see "COMPOSITOR WORK" below.
+//! This module only renders premultiplied BGRA pixels; it never receives a
+//! password or authenticates. The panel uses `draw_lockscreen` for its reversible
+//! preview. The offline exporter uses `draw_lock_background` without a capsule,
+//! then Hyprlock owns the real session lock, password input and PAM conversation.
 //!
-//! SOURCES (do not re-derive from memory):
-//! - `analysis/lockscreen-scope.md` — the only authority for geometry and
-//!   timings. All numbers below are quoted from it; where the doc says a
-//!   value is unmeasured, this file says so too instead of inventing one.
-//! - `analysis/frame-measurements.md` — island pill geometry (90x24, 15 px
-//!   top gap) used as the morph endpoints.
-//! - `src/power_panel.rs` / `src/controlcenter_panel.rs` — drawing
-//!   conventions copied here: premultiplied Argb8888 canvas (BGRA byte
-//!   order), fontdue rasterisation, per-module private helpers duplicated
-//!   because main.rs's are private. No fake-bold: main.rs loads the static
-//!   `Quicksand-Bold.ttf` as THE text font (v0.4+), so the giant clock
-//!   renders in real Bold (iter13: the old double-blit is removed).
+//! Reference geometry and material: `docs/lockscreen-spec.md` and the captured
+//! frames in `docs/reference/`. The clock is centred, uses proportional advances,
+//! and scales from output height at `CLOCK_PX_FRAC`. Quicksand Bold approximates
+//! the reference's font; its visible glyph shapes are not an exact match.
 //!
-//! ---------------------------------------------------------------------------
-//! GEOMETRY — all values are @1080p reference unless marked; the layout
-//! scales by s = surface_height / 1080 (Surface logical 1003 -> s = 0.928).
-//! ---------------------------------------------------------------------------
-//!   Giant clock block: 868 x 279 ink at 2560x1440 (ink/W .33906,
-//!     cap/H .19375), TRUE CENTRE on both axes. Glyphs: Quicksand Bold at
-//!     pixelSize = 0.27 x surface height: cap/H matches the reference
-//!     within 0.6 %, so CLOCK_PX_FRAC stays. Advance: the font's own
-//!     PROPORTIONAL advances ('1' .389 em, '2' .569, ':' .273), NOT tabular
-//!     cells — the reference's digit pitches are 160 px for 1->1 and 207 px
-//!     for 2->8, which a tabular layout cannot produce.
-//!   Clock material (no white base, no cyan specular: both were the OLD
-//!     design and are deleted): the glyphs are wallpaper-sampled frosting.
-//!     The registered (1.030x) wallpaper is blurred at radius
-//!     0.016667 x H and pushed through a per-channel affine fit, then
-//!     composited INSIDE the glyph coverage over the veiled backdrop.
-//!     The ink therefore carries the wallpaper's own hue and varies with
-//!     it (reference ink median [87,235,206], 92.8 % teal-ish).
-//!   Drop shadow: offset (0, +3 x s), blur radius 8 x s, black alpha 0.35
-//!     (thumbnail value @720 ~+4 px -> +3 logical on the Surface).
-//!   Veil: the wallpaper itself (zoomed 1.030x), SHARP (best-fit global
-//!     blur is radius 0.6 device px, i.e. compression, not UI), darkened
-//!     by a VERTICAL black veil: alpha .430 at the top edge, .224 flat
-//!     over the middle, .507 at the bottom edge. See `veil_alpha`.
-//!   Lock pill (inside the lock surface, top-centre): black capsule,
-//!     57 x 27 @1080, radius h/2, top margin 42 @1080 (~39 Surface) —
-//!     NOTE: ~27 px LOWER than the island's 15 px gap; reproduce it.
-//!     Idle: white Material Symbols `lock` glyph (~16 px @1080).
-//!     Typing: dots replace the glyph; dot dia 8-10 @1080, pitch 12.0
-//!     (iter13: dot centres read off the f0635 y=19 row, 4.0 px @640),
-//!     pill width = 57 + (n-1) x 12.0 @1080, height unchanged.
-//!     The pill width ramps smoothly (~120 ms per dot) while dots
-//!     arrive ~1/1.2 frames, so per-frame widths LAG the dot count —
-//!     never derive pitch from width/dots (that gave the old 13.5).
-//!     Wrong password: NOT in the video — minimal 150 ms x-shake only,
-//!     represented here as a fixed +4*s offset single frame (see below).
-//!   DATE LINE: the video frames show NO date line under the giant clock
-//!     — only "HH:MM". `LockscreenData::date_line` exists so the caller
-//!     CAN pass one, but it defaults to None (not drawn) and its placement
-//!     below (clock bottom + 24*s, 18*s px) is INVENTED, not measured.
-//!     Do not claim video parity for it.
-//!
-//! TIMINGS (30 fps frame scan, lockscreen-scope.md):
-//!   Lock-in:  scrim 0->1 in ~100 ms, THEN clock scale 0.92->1 + fade
-//!     over ~150 ms while the pill morphs collapsed->lock form
-//!     (shrink 90->57 wide + drop to the 42 px offset) — ~300 ms total.
-//!   Locked hold: giant clock + tiny lock pill; pill widens per dot.
-//!   Unlock: clock scales down + flies up into the pill over ~250 ms,
-//!     pill morphs back (rise to the 15 px gap, re-widen to 90), scrim
-//!     fades out over ~170 ms, THEN the lock is released.
-//!   `LockAnim::lock_in()` / `unlock_out()` encode these as pure
-//!   functions of elapsed ms so the caller can drive them from a frame
-//!   timer. Two values in them are NOT measured and are marked as such:
-//!   the unlock clock's vertical travel (120*s placeholder — the video
-//!   only shows it "passing the top area", s22) and the exact easing
-//!   curve (ease-out cubic assumed; the video is 30 fps, so the curve
-//!   shape is under-determined).
-//!
-//! TEXT WEIGHT: main.rs loads the static `Quicksand-Bold.ttf` as THE text
-//! font (v0.4+), so the giant clock renders in real Bold — no fake-bold
-//! double-blit (iter13 removed it; the earlier note claiming no Bold file
-//! existed on the Surface is stale).
-//!
-//! ---------------------------------------------------------------------------
-//! INTEGRATION (main.rs — do NOT edit main.rs from here):
-//! ---------------------------------------------------------------------------
-//!   STATUS iter13: the PREVIEW is already wired in LOCAL main.rs (iter10
-//!   builder; NOT yet on the Surface — ~/rust-island-build/src has NO
-//!   lockscreen.rs and the live binary has no lockscreen strings):
-//!   `mod lockscreen;`, `IslandState::Lockscreen` (fullscreen 1504x1002,
-//!   radius 0, margin 0), draw() dispatches to `draw_lockscreen` with
-//!   the LIVE clock, dots=0, wallpaper=None, anim=locked_hold; socket
-//!   words `lockscreen` / `unlock` enter/exit instantly (no morph);
-//!   minute timer redraws it. The full wiring patch (dots input,
-//!   lock-in/unlock morph timer, wallpaper) is the DELTA in
-//!   `iterations/builder-lockscreen-iter13.md` § "main.rs wiring patch".
-//!   The preview is a VISUAL HARNESS ONLY — it does NOT lock the
-//!   session. NEVER wire the power-menu Lock button, Super+L, or
-//!   swayidle to the preview: the screen would LOOK locked while the
-//!   session stays open (security hole). Real lock triggers wait for
-//!   the ext-session-lock surface in COMPOSITOR WORK (a) below.
-//!   The lock-surface owner (see COMPOSITOR WORK) calls, per frame:
-//!        lockscreen::draw_lockscreen(
-//!            canvas, w, h, font, icon_font.as_ref(),
-//!            wallpaper_rgba, &lockscreen::LockscreenData::video_defaults());
-//!      - `wallpaper_rgba`: RGBA8 bytes, exactly w*h*4, already
-//!        aspect-cropped to the output by the caller (same file swaybg
-//!        shows, `~/.config/mango/wallpaper/wallpaper.png`); None =>
-//!        opaque-black fallback (lock still works, clock still shows).
-//!      - Redraw on: lock request, each typed character (dots), each
-//!        minute boundary (clock rollover), and every animation frame
-//!        during lock-in / unlock-out (see the frame-timer note below).
-//!      - `LockscreenData::video_defaults()` reproduces the held lock
-//!        frame f0620 ("00:05", 0 dots) for screenshot diffing.
-//!      - NOTE: `video_defaults()` renders the HELD frame (f0620), but
-//!        the video's typing actually starts ~f0620 (2 dots visible in
-//!        the pill-f620 crop; pill begins growing f0621), not f0625 as
-//!        the scope doc's timeline says — see the iter13 builder note.
-//!        The held frame is still the right screenshot-diff target
-//!        (dots=0 is the pre-typing state at f0607-f0619).
-//!
-//! ---------------------------------------------------------------------------
-//! COMPOSITOR WORK BEYOND THIS FILE — documented precisely, NOT faked:
-//! ---------------------------------------------------------------------------
-//!   (a) Session-lock surface: the lockscreen needs an
-//!       `ext-session-lock-v1` surface (fullscreen, per output) in the
-//!       SAME process as the island, so the giant clock, pill and both
-//!       morphs are drawn by one renderer (lockscreen-scope.md Q1 proves
-//!       the video's lock is drawn by the shell itself, not hyprlock).
-//!       What is missing in this crate today: no ext-session-lock
-//!       binding at all. Next step is to check whether
-//!       smithay-client-toolkit 0.19 (already in Cargo.toml) exposes
-//!       `ext-session-lock-v1`; if not, a raw wayland-client protocol
-//!       binding + generated code from wayland-protocols is needed.
-//!       The wl_shm fullscreen canvas this module draws into is the
-//!       same buffer pattern main.rs already uses for the pill.
-//!   (b) PAM auth: a PAM binding (e.g. the `pam` crate — NOT yet in
-//!       Cargo.toml) with a dedicated `/etc/pam.d/dynamite` entry
-//!       falling back to `login`; the password string must be cleared
-//!       on unlock AND on failure; on PAM success run the unlock
-//!       animation (~250 ms) FIRST, then release the lock. This module
-//!       draws dots for a password length it is given — it never reads
-//!       a password and never talks to PAM.
-//!   (c) Lazy creation / RAM: the lock surface + its fullscreen buffer
-//!       (~6.0 MB for 1504x1003 Argb8888) + the decoded wallpaper
-//!       (~6 MB at logical size, ~13 MB at 2256x1504) must be created
-//!       LAZILY on first lock and kept only while locked, so the idle
-//!       RAM delta is zero and the while-locked delta stays well under
-//!       the 100 MB budget. The island's own idle PSS (~4 MB) is
-//!       unaffected. Do NOT pre-create the lock surface at startup.
-//!   (d) Frame timer for the morphs: the island today draws only on
-//!       state change (calloop, no frame timer). Lock-in (~300 ms) and
-//!       unlock-out (~250 ms) need a ~30 fps calloop timer active ONLY
-//!       during the animation, feeding elapsed ms into
-//!       `LockAnim::lock_in` / `unlock_out` and redrawing each tick.
-//!       Without it the morphs degrade to instant cuts — the same
-//!       smoothness defect the island already has for state changes.
-//!   (e) Triggers: island power-menu Lock button + a new IPC word
-//!       (e.g. `lock` in `IslandState::from_word` / the socket dispatch)
-//!       + a Mango keybind (e.g. Super+L) spawning that IPC call +
-//!       swayidle (`timeout 300 ... before-sleep ...`, 300 s is a
-//!       placeholder — Alexandre has not specified an idle timeout).
-//!       Keep swaylock installed and bound to nothing as the fallback
-//!       until the crash-while-locked path is tested once on the Surface.
-//!   (f) Pre-build check (read-only, on the Surface):
-//!       `wayland-info | grep -A2 ext_session_lock` — Mango is
-//!       dwl-lineage wlroots, which implements ext-session-lock-v1, but
-//!       verify it is actually advertised before writing (a).
-//!
-//! TYPECHECK NOTE (honest): this file was written in the Muse VM, which
-//! has NO cargo/rustc and no vendored fontdue — it could NOT be
-//! typechecked here and must NOT be assumed to compile. Every fontdue
-//! call (`rasterize`, `horizontal_line_metrics`, `Metrics` fields) is
-//! copied verbatim from power_panel.rs / controlcenter_panel.rs, which
-//! DO compile on the Surface; the integrator must run
-//! `cargo check --offline` on the Surface after adding `mod lockscreen;`
-//! and fix any drift. Do NOT build this file on the Surface from this
-//! task — wiring is a separate integrator step.
+//! The registered wallpaper is zoomed 1.030 times and stays sharp under a
+//! vertical veil. Only the clock glyphs sample the blurred, colour-adjusted
+//! wallpaper. The native preview capsule scales from 52 x 30 at 1080 pixels
+//! high, with 6.7-pixel dots on a 12-pixel pitch. A date is optional and defaults
+//! to absent, matching the reference. Lock animation helpers are for the preview;
+//! the maintained real locker starts without decorative transition effects.
 
 use std::sync::OnceLock;
 
@@ -1269,6 +1107,22 @@ pub fn draw_lockscreen(
     wallpaper: Option<&[u8]>,
     data: &LockscreenData,
 ) {
+    draw_frame(canvas, w, h, font, shared_icon_font, wallpaper, data, true);
+}
+
+/// Wallpaper and clock for a real locker; its password widget owns the pill.
+pub fn draw_lock_background(
+    canvas: &mut [u8], w: u32, h: u32, font: &Font,
+    wallpaper: Option<&[u8]>, data: &LockscreenData,
+) {
+    draw_frame(canvas, w, h, font, None, wallpaper, data, false);
+}
+
+fn draw_frame(
+    canvas: &mut [u8], w: u32, h: u32, font: &Font,
+    shared_icon_font: Option<&Font>, wallpaper: Option<&[u8]>,
+    data: &LockscreenData, show_pill: bool,
+) {
     let s = scale(h);
     let anim = data.anim;
     let l = lockscreen_layout(w, h, data.dots, font, &data.time_hhmm);
@@ -1305,7 +1159,9 @@ pub fn draw_lockscreen(
     };
 
     // --- (4) Lock pill (idle glyph / typing dots / wrong offset). ---
-    draw_lock_pill(canvas, w, h, shared_icon_font, data, s);
+    if show_pill {
+        draw_lock_pill(canvas, w, h, shared_icon_font, data, s);
+    }
 
     // --- (5) Date line — NOT in the video; drawn only if requested. ---
     if let Some(date) = &data.date_line {

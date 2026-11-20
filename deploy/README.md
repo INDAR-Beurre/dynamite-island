@@ -78,8 +78,35 @@ Speech is sent to `api.groq.com` for transcription and needs a Groq API key
 then check device permissions. The installer never changes groups or loads
 kernel modules for you.
 
-## The lock screen is not a lock
+## Dynamite session lock
 
-It is a visual replica. It does not authenticate, does not grab the keyboard,
-and does not use the `ext_session_lock_v1` protocol. **Do not bind it to a locking chord and
-do not run it at boot.**
+The panel's `lockscreen` command and its Power menu open a **preview only**.
+For an actual lock, use the separate launcher below. It uses Hyprlock's Wayland
+session lock and native password input, with Dynamite's wallpaper and clock.
+The clock refreshes once a minute; the launcher only runs while locked.
+
+Requirements: a release build of the panel, MangoWM with `mmsg`, Python 3,
+Hyprlock (tested with 0.9.7), and an already configured Howdy Next installation
+(tested configuration for 3.4.2). From the checkout root, install the dedicated
+service if it doesn't already exist, then check dependencies without locking:
+
+```sh
+sudo install -o root -g root -m 644 deploy/dynamite-lock.pam /etc/pam.d/dynamite-lock
+python3 deploy/dynamite-lock.py --check
+```
+
+This service tries Howdy, then includes the normal `login` PAM stack for
+password fallback. It does not change the greeter, swaylock, or account setup.
+The service does not enable Howdy's synthetic-keypress workaround.
+
+Run the first real test only while you're at the machine and know your login
+password. Run `python3 deploy/dynamite-lock.py --lock` once and test face unlock.
+Press Enter with the field empty if Howdy is waiting for the prompt. Lock
+again with your face out of view, let Howdy time out, and verify your password
+unlocks it. The headless regression test uses fixture authentication; it
+cannot verify your actual camera or credentials.
+
+Only after both work, replace the command in your existing MangoWM lock binding
+with `python3 /absolute/path/to/rust-island-build/deploy/dynamite-lock.py --lock`.
+Do not add a duplicate binding or enable lock-at-boot during testing. To revert,
+restore your old binding. `deploy/install.sh` does not touch lock bindings or PAM.

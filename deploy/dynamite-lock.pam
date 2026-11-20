@@ -1,0 +1,5 @@
+#%PAM-1.0
+# Facial recognition first; the existing password stack remains the fallback.
+auth       sufficient   pam_howdy.so
+auth       include      login
+account    include      login
