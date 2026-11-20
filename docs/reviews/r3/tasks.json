@@ -52,7 +52,10 @@
       "status": "starting",
       "link": "[Council r3 #5: idle-performance](t3-thread://v2/699b4b1c-474b-4871-82f1-d1eb0c374204/thread:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3A4a130cef-d294-4018-8cd2-f0c5a20f63c0)",
       "isError": false,
-      "reviewState": "unusable original; excluded"
+      "reviewState": "unusable original; excluded",
+      "effectiveReviewState": "verdict delivered by retry 5b; original excluded",
+      "score": 6,
+      "verdict": "verdict-5.json"
     },
     {
       "slot": 6,

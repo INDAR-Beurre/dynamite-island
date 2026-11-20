@@ -98,7 +98,9 @@
       "pendingApproval": null,
       "waitTimedOut": false,
       "next": "Completion wakes this thread. Do not wait on it or poll it. Continue other work, and end your turn when none is left.",
-      "reviewState": "awaiting wake"
+      "reviewState": "verdict delivered",
+      "score": 6,
+      "verdict": "verdict-5.json"
     },
     {
       "slot": 11,
