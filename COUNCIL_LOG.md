@@ -2426,3 +2426,30 @@ REMAINING, blocked on the wedged compositor (owner must restart mango himself):
   narrow): all need halo_check/measure/scorecard against a real screen.
 - memory:_POOL gate (always-on mic / SIGTERM path) Lands verified in c5384a8
   composite needs a dictation run with panel interaction when a display returns.
+
+## r2 wrap — batch closed at commit 5a1077d
+
+Scores: 4,5,6,6,7,7,7,7,7,7,7,7.5,8,8,8 — **median 7 vs gate >=9: round 2 not
+advanced** (r1 median was 4.5). All 15 slots arrived with file:line evidence;
+five earlier parent claims were refuted by critics and are recorded above.
+
+Fixed this batch, each with a test or a measurement:
+- swaylock spawn (BLOCKER) -> enter_lockscreen preview, mutation-tested guard
+- generated autostart mode 644 -> 755; install.sh --check side effects removed
+- CC glyphs unscaled -> scale_of placement, coverage test at 3 scales
+- keyboard steal in 5 menu states -> keyboard_mode_for + TYPING_STATES
+- search-field/pill 67x11 px strip -> field wins below pill centre only
+- lost dictation_end wedge -> dictation_stale, 1.5 s, mutation-checked
+- swaybg pkill -> may_restart_swaybg ownership rule, 4 tests
+- idle CPU -> watch-stream + park_while_closed; 1.050% -> 0.000% measured
+- leak gate -32.2 MB artefact -> collapsed baseline, 19/19 selftest
+- both unfalsifiable perf guards -> ratio 0.35 (mutation-checked) and 250 ms
+
+Blocked on the wedged compositor (doctor: restart mango, then
+docs/restart-checklist.md):
+- live load_leak on the repaired gate
+- visual deltas #2 (panel fill grey 9 vs 0; Power text 35-50% large),
+  #3 (lock capsule 1.098x wide / 0.886x tall, dot dia 1.352x),
+  #1 (pill ~3.9% narrow)
+- halo_check / render_check / scorecard rows on the new binary
+- the wheels-Esc interaction question (unverified mechanism, do not code it)
