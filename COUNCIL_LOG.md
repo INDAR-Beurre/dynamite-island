@@ -2548,6 +2548,10 @@ started in one turn; no dispatch failure. Full task/link records are in
 
 #### Early unusable replies — excluded, not scored
 
+- #4b motion retry: `The model is temporarily unavailable.` Excluded, retry exhausted (wake chain 2t), coverage gap. No score and no third attempt. Four scored verdicts delivered, three exhausted slots, eight outstanding; no r3 gate calculation yet.
+
+- #11 GLM: `The model is temporarily unavailable.` Excluded (wake chain 2t); one #11b retry via group DeepSeek, exact task/link in `docs/reviews/r3/retries.json`. Original source untouched.
+
 - #7b also failed: `The model is temporarily unavailable.` Retry exhausted, no independent signal-safety verdict (failure chain 2t), no third dispatch.
 
 - #10b also failed: `AiError: AiError: Service temporarily at capacity (47928462-9f8e-4f27-a12f-8960e993c380)` after another plan-only message. Retry exhausted, no score; portability lens coverage is missing (failure chain 2t). No third dispatch.

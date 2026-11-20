@@ -1,5 +1,5 @@
 {
-  "reason": "Unusable originals excluded; one retry each. Retries 7 and 10 failed: coverage gaps, no scores.",
+  "reason": "Unusable originals excluded with one retry. Slots4/7/10 exhausted retries; coverage gaps, no scores.",
   "retries": [
     {
       "slot": 4,
@@ -11,7 +11,8 @@
       "retry": 1,
       "previousTaskId": "node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3A0c4bbf14-6364-42b1-ae0e-95e929a57683",
       "isError": false,
-      "reviewState": "awaiting wake"
+      "reviewState": "failed; retry exhausted; coverage gap",
+      "failure": "The model is temporarily unavailable."
     },
     {
       "slot": 7,
@@ -74,6 +75,40 @@
       "link": "[Council r3 #5b: idle-performance](t3-thread://v2/699b4b1c-474b-4871-82f1-d1eb0c374204/thread:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3Aa8c4faf4-a890-40e3-b1fc-50e214d3719f)",
       "childRunId": "run:thread:thread%3Adelegated-task%3Acommand%253Amcp%253Af7887082-e156-4a20-b6c5-f8afbef7988c%253Adelegate-task%253Aa8c4faf4-a890-40e3-b1fc-50e214d3719f:ordinal:1",
       "childNodeId": "node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3Aa8c4faf4-a890-40e3-b1fc-50e214d3719f",
+      "status": "starting",
+      "workState": "working",
+      "hasPendingChildRuns": false,
+      "latestTerminalRunId": null,
+      "latestTerminalStatus": null,
+      "latestTerminalSummary": null,
+      "latestTerminalResultContextTransferId": null,
+      "providerInstanceId": "pi",
+      "executedModel": null,
+      "options": [
+        {
+          "id": "thinking",
+          "value": "high"
+        }
+      ],
+      "summary": null,
+      "resultContextTransferId": null,
+      "hasPendingQuestion": false,
+      "pendingApproval": null,
+      "waitTimedOut": false,
+      "next": "Completion wakes this thread. Do not wait on it or poll it. Continue other work, and end your turn when none is left.",
+      "reviewState": "awaiting wake"
+    },
+    {
+      "slot": 11,
+      "retry": 1,
+      "lens": "rust-correctness",
+      "model": "magpie/group/deepseek-v4.1-flash-1017",
+      "previousTaskId": "node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3A596e05c8-a98f-4acc-81d1-c367348eaa07",
+      "taskId": "node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3Ad07ccb35-0e62-47c9-9b7c-4fbbc79bd82c",
+      "childThreadId": "thread:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3Ad07ccb35-0e62-47c9-9b7c-4fbbc79bd82c",
+      "link": "[Council r3 #11b: rust-correctness](t3-thread://v2/699b4b1c-474b-4871-82f1-d1eb0c374204/thread:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3Ad07ccb35-0e62-47c9-9b7c-4fbbc79bd82c)",
+      "childRunId": "run:thread:thread%3Adelegated-task%3Acommand%253Amcp%253Af7887082-e156-4a20-b6c5-f8afbef7988c%253Adelegate-task%253Ad07ccb35-0e62-47c9-9b7c-4fbbc79bd82c:ordinal:1",
+      "childNodeId": "node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3Ad07ccb35-0e62-47c9-9b7c-4fbbc79bd82c",
       "status": "starting",
       "workState": "working",
       "hasPendingChildRuns": false,
