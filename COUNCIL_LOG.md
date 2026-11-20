@@ -2603,6 +2603,6 @@ started in one turn; no dispatch failure. Full task/link records are in
 #### Round 4 — retry reconciliation (panel still open)
 
 - Resume audit checked the task inventory and child threads before starting replacements. No duplicate retries or live actions. Source remains frozen at `33d1b9f`.
-- Alternate-route retry: #4, #6, #7, #8, #11 and #15 exhausted their one retry with no usable verdict; #9 and #10 retries also failed before returning JSON. Eight slots are unscored coverage gaps. Provider failures are not product findings.
-- #5 performance, #12 render exactness and #13 verification integrity have one alternate-route retry each still running on FasFas DeepSeek v4.1 Flash. No more retries are authorized for exhausted slots. Exact task IDs/status are tracked in `docs/reviews/r4/tasks.json`.
-- Four scores retained ([9,9,7,9]); eight unscored gaps and three retries outstanding. No round result or gate pass.
+- #4, #5, #6, #7, #8, #9, #10, #11 and #15 have exhausted their one retry without a usable verdict; record these nine slots as unscored coverage gaps. Provider errors are not product findings.
+- Only #12 render exactness and #13 verification integrity retries remain running. No further retries are authorized for exhausted slots. Exact task IDs/status are tracked in `docs/reviews/r4/tasks.json`.
+- Four scores retained ([9,9,7,9]); nine unscored gaps and two retries outstanding. No round result or gate pass.
