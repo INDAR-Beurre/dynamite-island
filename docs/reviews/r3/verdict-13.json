@@ -1,0 +1,55 @@
+{
+  "score": 7,
+  "summary": "Read docs/r3-panel-brief.md and r3-verified-stress.log in full; read all five gate scripts line-by-line (scripts/stress/stress.py, scripts/stress/leak_gate.py, leak_shape_selftest.py, mutation_gate.py, scripts/render_check.py); reviewed the changed Rust tests at eb40eee (region sentinel src/main.rs:9751-9789, morph-damage bounds src/main.rs:9848, stage extents src/main.rs:10533, power typography src/power_panel.rs:644-655, lockscreen suite src/lockscreen.rs:1329-1656, dictation signal test tools/dictation/src/main.rs:356) plus the eb40eee stress.py diff. Ran, within slot-13 permission: cargo test --release --offline for the panel (332 passed, 0 failed, 1 ignored) and tools/dictation (103 passed, 2 ignored), leak_shape_selftest.py (19/19), py_compile on all five scripts (clean); read the supervisor script and finished its bash -n equivalent. Skipped full stress, mutation live run, and the ignored wall-time benchmark per instructions. Verdict: this is a real test apparatus, not theater — the region sentinel test is a deterministic double-sided pixel oracle, the leak gate has a selftest that pins the failure it must catch, and a mutation gate with an unmutated control run. But the headline 6179-assertion count is ~65% per-send transport checks, the redeploy classifier can mask mid-run process deaths as long as they exit 'cleanly', and the mutation gate probes only 2 of ~12 state words. Test integrity is genuinely strong on memory-damage and crashleak-shaped bugs, thin on state-machine semantics.",
+  "findings": [
+    {
+      "severity": "major",
+      "title": "guard() classifies any ≥30s clean exit as a redeploy and never fails",
+      "detail": "scripts/stress/stress.py guard(): a dead socket owner with return code 0 or 143 (or any rc in the 0..143 clean band — see exact predicate) that ran ≥30s is recorded as a REDEPLOY, re-attached, and main() prints a NOTE; it never increments fails. Counterexample: a panel bug that makes the process exit cleanly mid-stress (e.g. a panic path converted to std::process::exit(0), or a supervisor-abusive theme trigger that makes the app shut down gracefully after 40s) passes every group with zero fails while the process died N times. OOM-driven SIGKILL (137) is caught, but clean-exit death is systematically invisible to the fail counter and to the group verdict. Fix: fail (or at least bound) any redeploy inside a group, and verify the new PID's /proc inode matches the expected binary before re-attaching — currently nothing in the harness re-verifies identity, only the human-written brief does.",
+      "where": "/home/alex/rust-island-build/scripts/stress/stress.py App.guard() (~line 210-260) and main() NOTE path"
+    },
+    {
+      "severity": "major",
+      "title": "6179 assertions are ~65% transport send/receive checks, not distinct behavioral assertions",
+      "detail": "group_protocol's rapid-fire flood fires ~4000 sends and increments asserts by 1 per send, where each 'assertion' accepts EITHER ok OR backpressure-with-errno-11/105 as a pass. severity: this is a real transport check (the socket accepts without lockup), but it dominates the documented count six-to-one over the ~2179 semantic assertions across state/load/latency/liveness. The harness itself does not split the counts — only the round-3 brief does — and stress.py main() MIN_ASSERTS=1000 is computed on the combined number, so the floor could be met by transport alone if a future edit trimmed the semantic groups. Counterexample: a build that broke morph-lock detection entirely but kept the socket healthy would still report 4000+ passing 'assertions' in this group. Fix: count transport sends in a separate bucket in the TOTAL line and gate MIN_ASSERTS on the semantic bucket only.",
+      "where": "/home/alex/rust-island-build/scripts/stress/stress.py group_protocol rapid-fire loop ~lines 845-855; main() MIN_ASSERTS"
+    },
+    {
+      "severity": "minor",
+      "title": "locktype/lockback/lockwrong sub-state words have no effect verification and no mutation probe",
+      "detail": "group_state's drive() only enforces a real expectation for words in its keyword/morph sets; locktype/lockback/lockwrong 'sub-state' words fall through to an alive-only check. The mutation gate catches a dropped 'lock' morph because 'lock' is in the keyword set, but there is no mutation case for dropping the sub-state words, so a build where locktype sent back a playback-state confirmation (or nothing) would pass both the stress group and the mutation gate. The brief documents this distinction honestly, but it is still an uncovered requirement of the state machine. Fix: add a drop-locktype case to mutation_gate.py and a keyword or explicit no-op assertion for sub-state acknowledges.",
+      "where": "/home/alex/rust-island-build/scripts/stress/stress.py group_state drive(), sub-state word note; scripts/stress/mutation_gate.py cases"
+    },
+    {
+      "severity": "minor",
+      "title": "render_check.py's width oracle is the code's own declared size, not the reference",
+      "detail": "LOGICAL_W for each of the 9 states comes from IslandState::size(), so the render gate verifies internal self-consistency (declared size, ±12% painted edges, symmetry, ≥99.5% ink) rather than likeness to the creator's videos. A panel that renders the wrong width consistently — every state scaled 1.25x, say — passes unless drawing errors appear. This is an honest layering decision (fidelity is explicitly assigned to visual critics, comment in the script), and the height check is only a lower bound. Not a false pass within its stated scope, but reviewers should not read a green render_gate as reference fidelity. Fix: pin constant expected widths per state in the script (they exist in the brief) rather than importing IslandState::size().",
+      "where": "/home/alex/rust-island-build/scripts/render_check.py LOGICAL_W source and header comment"
+    },
+    {
+      "severity": "minor",
+      "title": "Leak gate never fails on transient excursions, only on net tail growth",
+      "detail": "leak_gate.py reads tail vs baseline; per-iteration excursions recorded by group_load in stress.py go into the report but cannot fail the gate regardless of size or duration. The leak_shape_selftest genuinely pins this (19/19, and it proves the old expanded-baseline arithmetic masked a +9 MB leak — growth=-23.0 under the pre-fix comparison, so the fix is real). Remaining hole: a sawtooth leak (steady climb with periodic partial drops below threshold) could pass the 8.0 MB tail bound. Deliberate design choice to separate leaks from redeploy restarts; acceptable but a known limit, and the brief says exactly this.",
+      "where": "/home/alex/rust-island-build/scripts/stress/leak_gate.py verdict(); /home/alex/rust-island-build/scripts/stress/stress.py group_load excursion recording"
+    },
+    {
+      "severity": "minor",
+      "title": "Mutation gate probes only 2 of the ~12 state words plus one latency stub",
+      "detail": "mutation_gate.py's cases are drop-calendar, drop-lock, and fake-3000ms-latency, against a state machine with a 12x12 pair matrix and many more words (power, launcher, tray, clipboard, dictation, music...). Each drop runs three times including a control pass and an inode check, so what exists is solid; but selection is thin enough that a dropped morph for music or launcher would go uncaught by the harness. Every caught run is also an in-process stub of App.send — the mutations live correctly in the harness only — so this is an honest, small canary, not full mutation coverage. Fix: parameterize the drop case over all keyword words and cycle through them.",
+      "where": "/home/alex/rust-island-build/scripts/stress/mutation_gate.py cases and docstring"
+    },
+    {
+      "severity": "minor",
+      "title": "Region sentinel test is genuinely strong; no scratch fixture needed",
+      "detail": "region_upscale_matches_full_upscale fills the ENTIRE destination with sentinel 0xA5, then for each of 7 rect shapes (including edge-clipped ones) asserts every device pixel: inside the damage rect equals the full upscale byte-for-byte, outside equals untouched 0xA5. This is a deterministic double-sided oracle — an unbounded write to any pixel outside the rect fails it with no timing dependence, and the (297,0,879,408) rect exercises the multi-threaded band path (verified reading upscale_canvas_2x_region, upscale_rows_band, and the row/col blend helpers, which mirror upscale_canvas_2x_into's exact per-pixel math). I read the code and relied on the passing full-suite run rather than duplicating this as a /tmp scratch fixture, since the test is itself the fixture and re-deriving it would only add noise. Listed as a finding to confirm it was actually checked and is NOT a false pass.",
+      "where": "/home/alex/rust-island-build/src/main.rs:9751-9789 region_upscale_matches_full_upscale; upscale_canvas_2x_region src/main.rs:658"
+    },
+    {
+      "severity": "minor",
+      "title": "Dictation signal test verifies the flag only, not signal delivery or cleanup timing",
+      "detail": "The SIGTERM/SIGINT/SIGHUP handler (src/main.rs:71 on_term, registered at src/main.rs:107-109) stores an AtomicBool and returns; save_signal_audio runs on the ordinary loop thread when the flag is observed. The test at src/main.rs:356 exercises only flag store-and-observe; real kernel signal delivery, cleanup-under-signal, and the case where a long-running synchronous transcription delays handler observation past a supervisor's kill timeout are untested. The brief says the last is a known unresolved point. This is an honest gap, not a false pass: the handler is provably async-signal-safe by reading (flag store only), and the tests that exist do pin the flag path. I did not kill, signal, or restart any process per instructions.",
+      "where": "/home/alex/rust-island-build/tools/dictation/src/main.rs:65-82,107-109,356; confirmed in cargo test run (103 passed, 2 ignored)"
+    }
+  ],
+  "what_would_make_it_a_10": "(1) Split transport vs semantic assertion counts in stress.py's TOTAL line and gate MIN_ASSERTS on the semantic bucket only, so the headline number cannot be dominated by flood sends. (2) Make any in-group classified redeploy a bounded event with binary-inode verification in re-attach, or a outright fail, so clean-exit process death can never pass silently. (3) Parameterize the mutation gate over every keyword/morph word (with a rotation or full sweep), and add a drop case for a non-keyword sub-state word like locktype. (4) Add one deterministic test for dictation signal-cleanup ordering (flag set → in-flight sync transcription path eventually calls save_signal_audio before exit) as a pure function of the flag and a simulated in-flight op. (5) Pin render_check.py widths to independent constants rather than IslandState::size(). The sentinel region test, leak-shape selftest, power typography tests, and the lockscreen numeric oracles are already at that level."
+}

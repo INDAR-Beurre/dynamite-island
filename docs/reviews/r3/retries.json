@@ -62,7 +62,9 @@
       "retry": 1,
       "previousTaskId": "node:delegated-task:command%3Amcp%3Af7887082-e156-4a20-b6c5-f8afbef7988c%3Adelegate-task%3A75484603-0b64-464e-b243-c9c0bd3d9bdc",
       "isError": false,
-      "reviewState": "awaiting wake"
+      "reviewState": "verdict delivered",
+      "score": 7,
+      "verdict": "verdict-13.json"
     },
     {
       "slot": 5,
