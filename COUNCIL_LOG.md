@@ -2399,3 +2399,30 @@ r2 #8c dictation lifecycle (group hy4) score 4. Ran cargo test for both crates: 
 - #8c restart-mid-utterance FIXED earlier in the socket handler: bars arriving
   while Collapsed now enter Dictation, because bars are sent only inside
   `if recording` and are themselves proof of a live utterance.
+
+## r2 verdicts close-out and fix batch — commits c5384a8 + f3b9080
+
+All 15 r2 slots in (one re-dispatch each for capacity death + my own bad
+interrupt, never counted in the median): scores 4,5,6,6,7,7,7,7,7,7,7,7.5,8,8,8
+=> **median 7 vs gate >= 9: round NOT advanced** (r1 was 4.5). Confidence up:
+every verdict this round arrived with file:line and measurement, and five
+earlier parent claims were REFUTED by critics (#5b: ensure_loaded stats once,
+wallpaper probe sleeps 60 s; #13: the leak gate could not see a leak).
+
+Fixed this batch by the parent (no fixer owned src/):
+- swaybg ownership rule (pure fn + 4 tests) — stops killing a foreign wallpaper setter.
+- dictation staleness gate (1.5 s, 4 tests, mutation-checked) — lost dictation_end
+  can no longer wedge the pill in Dictation forever.
+- probe_size_warn logs once instead of silently returning None on other screens.
+- search-field/pill-centre collision rule (field wins only below the pill centre).
+- leak gate: collapsed-vs-collapsed comparison in ONE shared module (see f3b9080).
+- upscale_region_perf and workspace_discs_draw_fast made falsifiable (ratio/8x).
+
+REMAINING, blocked on the wedged compositor (owner must restart mango himself):
+- re-run load_leak on the merged gate (selftest fixture arithmetic verified +9.0
+  FAIL vs old -23.0 PASS, but a live run is still owed).
+- visual deltas from #2 (upper panel fill grey 9 vs 0; Power text 35-50% large),
+  #3 (lock capsule width 1.098x, height 0.886x, dot dia 1.352x), #1 (pill ~3.9%
+  narrow): all need halo_check/measure/scorecard against a real screen.
+- memory:_POOL gate (always-on mic / SIGTERM path) Lands verified in c5384a8
+  composite needs a dictation run with panel interaction when a display returns.
