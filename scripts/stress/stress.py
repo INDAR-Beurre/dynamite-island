@@ -30,6 +30,9 @@ import sys
 import tempfile
 import time
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from leak_gate import verdict as leak_verdict   # ONE implementation (r2 #13)
+
 # ---------------------------------------------------------------- protocol
 
 STATE_WORDS = [
@@ -1043,6 +1046,7 @@ def group_load(app, out):
     problems = []
     iters = 200
     rss = []
+    base_collapsed = []
     over_run = 0          # samples in the current excursion
     over_start = 0
     over_peak = 0.0
@@ -1076,6 +1080,20 @@ def group_load(app, out):
             problems.append(f"iteration {i}: {MEM_METRIC} unreadable")
             break
         rss.append(kb)
+        # r2 #13: the growth baseline must be measured in the SAME state as
+        # the tail. rss[40:60] is sampled while panels are expanded, ~32 MB
+        # above the collapsed resting level, so comparing it to a collapsed
+        # tail printed "growth -32.2 MB" on every run and hid any smaller
+        # leak. Take a resting baseline here, past the one-time allocations
+        # (one landed at i49), then resume the cycle.
+        if i == 60:
+            app.send_drained(b"collapsed")
+            time.sleep(0.8)
+            for _ in range(6):
+                k = app.rss_kb()
+                if k is not None:
+                    base_collapsed.append(k)
+                time.sleep(0.25)
         # Assert EVERY sample, not just the last one. Critic #11: 200 counted
         # "tests" behind a single growth bound is one assertion, and it cannot
         # say which iteration leaked. The warmup window is exempt (one-time
@@ -1128,14 +1146,12 @@ def group_load(app, out):
         # +5.8 MB of "growth" on a panel flat for 160 iterations. [40:60] is
         # past every allocation observed and still early enough that a slow
         # +0.08 MB/iter leak separates from it (+11.2 MB over 200 iterations).
-        base = statistics.median(rss[40:60])
-        # Tail = the post-settle samples only. Averaging them with in-loop
-        # samples would let a long excursion drag the "resting" number up.
-        growth = (statistics.median(rss[-6:]) - base) / 1024.0
-        peak = (max(tail) - base) / 1024.0
+        # One implementation, shared with leak_shape_selftest.py (r2 #13).
+        fails_leak, growth, peak, _exc = leak_verdict(
+            rss, settled=rss[-6:], base_collapsed=base_collapsed or None)
         bound = 8.0
         out.asserts += 1
-        if growth > bound:
+        if fails_leak:
             out.fails += 1
             problems.append(
                 f"{MEM_METRIC} grew {growth:.1f} MB after warmup (bound {bound:.0f} MB)")
@@ -1144,6 +1160,9 @@ def group_load(app, out):
             f"post20={tail[0]/1024:.0f} last={tail[-1]/1024:.0f} "
             f"peak={max(tail)/1024:.0f} growth_after_warmup={growth:+.1f} "
             f"peak_delta={peak:+.1f} bound={bound:.0f}")
+        out.extra.append(
+            f"baseline={'collapsed' if base_collapsed else 'EXPANDED (untruthful)'} "
+            f"({(statistics.median(base_collapsed) if base_collapsed else statistics.median(rss[40:60]))/1024:.0f} MB)")
         out.extra.append(
             f"one-time allocations (i20-40 -> i40-60): "
             f"{(statistics.median(rss[40:60])-statistics.median(rss[20:40]))/1024:+.1f} MB")

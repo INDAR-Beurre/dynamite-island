@@ -9808,21 +9808,34 @@ mod iter108_tests {
         let dmg = clip_rect(dmg, w, h);
         let (dw, dh) = ((dmg.2 - dmg.0) as u32, (dmg.3 - dmg.1) as u32);
         let mut best = std::time::Duration::MAX;
+        let mut full = std::time::Duration::MAX;
         for _ in 0..3 {
             let t = std::time::Instant::now();
             upscale_canvas_2x_region(&src, w, h, &mut dst, dmg);
             best = best.min(t.elapsed());
+            // Same process, same load: the full-stage cost is the
+            // denominator that makes this guard about the CODE.
+            let t = std::time::Instant::now();
+            let full_dmg = clip_rect((0, 0, w as i32, h as i32), w, h);
+            upscale_canvas_2x_region(&src, w, h, &mut dst, full_dmg);
+            full = full.min(t.elapsed());
         }
+        let ratio = best.as_secs_f64() / full.as_secs_f64().max(1e-9);
         eprintln!(
-            "morph-region 2x upscale best of 3: {best:?} over {dw}x{dh} = {:.1}% of the stage",
+            "morph-region 2x upscale best of 3: {best:?} over {dw}x{dh} \
+             ({:.1}% of the stage), full stage {full:?}, ratio {ratio:.3}",
             100.0 * (dw * dh) as f32 / (w * h) as f32
         );
-        // Freeze a real budget: 15 ms leaves headroom for a loaded
-        // machine while still failing loudly if the region ever grows
-        // back into a full-stage upscale (61 ms measured on this box).
+        // r2 #5b/#11/#13: the old absolute 15 ms bound failed at 16.14 ms
+        // under load 17 and passed at 10.38 ms on the SAME binary, so it
+        // described the box, not the code. The regression it exists to
+        // catch is the region growing back into a full-stage upscale,
+        // which drives this ratio to 1.0 regardless of load. Measured
+        // ~0.1 here; 0.35 leaves room for a smaller future damage rect.
         assert!(
-            best.as_millis() < 15,
-            "region upscale took {best:?} over {dw}x{dh}, budget 15 ms"
+            ratio < 0.35,
+            "region upscale is {ratio:.3} of a full-stage upscale \
+             ({best:?} vs {full:?}) over {dw}x{dh} -- the damage bound is gone"
         );
     }
 
@@ -10350,7 +10363,12 @@ mod iter109_tests {
         }
         let el = t.elapsed();
         eprintln!("20x draw_workspace_circles_stage: {el:?}");
-        assert!(el.as_millis() < 1000, "disc draw took {el:?} for 20 calls");
+        // r2 #5b: 1000 ms against a measured 30.9 ms was 32x slack -- it
+        // could not catch a slowdown. 250 ms is ~8x the measured cost:
+        // tight enough to catch the order-of-magnitude regression it was
+        // written for (the removed supersampled shadow, ~170k SDF
+        // evals/frame), loose enough to survive a loaded box.
+        assert!(el.as_millis() < 250, "disc draw took {el:?} for 20 calls");
     }
 
     /// Preview strip for the eye check: the four discs at screen

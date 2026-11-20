@@ -13,45 +13,9 @@ This pins that behaviour against synthetic series of known shape.
 import statistics
 import sys
 
-M = 1024
-BOUND = 8.0
-
-
-def verdict(rss, settled=None):
-    """(fails, growth_mb, peak_mb, excursions) — mirrors group_load.
-
-    `settled` models the six samples group_load takes AFTER driving the panel
-    back to `collapsed`. Without it the verdict measures wherever the loop
-    happened to stop: a real run ended with a lock surface still up and
-    reported +11.6 MB on a panel that rests at 67 MB.
-    """
-    tail_all = rss[20:]
-    # The baseline is the SETTLED region [40:60], not the whole tail (a slow
-    # leak raises its own median and hides itself: +0.08 MB/iter read as
-    # +6.4 MB there) and not [20:40] either (a real run allocated once at i49,
-    # so [20:40] sat below the step and called +5.8 MB of nothing "growth").
-    # [40:60] is past every allocation observed and still early enough that a
-    # slow leak separates from it.
-    base = statistics.median(rss[40:60])
-    tail = settled if settled is not None else rss[-6:]
-    growth = (statistics.median(tail) - base) / M
-    peak = (max(tail_all) - base) / M
-    excursions = []
-    run = start = 0
-    pk = 0.0
-    for i in range(20, len(rss)):
-        ex = (rss[i] - base) / M
-        if ex > BOUND:
-            if run == 0:
-                start = i
-            run += 1
-            pk = max(pk, ex)
-        elif run:
-            excursions.append((start, run, pk))
-            run = pk = 0
-    if run:
-        excursions.append((start, run, pk))
-    return (1 if growth > BOUND else 0), growth, peak, excursions
+import os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from leak_gate import verdict, M, BOUND   # ONE implementation, not a copy
 
 
 def S(*parts):
@@ -96,6 +60,25 @@ SETTLE_CASES = [
 ]
 
 
+# --- r2 #13: expanded baseline vs collapsed tail hid a real leak ---------
+# The loop cycles lock/themes/CC, so rss[40:60] sits ~32 MB ABOVE the
+# collapsed resting level. Comparing that to a collapsed tail printed
+# "growth -32.2 MB" on every run, and a genuine +5 MB leak vanished inside
+# the offset. With a collapsed baseline the same series must FAIL.
+STATE_CASES = [
+    ("expanded base, collapsed tail, FLAT",
+     S((1, 62), (199, 95)), [63 * M] * 6, [63 * M] * 6, 0),
+    # +5 MB is INSIDE the 8 MB tolerance, so the gate passes it by design.
+    # Pinned so nobody "fixes" the bound without reading this.
+    ("expanded base, collapsed tail, +5MB within tolerance",
+     S((1, 62), (199, 95)), [68 * M] * 6, [63 * M] * 6, 0),
+    ("expanded base, collapsed tail, +9MB LEAK",
+     S((1, 62), (199, 95)), [72 * M] * 6, [63 * M] * 6, 1),
+    ("expanded base, collapsed tail, +12MB LEAK",
+     S((1, 62), (199, 95)), [75 * M] * 6, [63 * M] * 6, 1),
+]
+
+
 def main():
     bad = 0
     for name, rss, want in CASES:
@@ -103,7 +86,8 @@ def main():
             print(f"BAD FIXTURE {name}: {len(rss)} samples, expected 200")
             bad += 1
             continue
-        fails, g, peak, exc = verdict(rss)
+        base_rest = statistics.median(rss[40:60])
+        fails, g, peak, exc = verdict(rss, base_collapsed=[base_rest] * 6)
         ok = fails == want
         bad += 0 if ok else 1
         tag = "ok " if ok else "BAD"
@@ -112,7 +96,8 @@ def main():
               f"(want {'FAIL' if want else 'PASS'})")
     total = len(CASES)
     for name, rss, settled, want in SETTLE_CASES:
-        fails, g, peak, exc = verdict(rss, settled)
+        fails, g, peak, exc = verdict(rss, settled,
+                                      base_collapsed=[statistics.median(rss[40:60])] * 6)
         ok = fails == want
         bad += 0 if ok else 1
         total += 1
@@ -120,6 +105,23 @@ def main():
         print(f"{tag} {name:34s} growth={g:+6.1f} peak={peak:+6.1f} "
               f"-> {'FAIL' if fails else 'PASS'} "
               f"(want {'FAIL' if want else 'PASS'})")
+    for name, rss, settled, base_c, want in STATE_CASES:
+        fails, g, peak, exc = verdict(rss, settled, base_collapsed=base_c)
+        ok = fails == want
+        bad += 0 if ok else 1
+        total += 1
+        tag = "ok " if ok else "BAD"
+        print(f"{tag} {name:34s} growth={g:+6.1f} peak={peak:+6.1f} "
+              f"-> {'FAIL' if fails else 'PASS'} "
+              f"(want {'FAIL' if want else 'PASS'})")
+    # And prove the OLD arithmetic really did hide it: same leak, expanded
+    # baseline. If this ever stops reading negative, the fixture is wrong.
+    _, g_old, _, _ = verdict(STATE_CASES[2][1], STATE_CASES[2][2])
+    ok = g_old < 0
+    bad += 0 if ok else 1
+    total += 1
+    print(f"{'ok ' if ok else 'BAD'} old expanded-baseline arithmetic still hides it "
+          f"(growth={g_old:+.1f}, want < 0)")
     print(f"\n{total - bad}/{total} assertions pass")
     return 1 if bad else 0
 
