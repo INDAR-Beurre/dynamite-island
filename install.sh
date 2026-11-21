@@ -5,6 +5,7 @@ REPO_URL="${DYNAMITE_REPO:-https://github.com/INDAR-Beurre/dynamite-island.git}"
 INSTALL_DIR="${DYNAMITE_DIR:-$HOME/.local/share/dynamite-island}"
 
 echo "==> Dynamite Island installer"
+echo "    NOTE: Built and tested for MangoWM only."
 
 missing=()
 for cmd in git cargo cc pkg-config; do

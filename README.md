@@ -13,6 +13,9 @@ Single binary · Direct `wlr-layer-shell` · Zero GTK / Qt / QML · ~30–45 MB 
 
 </div>
 
+> [!WARNING]
+> **MangoWM Only:** Dynamite Island is built and tested specifically for **MangoWM** (`0.18.3`). Workspace tracking (`mmsg`), display scaling (`~/.config/mango/monitor.conf`), wallpaper frost, and all dotfiles below target MangoWM. Other `wlr-layer-shell` compositors are **not supported**.
+
 ---
 
 ## ⚡ One-Line Install
@@ -74,6 +77,44 @@ printf 'controlcenter' | socat - UNIX-SENDTO:"$XDG_RUNTIME_DIR/dynamite-rust.soc
 ```
 
 Supported states: `collapsed`, `controlcenter`, `notifications`, `displays`, `music`, `calendar`, `themes`, `clipboard`, `wallpapers`, `lockscreen`, `unlock`, `dictation_start`, `dictation_end` ([full contract](docs/socket-contract.md)).
+
+---
+
+## 📁 Copy Dotfiles (Manual Setup)
+
+Prefer to wire up your MangoWM dotfiles by hand instead of running `./deploy/install.sh`? Copy these snippets into your `~/.config/mango/` files (replace `$HOME/.local/share/dynamite-island` if you cloned elsewhere):
+
+### 1. Keybinds — `~/.config/mango/bind.conf`
+```ini
+bind=SUPER,space,spawn,/home/YOUR_USER/.local/share/dynamite-island/target/release/dynamite-rust launcher
+bind=SUPER,v,spawn,/home/YOUR_USER/.local/share/dynamite-island/target/release/dynamite-rust clipboard
+```
+
+### 2. Layer Rules — `~/.config/mango/rule.conf`
+```ini
+layer_rule=no_blur:1,no_shadow:1,no_animation:1,layer_name:dynamite-rust
+layer_rule=no_blur:1,no_shadow:1,layer_name:swaync-notification-window
+```
+
+### 3. Autostart — `~/.config/mango/autostart.sh`
+```sh
+~/.local/share/dynamite-island/target/release/dynamite-rust >/dev/null 2>&1 &
+```
+
+### 4. SwayNC (Optional) — `~/.config/mango/swaync/config.jsonc`
+Prevent duplicate corner popups when your brightness/volume scripts use `notify-send`:
+```jsonc
+"notification-visibility": {
+  "ignore-brightness": {
+    "state": "ignored",
+    "summary": "Helligkeit|Bildschirm ausgeschaltet"
+  },
+  "ignore-volume": {
+    "state": "ignored",
+    "summary": "Lautstärke|Stummgeschaltet"
+  }
+}
+```
 
 ---
 
