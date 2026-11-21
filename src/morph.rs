@@ -1,88 +1,9 @@
-//! Morph animation for dynamite-rust — Dynamic Island expand/collapse.
+//! Geometry and content timing for the island's capsule transitions.
 //!
-//! Pure geometry + opacity math. **No dependencies** (no smithay, no
-//! fontdue, no Wayland): this file compiles standalone with
-//! `rustc --edition 2021 --crate-type lib morph.rs` and its unit tests run
-//! with `rustc --edition 2021 --test morph.rs`.
-//!
-//! # Design (see `iterations/morph-design-iter9.md` for the full write-up)
-//!
-//! One morph = 233 ms interpolation between two geometries
-//! `(width, height, corner_radius)` plus a staggered two-phase content
-//! cross-fade. The reference has a ~150 ms, ~1% overshoot, but the
-//! overshoot factors in this build are disabled, so the live morph ends
-//! at the 233 ms growth endpoint without an empty settle tail.
-//! CORRECTION (iter10 integrator): an earlier draft of this header
-//! claimed collapse is the EXACT TIME-REVERSE of expand (geometry and
-//! both opacities). That identity cannot hold with role-based fade
-//! windows: the windows are anchored to the start of each morph
-//! (outgoing raw [0, 0.35], incoming eased [0.5, 1]), so no smoothstep
-//! pair satisfies outgoing_col(t) == incoming_exp(160-t) for all t (it
-//! would need a + b == 1 AND a(1-b) == 0). The role-based timing is also
-//! the right UX: a collapse must fade the LEAVING content out early and
-//! the ARRIVING clock in late — the literal time-reverse would fade the
-//! clock in early. So collapse is the same 160 ms machine with roles
-//! swapped, and the unit test now asserts the true properties
-//! (endpoints, monotonic shrink, no dead band, incoming fully in at
-//! 160 ms).
-//!
-//! RETUNE (iter112): 400 -> 160 ms, EaseOutCubic kept. The live path
-//!   (main.rs begin_morph) never used this constant — it uses config
-//!   anim_ms (400 in the live config); both are retuned together so
-//!   the module contract and the live behaviour agree again. Measured
-//!   v0.50 settle (grim burst, pixel-identical criterion): expand
-//!   350-454 ms, collapse 505-616 ms; the collapse tail is a faint
-//!   post-morph pill refresh, not morph geometry (see
-//!   iterations/rust112/morph-fix-iter112.md). 160 ms nominal puts
-//!   the measured settle at ~200 ms, inside the 130-230 ms reference
-//!   band, with headroom for the 16 ms timer chain + draw/commit.
-//! - Size: 90x24 -> target, continuously, on an eased curve (NOT linear).
-//!   r1d §2: eased curve is EaseOutQuad; after the 233 ms growth the
-//!   panel overshoots to `to * (1 + OVERSHOOT)` and decays back over
-//!   SETTLE_MS on dimensions that GREW. Shrinking dimensions never
-//!   exceed their endpoints (reference shows no undershoot), so the
-//!   ease-out-back/spring paths stay unwired.
-//! - Corner radius: 12 -> 20, same eased progress.
-//! - Top edge pinned at the 15 px gap; centre x stays 752 (the layer is
-//!   TOP-anchored and horizontally unanchored, so the compositor re-centres
-//!   on every `set_size` — this module only interpolates the size).
-//! - Outgoing content scales 1.0 -> 0.80 and fades 1 -> 0 over raw time
-//!   progress 0 -> 0.35 (first ~56 ms). Incoming content fades 0 -> 1
-//!   over EASED progress 0.5 -> 1.0 — i.e. it starts when the shell is
-//!   half-grown (~66 ms wall clock on the ease-out cubic) and reaches
-//!   ~0.32 by 80 ms, ~0.83 by 100 ms, ~0.97 by ~120 ms (iter33:
-     //!   the fade starts only once the shell is 80% grown, so content is
-     //!   never sliced by the capsule edge — the 120 ms frame used to show
-     //!   only "55" / "vember 13"). The content grows WITH the shell:
-//!   there is NO dead band (iter18 S1 fix — critic-pickers-iter16 S1,
-//!   critic-animation-iter16 §2.1: the old raw window [0.625, 1] held
-//!   content until the shell was ~99% grown, so burst frame 2 was a
-//!   full-width empty black slab). The outgoing window stays on RAW time
-//!   progress: its wall-clock timing ("first ~56 ms") is what the burst
-//!   measurements pinned (S-1 tests below), and eased progress would end
-//!   it at ~21 ms raw. The two windows overlap in raw ~0.21..0.35 — a
-//!   true cross-fade, both contents faint at once; the compositor takes
-//!   the per-channel max, so nothing muddies.
-//! - The capsule itself is always fully opaque; only *contents* fade.
-//! - Progress is wall-clock based (`Instant`), never frame-count based:
-//!   a late frame skips ahead, it never drifts the animation long.
-//!
-//! # Non-goals (explicit)
-//!
-//! - **Lockscreen morphs are NOT this.** The lock sequence (scrim 100 ms in,
-//!   giant clock ~130 ms in / ~230 ms out, scrim 170 ms out, scrim-first
-//!   ordering) has different timing and sequencing — see
-//!   `analysis/lockscreen-scope.md`. Do not call `Morph::island_expand()` /
-//!   `island_collapse()` for the lockscreen, and do not reuse the 160 ms
-//!   constants there. `Morph` is generic over duration/easing, so lock code
-//!   may reuse the *type* with its own durations, but only as a dumb
-//!   interpolator with its own phase sequencing.
-//! - This module draws nothing and knows nothing about Wayland, layer
-//!   surfaces, `IslandState`, or fonts. The integrator (see §6 of the design
-//!   doc) owns: the calloop 16 ms timer, `set_size` + commit per frame, the
-//!   morph-aware `draw()` variant, and threading an `alpha` through the
-//!   panel functions. Endpoints come from `IslandState::size()`/`radius()`
-//!   at morph start — they are NOT duplicated here.
+//! The live pill uses a damped spring with a small delay between width and
+//! height, bounded overshoot, and rounded corners that soften during motion.
+//! Hover uses the same spring and preserves velocity when the pointer reverses.
+//! This module has no drawing or Wayland dependencies; its tests run standalone.
 
 use std::time::{Duration, Instant};
 
@@ -91,6 +12,57 @@ use std::time::{Duration, Instant};
 /// growth at 60 fps; the live config's 160 ms produced only 2-3 poses —
 /// the motion reads as a jump-cut, which the owner calls "laggy").
 pub const MORPH_DURATION_MS: u64 = 233;
+
+pub const SPRING_DURATION_MS: u64 = 560;
+const SPRING_ZETA: f32 = 0.58;
+const SPRING_OMEGA: f32 = 28.0;
+pub const SPRING_EASING: Easing = Easing::Spring { zeta: SPRING_ZETA, omega: SPRING_OMEGA };
+
+/// An analytic spring: retargeting keeps both position and momentum.
+#[derive(Clone, Debug)]
+pub struct Spring {
+    value: f32,
+    velocity: f32,
+    target: f32,
+    start: Instant,
+}
+
+impl Spring {
+    pub fn new(value: f32) -> Self {
+        Self { value, velocity: 0.0, target: value, start: Instant::now() }
+    }
+
+    pub fn retarget(&mut self, target: f32, now: Instant) {
+        if target != self.target {
+            let (value, velocity) = self.sample(now);
+            self.value = value;
+            self.velocity = velocity;
+            self.target = target;
+            self.start = now;
+        }
+    }
+
+    pub fn is_done(&self, now: Instant) -> bool {
+        (self.value == self.target && self.velocity == 0.0)
+            || now.saturating_duration_since(self.start) >= Duration::from_millis(SPRING_DURATION_MS)
+    }
+
+    pub fn sample(&self, now: Instant) -> (f32, f32) {
+        if self.is_done(now) {
+            return (self.target, 0.0);
+        }
+        let t = now.saturating_duration_since(self.start).as_secs_f32();
+        let decay = SPRING_ZETA * SPRING_OMEGA;
+        let frequency = SPRING_OMEGA * (1.0_f32 - SPRING_ZETA * SPRING_ZETA).sqrt();
+        let a = self.value - self.target;
+        let b = (self.velocity + decay * a) / frequency;
+        let (sin, cos) = (frequency * t).sin_cos();
+        let displacement = a * cos + b * sin;
+        let envelope = (-decay * t).exp();
+        (self.target + envelope * displacement,
+         envelope * (frequency * (-a * sin + b * cos) - decay * displacement))
+    }
+}
 
 /// Settle tail after the growth phase, on dimensions that GREW. The live
 /// overshoot factors below are zero, so geometry is already at its target
@@ -152,11 +124,7 @@ pub enum Easing {
     /// One-line switch if critics judge the default too flat — only on
     /// burst-frame evidence, never on a hunch.
     EaseOutBack,
-    /// True underdamped harmonic oscillator, normalised to settle at 1:
-    /// `1 - e^(-zwt) * (cos(wd*t) + z/sqrt(1-z^2) * sin(wd*t))`.
-    /// Provided for experiments / iter10. NOT wired: it overshoots and
-    /// oscillates, so it needs the non-monotonic-size handling discussed
-    /// in design doc §2.1(2) before anyone turns it on.
+    /// True underdamped harmonic oscillator with an exact, quiet landing.
     Spring { zeta: f32, omega: f32 },
     /// For unit tests only — asserts the window math without the easing
     /// curve in the way. **Never use in production.**
@@ -181,16 +149,16 @@ impl Easing {
                 1.0 + c3 * (p - 1.0).powi(3) + c1 * (p - 1.0).powi(2)
             }
             Easing::Spring { zeta, omega } => {
-                // Normalised underdamped step response, evaluated at time
-                // t = p * MORPH_DURATION. zeta < 1 required; clamp the
-                // caller out of the overdamped regime.
+                // Underdamped step response; blend the last rebound to rest.
+                // Clamp the caller out of the overdamped regime.
                 let zeta = zeta.clamp(0.05, 0.95);
-                let t = p * MORPH_DURATION_MS as f32 / 1000.0;
+                let t = p * SPRING_DURATION_MS as f32 / 1000.0;
                 let wd = omega * (1.0 - zeta * zeta).sqrt();
                 let exp = (-zeta * omega * t).exp();
                 let phase = wd * t;
-                1.0 - exp
-                    * (phase.cos() + (zeta / (1.0 - zeta * zeta).sqrt()) * phase.sin())
+                let response = 1.0 - exp
+                    * (phase.cos() + (zeta / (1.0 - zeta * zeta).sqrt()) * phase.sin());
+                response + (1.0 - response) * smoothstep(0.8, 1.0, p)
             }
         }
     }
@@ -255,7 +223,7 @@ pub struct MorphFrame {
     pub width: f32,
     pub height: f32,
     pub radius: f32,
-    /// Eased progress, 0..1 (1.0 exactly when done, for the default easing).
+    /// Eased progress; the live spring can overshoot 1 before settling.
     pub progress: f32,
     /// Raw time progress, 0..1 (for logging / tests).
     pub raw_progress: f32,
@@ -471,6 +439,23 @@ impl Morph {
         let raw = raw.clamp(0.0, 1.0);
         let p = self.easing.apply(raw);
         let mut geom = self.from.lerp(self.to, p);
+        if matches!(self.easing, Easing::Spring { .. }) {
+            // Bound bounce by the target size so collapsing never crosses zero.
+            let dimension = |from: f32, to: f32, progress: f32, limit: f32| {
+                if progress <= 1.0 {
+                    from + (to - from) * progress.max(0.0)
+                } else {
+                    to + (to - from).signum() * (progress - 1.0)
+                        * (to - from).abs().min(to * limit)
+                }
+            };
+            let height_p = Easing::Spring { zeta: 0.64, omega: 23.0 }.apply(raw);
+            geom.width = dimension(self.from.width, self.to.width, p, 0.20).max(1.0);
+            geom.height = dimension(self.from.height, self.to.height, height_p, 0.35).max(1.0);
+            let softness = (std::f32::consts::PI * raw).sin() * (-3.0 * raw).exp();
+            geom.radius = (geom.radius + geom.width.min(geom.height) * 0.32 * softness)
+                .clamp(0.0, geom.width.min(geom.height) / 2.0);
+        }
         // r1d §2: after growth, growing dims swell past the target by the
         // measured overshoot factors and decay back over SETTLE_MS.
         if over > 0.0 {
@@ -483,7 +468,8 @@ impl Morph {
         }
         // Outgoing: 1 -> 0 over RAW time 0..OUTGOING_FADE_END (unchanged
         // — the burst measurements pinned this wall-clock timing).
-        let out_t = smoothstep(0.0, OUTGOING_FADE_END, raw);
+        let spring = matches!(self.easing, Easing::Spring { .. });
+        let out_t = smoothstep(0.0, if spring { 0.18 } else { OUTGOING_FADE_END }, raw);
         // Incoming: 0 -> 1 over EASED progress INCOMING_FADE_START..1.0
         // (iter18 S1 fix, iter33 start 0.5 -> 0.8): the fade starts
         // when the shell is 80% grown, so content is never sliced by
@@ -491,7 +477,11 @@ impl Morph {
         // it IS the shell-width progress. On the quad curve the window
         // opens at raw ~0.55 (~129 ms of 233) — the reference content
         // itself only appears in the last ~30% of the growth poses.
-        let in_t = smoothstep(INCOMING_FADE_START, 1.0, p);
+        let in_t = if spring {
+            smoothstep(0.13, 0.34, raw)
+        } else {
+            smoothstep(INCOMING_FADE_START, 1.0, p)
+        };
         // During an optional measured settle tail progress is eased-pinned
         // at 1.0, so content stays fully opaque while geometry lands.
         MorphFrame {
@@ -563,6 +553,61 @@ mod tests {
 
     fn at(start: Instant, ms: u64) -> Instant {
         start + Duration::from_millis(ms)
+    }
+
+    #[test]
+    fn hover_spring_rebounds_and_preserves_momentum_on_reversal() {
+        let mut spring = Spring::new(0.0);
+        let start = Instant::now();
+        spring.retarget(1.0, start);
+        assert_eq!(spring.sample(start), (0.0, 0.0));
+        let peak = (0..=SPRING_DURATION_MS)
+            .map(|ms| spring.sample(at(start, ms)).0)
+            .fold(0.0_f32, f32::max);
+        assert!(peak > 1.10 && peak < 1.12, "peak={peak}");
+        let reverse = at(start, 70);
+        let before = spring.sample(reverse);
+        assert!(before.1 > 0.0);
+        spring.retarget(0.0, reverse);
+        let after = spring.sample(reverse);
+        assert!((before.0 - after.0).abs() < 1e-6);
+        assert!((before.1 - after.1).abs() < 1e-5);
+        spring.retarget(0.0, at(reverse, 10));
+        let end = at(reverse, SPRING_DURATION_MS);
+        assert!(spring.is_done(end));
+        assert_eq!(spring.sample(end), (0.0, 0.0));
+    }
+
+    #[test]
+    fn spring_morph_rebounds_without_flashing_content_or_invalid_geometry() {
+        let from = Geometry::new(67.0, 25.0, 12.5);
+        let to = Geometry::new(438.0, 447.0, 20.0);
+        let start = Instant::now();
+        let m = Morph::new_at(from, to, Duration::from_millis(SPRING_DURATION_MS), SPRING_EASING, start);
+        let mut max_width = from.width;
+        let mut max_height = from.height;
+        let mut opacity = 0.0;
+        for ms in 0..=SPRING_DURATION_MS {
+            let f = m.frame_at(at(start, ms));
+            max_width = max_width.max(f.width);
+            max_height = max_height.max(f.height);
+            assert!(f.incoming_opacity >= opacity);
+            opacity = f.incoming_opacity;
+            assert!(f.radius <= f.width.min(f.height) / 2.0);
+            let closing = Morph::new_at(to, from, m.duration(), SPRING_EASING, start).frame_at(at(start, ms));
+            assert!(closing.width > 60.0 && closing.height > 20.0);
+        }
+        assert!(max_width > to.width * 1.02 && max_width < to.width * 1.025, "width={max_width}");
+        assert!(max_height > to.height * 1.025 && max_height < to.height * 1.03, "height={max_height}");
+        assert!(m.frame_at(at(start, 200)).radius > 40.0);
+        let end = m.frame_at(at(start, SPRING_DURATION_MS));
+        assert_eq!((end.width, end.height, end.radius), (to.width, to.height, to.radius));
+        assert_eq!(end.incoming_opacity, 1.0);
+        assert!(end.done);
+        let reverse_at = at(start, 90);
+        let before = m.frame_at(reverse_at);
+        let after = m.restart_from_current(reverse_at, from).frame_at(reverse_at);
+        assert_eq!((before.width, before.height, before.radius), (after.width, after.height, after.radius));
     }
 
     #[test]

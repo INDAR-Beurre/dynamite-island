@@ -644,17 +644,12 @@ def measure_on_empty_tag():
 
 
 def product_timing(src=None):
-    """(MORPH_DURATION_MS, SETTLE_MS) read from src/morph.rs.
-
-    The instrument must grade the animation the product actually runs. A
-    hardcoded 160 ms default survived the move to 233 + 150 and made every
-    settle budget 213 ms too tight (r2 critic #4).
-    """
+    """Read the live spring duration and settle tail from src/morph.rs."""
     path = src or os.path.join(os.path.dirname(os.path.dirname(
         os.path.dirname(os.path.abspath(__file__)))), "src", "morph.rs")
     text = open(path).read()
     out = []
-    for name in ("MORPH_DURATION_MS", "SETTLE_MS"):
+    for name in ("SPRING_DURATION_MS", "SETTLE_MS"):
         m = re.search(r"pub const " + name + r"\s*:\s*u64\s*=\s*(\d+)", text)
         if not m:
             raise SystemExit(f"motion: cannot read {name} from {path}")
@@ -672,7 +667,7 @@ def run():
     # drifted once already (the instrument kept grading a 160 ms morph long
     # after src/morph.rs moved to 233 + 150).
     ap.add_argument("--anim-ms", type=float, default=None,
-                    help="morph duration; default: MORPH_DURATION_MS from src/morph.rs")
+                    help="morph duration; default: SPRING_DURATION_MS from src/morph.rs")
     ap.add_argument("--settle-ms", type=float, default=None,
                     help="settle tail; default: SETTLE_MS from src/morph.rs")
     ap.add_argument("--out", default=None)

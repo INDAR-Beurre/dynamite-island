@@ -278,7 +278,7 @@ def main() -> int:
         import motion as m
 
         anim, tail = m.product_timing()
-        check("timing", "MORPH_DURATION_MS", anim, 233.0)
+        check("timing", "SPRING_DURATION_MS", anim, 560.0)
         check("timing", "SETTLE_MS", tail, 0.0)
 
         def series(heights, step_ms, onset_idx):

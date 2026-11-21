@@ -4,6 +4,7 @@
 --check and --prepare never lock or authenticate. --lock is deliberately explicit.
 """
 import argparse
+import ctypes
 import fcntl
 import json
 import os
@@ -37,6 +38,10 @@ def check():
         raise RuntimeError("the dedicated PAM service differs from deploy/dynamite-lock.pam; review it before locking")
     if not Path("/usr/lib/security/pam_howdy.so").is_file():
         raise RuntimeError("Howdy's PAM module is missing; install/configure Howdy first")
+    try:
+        ctypes.CDLL("/usr/lib/security/pam_howdy.so").pam_sm_authenticate
+    except (OSError, AttributeError) as error:
+        raise RuntimeError("Howdy's PAM module is unusable; repair its missing dependencies or authentication entry point") from error
 
 
 def monitors():

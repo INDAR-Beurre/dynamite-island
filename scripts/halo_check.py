@@ -19,7 +19,7 @@ from PIL import Image
 
 SOCK = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/run/user/1000"),
                     "dynamite-rust.sock")
-STATES = ["power", "music", "calendar", "controlcenter", "launcher",
+STATES = ["power", "music", "calendar", "controlcenter", "displays", "launcher",
           "wallpaper", "themes", "clipboard"]
 
 

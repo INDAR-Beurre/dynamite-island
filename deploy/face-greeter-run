@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+export LD_PRELOAD=/usr/lib/libgtk4-layer-shell.so
+# Portal services must receive the compositor's display, not greetd's pre-launch environment.
+dbus-update-activation-environment WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE || true
+exec /usr/local/bin/face-greeter >>"$XDG_CACHE_HOME/greeter-ui.log" 2>&1

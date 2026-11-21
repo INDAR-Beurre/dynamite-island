@@ -80,10 +80,11 @@ kernel modules for you.
 
 ## Dynamite session lock
 
-The panel's `lockscreen` command and its Power menu open a **preview only**.
-For an actual lock, use the separate launcher below. It uses Hyprlock's Wayland
-session lock and native password input, with Dynamite's wallpaper and clock.
-The clock refreshes once a minute; the launcher only runs while locked.
+The Power-menu **Lock** button and `target/release/dynamite-rust lockscreen`
+(or `lock`) use Hyprlock's authenticated Wayland session lock, native password
+input, and Dynamite's wallpaper and clock. The clock refreshes once a minute;
+the launcher only runs while locked. The separate `lock-preview` command is
+just a visual test; its `unlock` socket command cannot unlock Hyprlock.
 
 Requirements: a release build of the panel, MangoWM with `mmsg`, Python 3,
 Hyprlock (tested with 0.9.7), and an already configured Howdy Next installation
@@ -99,14 +100,44 @@ This service tries Howdy, then includes the normal `login` PAM stack for
 password fallback. It does not change the greeter, swaylock, or account setup.
 The service does not enable Howdy's synthetic-keypress workaround.
 
-Run the first real test only while you're at the machine and know your login
-password. Run `python3 deploy/dynamite-lock.py --lock` once and test face unlock.
+For a configured installation, use the new lock as the main shortcut and keep
+the old password locker on a backup shortcut:
+
+```ini
+bind=SUPER+CTRL,l,spawn,/absolute/path/to/rust-island-build/target/release/dynamite-rust lockscreen
+bind=SUPER+CTRL+SHIFT,l,spawn,swaylock -f -c 000000
+```
+
+Replace existing lines for those combinations rather than adding duplicates.
+Run the first real test only while you're at the machine and know your existing
+Linux login password. Press **Super+Ctrl+L**, or run
+`target/release/dynamite-rust lockscreen`, and test face unlock.
+
 Press Enter with the field empty if Howdy is waiting for the prompt. Lock
 again with your face out of view, let Howdy time out, and verify your password
 unlocks it. The headless regression test uses fixture authentication; it
 cannot verify your actual camera or credentials.
 
-Only after both work, replace the command in your existing MangoWM lock binding
-with `python3 /absolute/path/to/rust-island-build/deploy/dynamite-lock.py --lock`.
-Do not add a duplicate binding or enable lock-at-boot during testing. To revert,
-restore your old binding. `deploy/install.sh` does not touch lock bindings or PAM.
+The fallback is your Linux login password, not a separate application PIN.
+This setup does not change that password or the Howdy models. No live camera
+or credential test is performed by the automated fixtures. Keep the backup
+shortcut and do not enable lock-at-boot during testing. To revert, restore the
+old primary binding. `deploy/install.sh` does not touch lock bindings or PAM.
+
+## Boot login appearance
+
+The greetd boot greeter is separate from the session locker. On this machine,
+`install-greeter.sh` installs the shared Dynamite background/clock and updated
+GTK input while preserving greetd's existing Howdy/password authentication:
+
+```sh
+sh deploy/install-greeter.sh --check /home/alex
+sudo sh deploy/install-greeter.sh --install /home/alex
+```
+
+It backs up the existing launchers, constrains the greeter's Sway to Intel
+rather than DisplayLink's virtual GPUs, and takes effect at the next login.
+It never restarts greetd or the desktop. Re-run it after changing wallpaper,
+clock format, or the release renderer. See
+[`boot-greeter-checks.md`](../docs/boot-greeter-checks.md) for verification,
+limitations and rollback.

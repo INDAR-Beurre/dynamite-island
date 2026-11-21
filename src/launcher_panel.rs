@@ -53,7 +53,7 @@
 //! matches the query case-insensitively against app names and draws at
 //! most 6 rows; the full filtered list is reachable by Up/Down or
 //! wheel scrolling (iter86), and when fewer than 6 rows match the
-//! drawn rows stretch to fill the row block (see
+//! panel shrinks to fit the compact result rows (see
 //! `launcher_layout_for_count`). The iter6 checklist item 1 ("rounded grey bar ... matching
 //! QS") conflicts with the video and with critic-launcher defect 2;
 //! the video wins — if a future critic re-measures s06 and finds a
@@ -130,12 +130,8 @@
 //!   reads ~75.4-114.7 (AA) vs video 78-114 — top 2.6 px inside blur.
 //!   (Was: rows at 58+i*50, last row bottom 350, bottom pad 16,
 //!   row-1 name top 65-68 — 6-13 px too high, bottom pad 8.7.)
-//!   Iter86 (item a5): the row BLOCK (74..353.5) is invariant — with
-//!   1..5 visible rows the rows stretch to tile it (row height =
-//!   279.5/n, pitch = row height, text/icon vertically centred), so
-//!   the last row's bottom edge always lands at 353.5 and no dead
-//!   void sits at the panel bottom. With 6+ matches the geometry
-//!   above is byte-identical to pre-iter86.
+//!   Filtered results keep this row geometry; the panel height follows
+//!   the visible count, with one row of space for an empty result message.
 //! ---------------------------------------------------------------------------
 //! COLOURS — video / QS (shell.qml), critic-launcher.md:
 //!   PANEL           #000000  (0,0,0)      — video core, QS same
@@ -227,17 +223,20 @@ const TEXT_X: f32 = 55.0; // icon right (44) + 11 (QS leftMargin)
 const TEXT_MAX_W: f32 = PANEL_W as f32 - PAD - TEXT_X; // 435
 const NAME_TOP_OFF: f32 = 7.0; // two-line block (13 + 1 + 10) centred in 42
 const COMMENT_TOP_OFF: f32 = 23.0;
-const EMPTY_MSG_TOP: f32 = 180.0;
-/// Bottom edge of the 6-row block (iter16 geometry): last row top
-/// 74 + 5*47.5 + 42 = 353.5, bottom pad 12.5 to the 366 panel edge.
-/// Iter86: the row BLOCK always spans ROW_Y0..ROW_BLOCK_BOTTOM —
-/// when fewer than ROW_COUNT rows match, the visible rows stretch
-/// (taller rows, same block) so no dead void sits at the panel bottom.
-const ROW_BLOCK_BOTTOM: f32 = ROW_Y0 + (ROW_COUNT as f32 - 1.0) * ROW_PITCH + ROW_H; // 353.5
-const ROW_BLOCK_H: f32 = ROW_BLOCK_BOTTOM - ROW_Y0; // 279.5
-/// Height of the two-line name+comment text block: name top 7,
-/// comment top 23, comment 10 px -> 23 + 10 - 7 = 26.
-const TEXT_BLOCK_H: f32 = COMMENT_TOP_OFF + 10.0 - NAME_TOP_OFF; // 26.0
+const EMPTY_MSG_TOP: f32 = ROW_Y0 + 12.0;
+const BOTTOM_PAD: f32 = 12.5;
+#[cfg(test)]
+const TEXT_BLOCK_H: f32 = COMMENT_TOP_OFF + 10.0 - NAME_TOP_OFF;
+
+/// Keep result rows compact and resize the capsule around them.
+pub fn panel_height_for_count(visible: usize) -> u32 {
+    let rows = visible.clamp(1, ROW_COUNT);
+    (ROW_Y0 + (rows - 1) as f32 * ROW_PITCH + ROW_H + BOTTOM_PAD).ceil() as u32
+}
+
+pub fn panel_size() -> (u32, u32) {
+    (PANEL_W, panel_height_for_count(live_visible_count()))
+}
 
 /// Simple axis-aligned rect, panel-relative logical px.
 #[derive(Clone, Copy, Debug)]
@@ -270,81 +269,29 @@ pub struct LauncherLayout {
     pub magnifier_centre: (f32, f32),
     pub rows: [Rect; ROW_COUNT],
     pub icon_slots: [Rect; ROW_COUNT], // 20x20, left of each row
-    /// Name/comment top offsets within a row: 7/23 at the legacy
-    /// 42 px row height; vertically centred when rows stretch
-    /// (iter86 — see `launcher_layout_for_count`).
+    /// Name/comment top offsets within each 42 px result row.
     pub name_top_off: f32,
     pub comment_top_off: f32,
 }
 
-/// Row layout for `visible` drawn rows (iter86 stretch rule, item a5).
-///
-/// * `visible >= ROW_COUNT` — the legacy video-measured geometry,
-///   byte-identical to pre-iter86: rows at 74 + i*47.5, 42 px tall,
-///   name/comment offsets 7/23, last row bottom 353.5.
-/// * `1 <= visible < ROW_COUNT` — the rows TILE the whole row block:
-///   each row grows to `ROW_BLOCK_H / visible` tall (pitch = row
-///   height, no gaps), so the first row still starts at 74 and the
-///   last row's bottom edge still lands at ROW_BLOCK_BOTTOM (353.5)
-///   — no dead void at the panel bottom when a query leaves few
-///   matches. The icon slot and the 26 px name+comment block stay
-///   vertically centred in each (taller) row.
-/// * `visible == 0` — no matches: all rects zero, so click
-///   hit-testing can never match a row.
-/// The icon slot stays 20x20 and the 24x24 real-icon blit stays
-/// centred on it (see `draw_app_icon`) — the icon builder's geometry
-/// is untouched; only the slot's y follows its row.
+/// Fixed row spacing; unused rects stay empty for hit testing.
 pub fn launcher_layout_for_count(visible: usize) -> LauncherLayout {
     let mut rows = [Rect::new(0.0, 0.0, 0.0, 0.0); ROW_COUNT];
     let mut slots = [Rect::new(0.0, 0.0, 0.0, 0.0); ROW_COUNT];
-    let (mut name_off, mut comment_off) = (NAME_TOP_OFF, COMMENT_TOP_OFF);
-    if visible == 0 {
-        // No matches: zero rects (see doc above).
-    } else if visible >= ROW_COUNT {
-        // Legacy video-measured geometry.
-        for (i, (r, s)) in rows.iter_mut().zip(slots.iter_mut()).enumerate() {
-            let y = ROW_Y0 + i as f32 * ROW_PITCH;
-            *r = Rect::new(ROW_X, y, ROW_W, ROW_H);
-            *s = Rect::new(ICON_X, y + (ROW_H - ICON_SIZE) / 2.0, ICON_SIZE, ICON_SIZE);
-        }
-    } else {
-        // 1..5 visible rows: stretch to fill the row block.
-        let row_h = ROW_BLOCK_H / visible as f32;
-        name_off = (row_h - TEXT_BLOCK_H) / 2.0;
-        comment_off = name_off + (COMMENT_TOP_OFF - NAME_TOP_OFF);
-        for i in 0..visible {
-            let y = ROW_Y0 + i as f32 * row_h;
-            rows[i] = Rect::new(ROW_X, y, ROW_W, row_h);
-            slots[i] = Rect::new(ICON_X, y + (row_h - ICON_SIZE) / 2.0, ICON_SIZE, ICON_SIZE);
-        }
+    for i in 0..visible.min(ROW_COUNT) {
+        let y = ROW_Y0 + i as f32 * ROW_PITCH;
+        rows[i] = Rect::new(ROW_X, y, ROW_W, ROW_H);
+        slots[i] = Rect::new(ICON_X, y + (ROW_H - ICON_SIZE) / 2.0, ICON_SIZE, ICON_SIZE);
     }
     LauncherLayout {
-        panel: Rect::new(0.0, 0.0, PANEL_W as f32, PANEL_H as f32),
+        panel: Rect::new(0.0, 0.0, PANEL_W as f32, panel_height_for_count(visible) as f32),
         search_line: Rect::new(PAD, SEARCH_Y, ROW_W, SEARCH_H),
         magnifier_centre: (MAGNIFIER_CX, MAGNIFIER_CY),
         rows,
         icon_slots: slots,
-        name_top_off: name_off,
-        comment_top_off: comment_off,
+        name_top_off: NAME_TOP_OFF,
+        comment_top_off: COMMENT_TOP_OFF,
     }
-}
-
-/// Highlight rect for a selected row (iter115, Lane G — the
-/// filtered-launcher wash, recap iter114 failure (8)). With 6 rows
-/// shown the row rect IS 42 px tall, so the band is the row rect
-/// itself (byte-identical behaviour). With a filter leaving 1–5
-/// matches the rows stretch to tile the whole block (up to 279.5
-/// px for one match) and the old fill washed the entire viewport
-/// navy — while the icon slot and the 26 px name+comment block
-/// stay vertically CENTRED in the stretched row. The band is
-/// therefore the 42 px row height, vertically centred in the
-/// stretched rect: it hugs the icon + text and leaves the rest of
-/// the stretched row as plain panel background.
-pub fn selection_highlight_rect(rect: Rect) -> Rect {
-    if rect.h <= ROW_H {
-        return rect;
-    }
-    Rect::new(rect.x, rect.y + (rect.h - ROW_H) / 2.0, rect.w, ROW_H)
 }
 
 // ---------------------------------------------------------------------------
@@ -1162,16 +1109,12 @@ pub fn draw_launcher_panel_with_data(
     bg_origin: (f32, f32),
 ) {
     set_scale(w);
-    debug_assert!(
-        (h as f32 - scale_of(w) * PANEL_H as f32).abs() < 1.5,
-        "launcher canvas {w}x{h} is not a scaled {PANEL_W}x{PANEL_H}"
-    );
-    // Iter86: the row layout follows the DRAWN row count, so a
-    // filtered list stretches to fill the row block (see
-    // `launcher_layout_for_count`). Computed up front so the empty
-    // check below can reuse it.
     let rows = data.filtered();
     let l = launcher_layout_for_count(rows.len());
+    debug_assert!(
+        (h as f32 - scale_of(w) * l.panel.h).abs() < 1.5,
+        "launcher canvas {w}x{h} does not fit {} results", rows.len()
+    );
 
     // --- Panel background: flat-frost capsule (iter31, a3 REVISED;
     // --- fake frost: blurred wallpaper under the fill). ---
@@ -1277,9 +1220,8 @@ pub fn draw_launcher_panel_with_data(
     );
 
     // --- App rows: sorted, drawn window of at most 6 (the full
-    // filtered list scrolls via live_move_selection / wheel — iter86);
-    // first/selected row highlighted. When fewer than 6 match, the
-    // rows are stretched (layout above), so no void sits at the bottom.
+    // filtered list scrolls via live_move_selection / wheel);
+    // the capsule follows the result count without stretching rows.
     if rows.is_empty() {
         draw_text_centered(
             canvas, w, h, font, "No matching apps", 12.0,
@@ -1294,7 +1236,7 @@ pub fn draw_launcher_panel_with_data(
         // the drawn window starts at `offset`, so the visible slot
         // of the selected row is `selected - offset`.
         if i + data.offset == data.selected {
-            let clip = selection_highlight_rect(rect);
+            let clip = rect;
             fill_rounded_rect(canvas, w, h, clip, ROW_R, C_HIGHLIGHT);
             // r1d: 3 px accent bar on the highlight's left inner edge.
             fill_rounded_rect(
@@ -1747,37 +1689,25 @@ mod tests {
     }
 
     #[test]
-    fn layout_for_count_stretches_to_block_bottom() {
-        // 1..5 rows tile the whole row block: first row at 74, last
-        // row bottom at 353.5, no gaps, text/icon centred per row.
-        for n in 1..ROW_COUNT {
+    fn short_result_lists_resize_without_stretching_rows() {
+        for n in 1..=ROW_COUNT {
             let l = launcher_layout_for_count(n);
-            assert!((l.rows[0].y - ROW_Y0).abs() < 0.001, "n={n}");
-            assert!(
-                (l.rows[n - 1].y + l.rows[n - 1].h - ROW_BLOCK_BOTTOM).abs() < 0.01,
-                "n={n}: last row bottom {} != {ROW_BLOCK_BOTTOM}",
-                l.rows[n - 1].y + l.rows[n - 1].h
-            );
-            for i in 1..n {
-                assert!(
-                    (l.rows[i].y - (l.rows[i - 1].y + l.rows[i - 1].h)).abs() < 0.01,
-                    "n={n}: gap before row {i}"
-                );
-                assert_eq!(l.rows[i].h, l.rows[0].h, "n={n}: uneven rows");
+            for i in 0..n {
+                assert_eq!(l.rows[i].y, ROW_Y0 + i as f32 * ROW_PITCH);
+                assert_eq!(l.rows[i].h, ROW_H);
+                assert_eq!(l.icon_slots[i].cy(), l.rows[i].cy());
+                assert!(l.rows[i].y + l.rows[i].h < l.panel.h);
             }
-            // Name+comment block (26 px) vertically centred in the row.
-            assert!(
-                (l.name_top_off + TEXT_BLOCK_H / 2.0 - l.rows[0].h / 2.0).abs() < 0.01,
-                "n={n}: text not centred"
-            );
-            assert_eq!(l.comment_top_off - l.name_top_off, COMMENT_TOP_OFF - NAME_TOP_OFF);
-            // Icon slot centred in its row.
-            assert!((l.icon_slots[0].cy() - (l.rows[0].y + l.rows[0].h / 2.0)).abs() < 0.01);
-            // Unused slots are zero rects (hit-test never matches).
+            let bottom = l.rows[n - 1].y + ROW_H;
+            assert!((l.panel.h - bottom - BOTTOM_PAD).abs() <= 0.5);
             for i in n..ROW_COUNT {
-                assert_eq!(l.rows[i].h, 0.0, "n={n}: slot {i} not zeroed");
+                assert_eq!(l.rows[i].h, 0.0);
             }
         }
+        assert_eq!(panel_height_for_count(1), 129);
+        assert_eq!(panel_height_for_count(2), 176);
+        assert_eq!(panel_height_for_count(6), PANEL_H);
+        assert_eq!(panel_height_for_count(100), PANEL_H);
     }
 
     #[test]
@@ -1788,37 +1718,19 @@ mod tests {
     }
 
     #[test]
-    fn highlight_band_hugs_content_when_rows_stretch() {
-        // iter115 (8): the band is the 42 px row height, centred
-        // in the stretched row — never the whole viewport.
-        for n in 1..ROW_COUNT {
+    fn compact_rows_contain_their_icons_and_text() {
+        for n in 1..=ROW_COUNT {
             let l = launcher_layout_for_count(n);
-            let band = selection_highlight_rect(l.rows[0]);
-            assert_eq!(band.h, ROW_H, "n={n}: band height");
-            assert_eq!(band.x, l.rows[0].x, "n={n}: band x");
-            assert_eq!(band.w, l.rows[0].w, "n={n}: band w");
-            assert!(
-                (band.cy() - (l.rows[0].y + l.rows[0].h / 2.0)).abs() < 0.01,
-                "n={n}: band not centred in stretched row"
-            );
-            // Icon slot and name+comment block sit inside the band.
-            assert!(l.icon_slots[0].y >= band.y - 0.01);
-            assert!(l.icon_slots[0].y + l.icon_slots[0].h <= band.y + band.h + 0.01);
-            assert!(l.rows[0].y + l.name_top_off >= band.y - 0.01);
-            assert!(
-                l.rows[0].y + l.name_top_off + TEXT_BLOCK_H <= band.y + band.h + 0.01,
-                "n={n}: text block escapes the band"
-            );
+            for i in 0..n {
+                let row = l.rows[i];
+                assert!(l.icon_slots[i].y >= row.y);
+                assert!(l.icon_slots[i].y + ICON_SIZE <= row.y + row.h);
+                assert!(row.y + l.name_top_off + TEXT_BLOCK_H <= row.y + row.h);
+            }
         }
-        // 6 rows: band IS the row rect (no behaviour change).
-        let l = launcher_layout_for_count(ROW_COUNT);
-        for i in 0..ROW_COUNT {
-            let band = selection_highlight_rect(l.rows[i]);
-            assert_eq!(band.x, l.rows[i].x);
-            assert_eq!(band.y, l.rows[i].y);
-            assert_eq!(band.w, l.rows[i].w);
-            assert_eq!(band.h, l.rows[i].h);
-        }
+        let empty = launcher_layout_for_count(0);
+        assert_eq!(empty.panel.h, panel_height_for_count(1) as f32);
+        assert!(EMPTY_MSG_TOP + 16.0 < empty.panel.h);
     }
 
     #[test]
@@ -1848,9 +1760,9 @@ mod tests {
         d.query = "dynamite".to_string();
         assert_eq!(d.match_count(), 1);
         assert_eq!(d.filtered()[0].name, "Dynamite Settings");
-        // One match -> one stretched row filling the whole block.
         let l = launcher_layout_for_count(d.filtered().len());
-        assert!((l.rows[0].y + l.rows[0].h - ROW_BLOCK_BOTTOM).abs() < 0.01);
+        assert_eq!(l.rows[0].h, ROW_H);
+        assert_eq!(l.panel.h, panel_height_for_count(1) as f32);
         d.query = "FOOT".to_string(); // case-insensitive
         assert_eq!(d.match_count(), 3); // Foot, Foot Client, Foot Server
         d.query = "xgps".to_string();

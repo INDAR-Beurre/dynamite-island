@@ -24,7 +24,7 @@ from PIL import Image
 
 SOCK = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/run/user/1000"),
                     "dynamite-rust.sock")
-STATES = ["power", "music", "calendar", "controlcenter", "launcher",
+STATES = ["power", "music", "calendar", "controlcenter", "displays", "launcher",
           "wallpaper", "themes", "clipboard", "traymenu"]
 
 # Expected panel widths, LOGICAL px, read from IslandState::size()
@@ -34,7 +34,7 @@ STATES = ["power", "music", "calendar", "controlcenter", "launcher",
 # Guessing reference bands here produced four false failures on a correct
 # build (music measured 0.406 against a made-up 0.40 ceiling).
 LOGICAL_W = {
-    "power": 316, "music": 612, "calendar": 342, "controlcenter": 438,
+    "power": 316, "music": 612, "calendar": 342, "controlcenter": 438, "displays": 438,
     "launcher": 504, "wallpaper": 1008, "themes": 600,
     "clipboard": 504, "traymenu": 404,
 }
@@ -48,11 +48,11 @@ TOL = 0.12          # +-12%: rounded corners and AA shave a few px per side
 # clamped to 440), so their entry is the MINIMUM, and the ink window for a
 # dynamic state is capped by the measured span's own bottom instead.
 LOGICAL_H = {
-    "power": 118, "music": 150, "calendar": 262, "controlcenter": 447,
-    "launcher": 366, "wallpaper": 270, "themes": 366,
+    "power": 118, "music": 150, "calendar": 262, "controlcenter": 424, "displays": 284,
+    "launcher": 129, "wallpaper": 270, "themes": 366,
     "clipboard": 200, "traymenu": 88,
 }
-DYNAMIC_H = {"clipboard", "traymenu"}
+DYNAMIC_H = {"launcher", "clipboard", "traymenu"}
 
 
 def send(word):

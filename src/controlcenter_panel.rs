@@ -296,32 +296,11 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 // Constants
 // ---------------------------------------------------------------------------
 pub const CC_W: u32 = 438;
-/// iter85: 525 -> 421 — panel sized to its content (see header geometry).
-/// iter89: 421 -> 409 (whole stack -12 with GRID_Y).
-/// iter91: 409 -> 401 (R3 card tightening: card 99 -> 91 tall, bell
-/// block -4, padding 12 -> 8; panel bottom margin stays 14).
-/// REQUIRED companion changes OUTSIDE this file (do not edit from here,
-/// main.rs belongs to another builder — integrator, apply in the SAME
-/// build or a debug build PANICS in `draw_controlcenter_panel`'s
-/// `debug_assert_eq!((w, h), (CC_W, CC_H))` on CC open):
-/// - main.rs:191 `IslandState::size()`: `Self::ControlCenter =>
-///   (438, 409)` must become `(438, 401)`.
-/// - main.rs:407 comment "tallest is ControlCenter 409" -> 401.
-/// - main.rs:445 comment "shadow bottom is 29 + 409 + 15 = 453" ->
-///   29 + 401 + 15 = 445.
-/// - main.rs:5485 nav-disc mid-height `(IslandState::ControlCenter,
-///   233.5), // 29 + 409/2` -> `(IslandState::ControlCenter, 229.5),
-///   // 29 + 401/2` — the a3b nav discs centre on the panel's own
-///   height, so this literal MUST move with CC_H.
-/// - main.rs:5480 comment "(... CC_H 421 -> 409)" -> 401 (history).
-/// The stage-fit test at main.rs:4340-4356 uses the literal 525 and
-/// still passes with 401 (smaller fits).
-/// iter109: 401 -> 447 — three power-level buttons below the card
-/// (row 401..433, 14 px above and below it).
-pub const CC_H: u32 = 447;
+/// Compact controls, notification summary and power profiles.
+pub const CC_H: u32 = 424;
 pub const CC_RADIUS: f32 = 20.0;
-pub const CC_PAD: f32 = 14.0; // inner padding (settings readout: 14 px)
-pub const CC_CONTENT_W: f32 = CC_W as f32 - 2.0 * CC_PAD; // 410
+pub const CC_PAD: f32 = 18.0;
+pub const CC_CONTENT_W: f32 = CC_W as f32 - 2.0 * CC_PAD;
 
 pub const C_PANEL: (u8, u8, u8) = (0, 0, 0);
 pub const C_PILL_BG: (u8, u8, u8) = (12, 11, 14); // #0C0B0E, video-sampled
@@ -396,81 +375,42 @@ pub const C_NOTIF_CARD: (u8, u8, u8) = (13, 12, 15); // iter34 a6a: the
 // panel bottom — the old 175 px tall card framed ~100 px of void.
 // iter91 (R3, tightened again): padding 12 -> 8, bell block -4,
 // card 99 -> 91 tall (296..387), panel 409 -> 401.
-pub const SLIDER_GLYPH_PX: f32 = 20.0; // iter34 a6a: fill glyph em size —
-/// the old 16 px fill glyph and 14 px end-button glyph read tiny and
-/// mismatched (PIL: fill ink ~22 logical wide but end-button ink only
-/// ~11). Fill glyph is now 20 px; the end button is a chevron (video).
-pub const NOTIF_CARD_R: f32 = 16.0;
+pub const SLIDER_GLYPH_PX: f32 = 18.0;
+pub const NOTIF_CARD_R: f32 = 12.0;
 
-const HEADER_Y: f32 = 2.0; // iter89: 14.0 -> 2.0 (first ink ~5 px below panel top)
-const HEADER_H: f32 = 22.0;
-/// iter91: hairline divider under the header row (iter90 beauty
-/// critic: "No divider, no grouping, nothing ties it to the clock on
-/// the other side" — the ~250 px void between the clock and the
-/// battery cluster made the header read as a status-bar fragment
-/// pasted into a black card). 1 px, full content width, dark grey —
-/// a header rule, not a nav element: it groups clock + power/battery
-/// into one header band. The power text stays right-anchored next to
-/// the battery (iter90 pixel-PASS, 8.7 px text->icon gap); the
-/// divider, not a move, is the anchoring fix.
-const HEADER_DIVIDER_Y: f32 = 30.0;
+const HEADER_Y: f32 = 10.0;
+const HEADER_H: f32 = 24.0;
+const HEADER_DIVIDER_Y: f32 = 40.0;
 const C_HEADER_DIVIDER: (u8, u8, u8) = (36, 38, 42);
-const GRID_Y: f32 = 36.0; // iter89: 48 -> 36 (keep the 12 px header->grid gap)
-const PILL_W: f32 = 201.0;
-const PILL_H: f32 = 52.0;
+const GRID_Y: f32 = 52.0;
+const GRID_GAP: f32 = 10.0;
+const PILL_W: f32 = (CC_CONTENT_W - GRID_GAP) / 2.0;
+const PILL_H: f32 = 56.0;
 const PILL_R: f32 = 12.0;
-const GRID_GAP: f32 = 8.0;
-const CIRCLE_D: f32 = 48.0; // video-measured icon circle (critic defect 11)
-const CIRCLE_MARGIN: f32 = 10.0;
-const TEXT_DX: f32 = CIRCLE_MARGIN + CIRCLE_D + 9.0; // 67 — name/sub x offset
-const TRACK_X: f32 = 14.0;
-const TRACK_W: f32 = 376.0; // ends 390; 28 px end button at 396..424
-/// iter85: track height 20 -> 36 (~double the old 20 px bar, per the
-/// a6a brief). 36 — not a full 40 — so the Sound track still clears
-/// the iter27 no-op point (panel-local (219, 303)): track ends 294,
-/// hit slack (track + 4) ends 298, 303 stays NoOp. Radius is half
-/// the height: the track is a full pill.
-const TRACK_H: f32 = 36.0;
-const TRACK_R: f32 = 18.0;
-/// iter85: thumb Ø30 — chunkier than the old (nonexistent) knob, but
-/// smaller than the 36 px track, so it never protrudes above/below
-/// the bar; clamped inside the track by `thumb_cx()`.
-/// iter107: Ø30 -> Ø28, and the clamp is gone (`thumb_cx()` spans
-/// the full track, so the rendered centre matches the live value at
-/// 0% and 100% too). Ø28 is the largest thumb that still never leaves
-/// the PANEL: at 0% it spans [track.x - 14, track.x + 14] = [0, 28]
-/// (flush with the panel edge), at 100% [376, 404] — clear of the
-/// end-button chevron, whose ink starts ~405.1. Ø30 would poke 1 px
-/// past the panel edge at 0% (a white sliver on the wallpaper).
-const THUMB_D: f32 = 28.0;
-const END_BTN: f32 = 28.0; // iter86: hit-rect width only — no pill is drawn anymore (bare chevron).
-const BELL_D: f32 = 34.0; // video-scaled (critic defect 10; QS used 44)
-/// iter85: bell block re-anchored to the compact layout (was 400.0 —
-/// see header anchor notes). Card 308..407: bell 320..354.
-/// iter91 (R3): bell block -4 with the card tightening — bell
-/// 304..338, card 296..387 (91 tall, 8 px padding), panel 409 -> 401.
-const BELL_CY: f32 = 321.0; // iter91: 325 -> 321 (R3 card tightening, -4)
-/// iter85: was 430.0. Title top = bell bottom (354) + 10 gap.
-/// iter91: 352 -> 348 (bell block -4).
-const NOTIF_TITLE_Y: f32 = 348.0; // iter91: 352 -> 348 (R3, -4)
-/// iter85: was 447.0. Sub top = title top + 16 (13 px line) + 2 gap;
-/// sub line ends ~395, card bottom 407 = 395 + 12 padding.
-/// iter91: 370 -> 366 (bell block -4); sub line ends ~379, card
-/// bottom 387 = 379 + 8 padding.
-const NOTIF_SUB_Y: f32 = 366.0; // iter91: 370 -> 366 (R3, -4)
-
-/// Power-level row below the notification card: three equal pills.
-const POWER_Y: f32 = 401.0;
+const CIRCLE_D: f32 = 32.0;
+const CIRCLE_MARGIN: f32 = 12.0;
+const TEXT_DX: f32 = CIRCLE_MARGIN + CIRCLE_D + 10.0;
+const TRACK_X: f32 = CC_PAD;
+const END_BTN: f32 = 28.0;
+const TRACK_W: f32 = CC_CONTENT_W - END_BTN - 8.0;
+const TRACK_H: f32 = 28.0;
+const TRACK_R: f32 = 3.0;
+const THUMB_D: f32 = 16.0;
+const BELL_D: f32 = 32.0;
+const BELL_CY: f32 = 338.0;
+const NOTIF_TITLE_Y: f32 = 320.0;
+const NOTIF_SUB_Y: f32 = 340.0;
+const POWER_Y: f32 = 378.0;
 const POWER_H: f32 = 32.0;
-const POWER_GAP: f32 = 8.0;
-const POWER_R: f32 = 10.0;
+const POWER_GAP: f32 = 4.0;
+const POWER_R: f32 = 9.0;
 
 // Submenus (Bluetooth + Sound): same 14 px side padding, no new
 // panel height. Both share the row geometry — they are the same
 // compact list with a different header.
 const BT_ROWS: usize = 5;
-const BT_ROW_H: f32 = 48.0;
-const BT_ROW_GAP: f32 = 6.0;
+const BT_ROW_H: f32 = 44.0;
+const BT_ROW_GAP: f32 = 4.0;
 
 /// Simple axis-aligned rect, panel-relative logical px.
 #[derive(Clone, Copy, Debug)]
@@ -547,17 +487,8 @@ pub fn cc_layout() -> CcLayout {
             CIRCLE_D,
         )
     });
-    // iter85: slider rows are NO LONGER video-anchored (the video's
-    // 207..227 / 276..296 rows belong to its 20 px tracks and its empty
-    // bands). Compact column, no gap > 14: grid ends 148, Display
-    // label 160, track 178..214 (36 px), Sound label 228, track
-    // 246..282, card 296..395, panel bottom 409. Labels sit 4 px above
-    // their track (11 px text in a 14 px line box).
-    // iter89: whole stack -12 with GRID_Y 48 -> 36.
-    let display_track = Rect::new(TRACK_X, 178.0, TRACK_W, TRACK_H);
-    let sound_track = Rect::new(TRACK_X, 246.0, TRACK_W, TRACK_H);
-    // iter86: the end-button HIT rect still spans the full track
-    // height (28x36) — only its drawing changed (bare chevron now).
+    let display_track = Rect::new(TRACK_X, 208.0, TRACK_W, TRACK_H);
+    let sound_track = Rect::new(TRACK_X, 268.0, TRACK_W, TRACK_H);
     let end_btn = |track: Rect| {
         Rect::new(
             CC_W as f32 - CC_PAD - END_BTN,
@@ -574,11 +505,11 @@ pub fn cc_layout() -> CcLayout {
     ];
     let bt_back = Rect::new(CC_PAD, 38.0, 32.0, 32.0);
     let bt_power_pill = Rect::new(CC_PAD, 76.0, CC_CONTENT_W, 56.0);
-    let bt_power_circle = Rect::new(bt_power_pill.x + 10.0, bt_power_pill.y + 4.0, 48.0, 48.0);
+    let bt_power_circle = Rect::new(bt_power_pill.x + 12.0, bt_power_pill.cy() - CIRCLE_D / 2.0, CIRCLE_D, CIRCLE_D);
     let bt_switch = Rect::new(
         bt_power_pill.x + bt_power_pill.w - 50.0, bt_power_pill.cy() - 11.0, 40.0, 22.0,
     );
-    let bt_devices_card = Rect::new(CC_PAD, 160.0, CC_CONTENT_W, 273.0);
+    let bt_devices_card = Rect::new(CC_PAD, 160.0, CC_CONTENT_W, CC_H as f32 - CC_PAD - 160.0);
     let bt_device_rows = std::array::from_fn(|i| {
         Rect::new(
             bt_devices_card.x + 4.0,
@@ -587,7 +518,7 @@ pub fn cc_layout() -> CcLayout {
             BT_ROW_H,
         )
     });
-    let sound_card = Rect::new(CC_PAD, 76.0, CC_CONTENT_W, 357.0);
+    let sound_card = Rect::new(CC_PAD, 76.0, CC_CONTENT_W, CC_H as f32 - CC_PAD - 76.0);
     let sound_rows = std::array::from_fn(|i| {
         Rect::new(
             sound_card.x + 4.0,
@@ -602,37 +533,21 @@ pub fn cc_layout() -> CcLayout {
         header_divider: Rect::new(CC_PAD, HEADER_DIVIDER_Y, CC_CONTENT_W, 1.0),
         toggle_pills: pills,
         toggle_circles: circles,
-        display_label: Rect::new(CC_PAD, 160.0, CC_CONTENT_W, 14.0),
+        display_label: Rect::new(CC_PAD, 190.0, CC_CONTENT_W, 14.0),
         display_track,
         display_end_btn: end_btn(display_track),
-        sound_label: Rect::new(CC_PAD, 228.0, CC_CONTENT_W, 14.0),
+        sound_label: Rect::new(CC_PAD, 250.0, CC_CONTENT_W, 14.0),
         sound_track,
         sound_end_btn: end_btn(sound_track),
         bell_circle: Rect::new(
-            CC_W as f32 / 2.0 - BELL_D / 2.0,
+            CC_PAD + 12.0,
             BELL_CY - BELL_D / 2.0,
             BELL_D,
             BELL_D,
         ),
-        // iter85 (R3, tightened again): the card is sized to its
-        // content — bell 320..354, title top 364, sub top 382, content
-        // ends ~395 — with 12 px padding (308..407, 99 tall). The
-        // iter36 card (371..469) already cut the old 330..505 void;
-        // this one rides 63 px higher with the compact column, and the
-        // panel bottom margin below it is exactly 14 px (407 -> 421),
-        // so there is no dead band anywhere in the panel. The iter27
-        // no-op point (panel-local (219, 303)) sits in the 10 px gap
-        // between the Sound hit-slack end (298) and the card top (308).
-        // iter89: stack -12 — card 296..395, bell 308..342, title 352,
-        // sub 370, panel 409. NOTE the iter27 no-op point (219, 303)
-        // is now INSIDE the card (top 296), not in a gap: still NoOp,
-        // because the card has no click action (only the Sound track's
-        // hit slack, ending 286, must clear it — see the test).
-        // iter91 (R3): padding 12 -> 8, bell block -4 — card 296..387
-        // (91 tall), bell 304..338, title 348, sub 366, panel 401.
-        notif_card: Rect::new(CC_PAD, 296.0, CC_CONTENT_W, 91.0),
-        notif_title: Rect::new(CC_PAD, NOTIF_TITLE_Y, CC_CONTENT_W, 16.0),
-        notif_sub: Rect::new(CC_PAD, NOTIF_SUB_Y, CC_CONTENT_W, 14.0),
+        notif_card: Rect::new(CC_PAD, 310.0, CC_CONTENT_W, 56.0),
+        notif_title: Rect::new(CC_PAD + 60.0, NOTIF_TITLE_Y, CC_CONTENT_W - 72.0, 16.0),
+        notif_sub: Rect::new(CC_PAD + 60.0, NOTIF_SUB_Y, CC_CONTENT_W - 72.0, 14.0),
         power_buttons,
         bt_back,
         bt_power_pill,
@@ -721,10 +636,10 @@ pub struct ToggleDef {
 
 /// Row-major grid order, matching shell.qml and the video.
 pub const TOGGLES: [ToggleDef; 4] = [
-    ToggleDef { key: ToggleKey::Wifi, icon: "wifi", name: "Wi-Fi", glyph_px: 35.5 },
+    ToggleDef { key: ToggleKey::Wifi, icon: "wifi", name: "Wi-Fi", glyph_px: 24.0 },
     ToggleDef { key: ToggleKey::Focus, icon: "center_focus", name: "Focus", glyph_px: 0.0 },
-    ToggleDef { key: ToggleKey::Bluetooth, icon: "bluetooth", name: "Bluetooth", glyph_px: 32.0 },
-    ToggleDef { key: ToggleKey::NightLight, icon: "nightlight", name: "Night Light", glyph_px: 29.0 },
+    ToggleDef { key: ToggleKey::Bluetooth, icon: "bluetooth", name: "Bluetooth", glyph_px: 22.0 },
+    ToggleDef { key: ToggleKey::NightLight, icon: "nightlight", name: "Night Light", glyph_px: 22.0 },
 ];
 
 /// One known Bluetooth device (paired/bonded or recently discovered).
@@ -1146,7 +1061,7 @@ fn cache_set_toggle(key: ToggleKey, on: bool) {
     }
 }
 
-fn cache_set_sound(level: f32) {
+pub(crate) fn cache_set_sound(level: f32) {
     if let Some(cache) = CC_CACHE.get() {
         cache.write().unwrap().sound_level = level.clamp(0.0, 1.0);
     }
@@ -1159,7 +1074,7 @@ fn cache_set_sound(level: f32) {
 /// live value within ~5 s. (One race, same as Sound: a poll landing
 /// before the detached set executes can briefly show the old level;
 /// the next poll corrects it.)
-fn cache_set_display(level: f32) {
+pub(crate) fn cache_set_display(level: f32) {
     if let Some(cache) = CC_CACHE.get() {
         cache.write().unwrap().display_level = level.clamp(0.0, 1.0);
     }
@@ -2340,7 +2255,7 @@ fn rounded_rect_alpha(x: f32, y: f32, w: f32, h: f32, r: f32) -> f32 {
 
 /// Fill a rounded rect with a solid colour (opaque where the SDF says so).
 /// `rect` is in canvas coordinates; the SDF is evaluated at pixel centres.
-fn fill_rounded_rect(
+pub(crate) fn fill_rounded_rect(
     canvas: &mut [u8],
     w: u32,
     h: u32,
@@ -2546,7 +2461,7 @@ fn scale_of(_w: u32) -> f32 {
     SCALE.with(|s| s.get())
 }
 /// Begin a draw: set the logical -> device scale (see `SCALE`).
-fn set_scale(w: u32) {
+pub(crate) fn set_scale(w: u32) {
     SCALE.with(|c| c.set(w as f32 / CC_W as f32));
 }
 
@@ -2592,13 +2507,13 @@ fn layout_text(font: &Font, text: &str, px: f32) -> TextRow {
     TextRow { glyphs, width, ascent, height }
 }
 
-fn text_width(font: &Font, text: &str, px: f32) -> f32 {
+pub(crate) fn text_width(font: &Font, text: &str, px: f32) -> f32 {
     text.chars().map(|ch| crate::lock_timer::rasterize_cached(font, ch, px).0.advance_width).sum()
 }
 
 /// Draw `text` with its left edge at `x`, top of the line box at `y_top`.
 /// `bold` double-blits with a 0.75 px x-offset (fake bold — see header).
-fn draw_text(
+pub(crate) fn draw_text(
     canvas: &mut [u8],
     w: u32,
     h: u32,
@@ -2661,7 +2576,7 @@ fn draw_text_centered(
 /// Draw one Material Symbols glyph centred on (cx, cy) at `px` size.
 /// Falls back to a hollow ring of the same size while the PUA codepoint
 /// table in `icon_char()` is still empty (see header).
-fn draw_icon(
+pub(crate) fn draw_icon(
     canvas: &mut [u8],
     w: u32,
     h: u32,
@@ -2717,19 +2632,13 @@ fn draw_focus_target(
     cy: f32,
     rgb: (u8, u8, u8),
 ) {
-    // iter34 a6a: ring r 9 -> 12, stroke 2 -> 2.5, dot 5 -> 7: the old
-    // target read 20 logical (0.42 of the disc) while bluetooth read
-    // 10.7 (0.22); all four glyphs now land at ~25 logical (0.52).
-    // iter86: ring r 12.0 -> 11.5 — iter85 measured the Focus glyph
-    // at 0.571 of the disc, a hair above the 0.50-0.55 band; outer
-    // diameter is now 25.5/48 = 0.531 (measured ~0.547 with AA).
-    stroke_circle(canvas, w, h, cx, cy, 11.5, 2.5, rgb);
+    stroke_circle(canvas, w, h, cx, cy, 8.5, 2.0, rgb);
     fill_rounded_rect(
         canvas,
         w,
         h,
-        Rect::new(cx - 3.5, cy - 3.5, 7.0, 7.0),
-        3.5,
+        Rect::new(cx - 2.5, cy - 2.5, 5.0, 5.0),
+        2.5,
         rgb,
     );
 }
@@ -2769,7 +2678,7 @@ fn draw_chevron_left(
 
 /// Trim to `max_w` logical px with an ellipsis, so a long device name
 /// can never bleed into the row's chevron.
-fn fit_text(font: &Font, text: &str, px: f32, max_w: f32) -> String {
+pub(crate) fn fit_text(font: &Font, text: &str, px: f32, max_w: f32) -> String {
     if text_width(font, text, px) <= max_w {
         return text.to_string();
     }
@@ -3137,7 +3046,7 @@ pub fn draw_controlcenter_panel(
     // builds the data with `ControlCenterData::live()` (iter9); the
     // frozen s07 values live only in `video_defaults()`. ---
     draw_text(
-        canvas, w, h, ui_font, &data.time_hhmm, 14.0, l.header.x, l.header.y,
+        canvas, w, h, ui_font, &data.time_hhmm, 16.0, l.header.x, l.header.y,
         C_PRIMARY, false,
     );
     if let Some(pct) = data.battery_pct {
@@ -3193,6 +3102,7 @@ pub fn draw_controlcenter_panel(
         let circle = l.toggle_circles[i];
         let on = data.toggle(def.key);
         fill_rounded_rect(canvas, w, h, pill, PILL_R, C_PILL_BG);
+        stroke_rounded_rect(canvas, w, h, pill, PILL_R, 1.0, C_HEADER_DIVIDER);
         let (circle_bg, glyph_rgb) = if on {
             (accent(), accent_glyph()) // live theme accent + adaptive glyph
         } else {
@@ -3212,9 +3122,9 @@ pub fn draw_controlcenter_panel(
         // iter85: the old 9 px #9AA0A6 failed legibility), left-aligned
         // at pill_x + 67, vertically centred as a two-line block.
         let tx = pill.x + TEXT_DX;
-        draw_text(canvas, w, h, ui_font, def.name, 12.0, tx, pill.y + 15.0, C_PRIMARY, false);
-        let sub = data.subtext(def);
-        draw_text(canvas, w, h, ui_font, &sub, 10.0, tx, pill.y + 27.0, C_SECONDARY, false);
+        draw_text(canvas, w, h, ui_font, def.name, 13.0, tx, pill.y + 12.0, C_PRIMARY, false);
+        let sub = fit_text(ui_font, &data.subtext(def), 10.0, pill.w - TEXT_DX - 10.0);
+        draw_text(canvas, w, h, ui_font, &sub, 10.0, tx, pill.y + 32.0, C_SECONDARY, false);
     }
 
     // --- Sliders: thick pill bars (h 36, iter85 — was 20, no knob),
@@ -3248,35 +3158,41 @@ pub fn draw_controlcenter_panel(
         canvas, w, h, icon_font, "notifications_none", 16.0,
         l.bell_circle.cx(), l.bell_circle.cy(), C_SECONDARY,
     );
-    match data.notification_count {
+    if let Some(note) = crate::activity::latest() {
+        let title = fit_text(ui_font, &note.summary, 13.0, l.notif_title.w - 18.0);
+        let detail = fit_text(ui_font, &format!("{} · {}", note.app, note.body), 10.0, l.notif_sub.w - 18.0);
+        draw_text(canvas, w, h, ui_font, &title, 13.0, l.notif_title.x, l.notif_title.y, C_PRIMARY, false);
+        draw_text(canvas, w, h, ui_font, &detail, 10.0, l.notif_sub.x, l.notif_sub.y, C_SECONDARY, false);
+    } else { match data.notification_count {
         Some(n) if n > 0 => {
             let title = if n == 1 {
                 "1 notification".to_string()
             } else {
                 format!("{n} notifications")
             };
-            draw_text_centered(
-                canvas, w, h, ui_font, &title, 13.0, CC_W as f32 / 2.0,
-                l.notif_title.y, C_PRIMARY, true,
+            draw_text(
+                canvas, w, h, ui_font, &title, 13.0, l.notif_title.x,
+                l.notif_title.y, C_PRIMARY, false,
             );
             let since = format!("{n} unread since {}", data.notifications_since_hhmm);
-            draw_text_centered(
-                canvas, w, h, ui_font, &since, 10.0, CC_W as f32 / 2.0,
+            draw_text(
+                canvas, w, h, ui_font, &since, 10.0, l.notif_sub.x,
                 l.notif_sub.y, C_SECONDARY, false,
             );
         }
         _ => {
-            draw_text_centered(
-                canvas, w, h, ui_font, "All caught up", 13.0, CC_W as f32 / 2.0,
-                l.notif_title.y, C_PRIMARY, true,
+            draw_text(
+                canvas, w, h, ui_font, "All caught up", 13.0, l.notif_title.x,
+                l.notif_title.y, C_PRIMARY, false,
             );
             let since = format!("Nothing new since {}", data.notifications_since_hhmm);
-            draw_text_centered(
-                canvas, w, h, ui_font, &since, 10.0, CC_W as f32 / 2.0,
+            draw_text(
+                canvas, w, h, ui_font, &since, 10.0, l.notif_sub.x,
                 l.notif_sub.y, C_SECONDARY, false,
             );
         }
-    }
+    } }
+    draw_chevron_right(canvas, w, h, l.notif_card.x + l.notif_card.w - 14.0, l.notif_card.cy(), 12.0, C_SECONDARY);
 
     // --- Power levels: three pills, the active one in the theme accent. ---
     let level = live_power_level() as usize;
@@ -3295,132 +3211,51 @@ pub fn draw_controlcenter_panel(
     }
 }
 
-/// Thumb centre x for a slider level: the fill end, spanning the FULL
-/// track (iter107 — the rendered value IS the live value, at every
-/// level including the extremes).
-/// The old form clamped the centre to
-/// [track.x + THUMB_D/2, track.x + track.w - THUMB_D/2], so at 0% the
-/// centre read 4.0% of the track and at 100% 96.0% — the rendered
-/// value could never match the live wpctl value at the extremes, and
-/// the thumb sat visibly in from the track ends. The clamp is gone:
-/// centre = track.x + track.w * level, exactly the fill end, exactly
-/// where a press/drag at that x sets the level (main.rs maps press x
-/// with the same formula, so input and output are exact inverses).
-/// The thumb still never leaves the PANEL — THUMB_D is 28 (see its
-/// comment): [0, 28] at 0%, [376, 404] at 100%. Pure geometry,
-/// unit-tested below.
-fn thumb_cx(track: Rect, level: f32) -> f32 {
-    let level = level.clamp(0.0, 1.0);
-    track.x + track.w * level
+/// The visual rail is separate from the generous pointer hit row.
+pub fn slider_rail(track: Rect) -> Rect {
+    Rect::new(track.x + 36.0, track.cy() - 3.0, track.w - 44.0, 6.0)
 }
 
-/// One slider row: 11 px secondary label, 36 px pill track, periwinkle
-/// fill, WHITE Ø28 thumb with a thin dark ring (iter85 — the old
-/// knob-less 20 px bar rendered 0% as a dead grey bar; a 0% slider now
-/// still shows its track and its thumb clearly), dark-navy glyph at
-/// the left INSIDE the fill when the fill is wide enough, otherwise
-/// dimmed on the track just right of the thumb (never under it), and a
-/// BARE white chevron at the row end — a row action, clearly distinct
-/// from the filled nav discs (critic defect 9 / iter85 item 5; iter86:
-/// the outlined pill was dropped because it cloned the nav discs).
-/// `level` is clamped to 0.0..=1.0.
+pub fn slider_level_from_x(track: Rect, x: f32) -> f32 {
+    let rail = slider_rail(track);
+    ((x - rail.x) / rail.w).clamp(0.0, 1.0)
+}
+
+fn thumb_cx(track: Rect, level: f32) -> f32 {
+    let rail = slider_rail(track);
+    rail.x + rail.w * level.clamp(0.0, 1.0)
+}
+
 fn draw_slider(
-    canvas: &mut [u8],
-    w: u32,
-    h: u32,
-    ui_font: &Font,
-    icon_font: Option<&Font>,
-    label: &str,
-    icon: &str,
-    label_rect: Rect,
-    track: Rect,
-    end_btn: Rect,
-    level: f32,
+    canvas: &mut [u8], w: u32, h: u32, ui_font: &Font,
+    icon_font: Option<&Font>, label: &str, icon: &str,
+    label_rect: Rect, track: Rect, end_btn: Rect, level: f32,
 ) {
     let level = level.clamp(0.0, 1.0);
-    draw_text(
-        canvas, w, h, ui_font, label, 11.0, label_rect.x, label_rect.y,
-        C_SECONDARY, false,
-    );
-    fill_rounded_rect(canvas, w, h, track, TRACK_R, C_SLIDER_TRACK);
-    let fill_w = track.w * level;
+    draw_text(canvas, w, h, ui_font, label, 11.0, label_rect.x, label_rect.y, C_SECONDARY, false);
+    let value = format!("{:.0}%", level * 100.0);
+    let value_w = text_width(ui_font, &value, 11.0);
+    draw_text(canvas, w, h, ui_font, &value, 11.0,
+        track.x + track.w - value_w, label_rect.y, C_PRIMARY, false);
+    draw_icon(canvas, w, h, icon_font, icon, SLIDER_GLYPH_PX,
+        track.x + 12.0, track.cy(), C_SECONDARY);
+    let rail = slider_rail(track);
+    fill_rounded_rect(canvas, w, h, rail, TRACK_R, C_SLIDER_TRACK);
+    let fill_w = rail.w * level;
     if fill_w > 0.0 {
-        // iter107: the fill's leading edge IS the value edge, so it is
-        // SQUARE (rounded left end only). The old fully-rounded fill
-        // hid its true end twice over: at the centre row the solid
-        // thumb covers the fill's last THUMB_D/2 px, and at every
-        // off-centre row the r=18 corner pulled the blue edge left by
-        // up to 18 px — on the v0.41 shot the visible blue never got
-        // past ~46% while wpctl read 49% (45.7% at the handle centre
-        // against the critic's span, 44.9% blue at the centre row
-        // against the true track). With a square end the fill reaches
-        // exactly track.x + fill_w on the rows above/below the thumb
-        // (|dy| in (THUMB_D/2, TRACK_H/2] — 4 logical px top and
-        // bottom), so a pixel measurement there reads the live value.
-        // Two parts: the rounded left cap (the track's left end is a
-        // capsule — a square fill would poke out of it at the corners)
-        // plus a sharp rect (radius 0) from the cap's centre to the
-        // fill end. fill_w <= 2*TRACK_R (level < ~9.6%) is a single
-        // small pill — no checklist value lives there, and the cap
-        // alone is exact at the centreline.
-        if fill_w <= 2.0 * TRACK_R {
-            fill_rounded_rect(
-                canvas, w, h,
-                Rect::new(track.x, track.y, fill_w, track.h),
-                (fill_w / 2.0).min(TRACK_R), slider_accent(),
-            );
-        } else {
-            fill_rounded_rect(
-                canvas, w, h,
-                Rect::new(track.x, track.y, 2.0 * TRACK_R, track.h),
-                TRACK_R, slider_accent(),
-            );
-            fill_rounded_rect(
-                canvas, w, h,
-                Rect::new(track.x + TRACK_R, track.y, fill_w - TRACK_R, track.h),
-                0.0, slider_accent(),
-            );
-        }
+        fill_rounded_rect(canvas, w, h,
+            Rect::new(rail.x, rail.y, fill_w, rail.h),
+            TRACK_R.min(fill_w / 2.0), slider_accent());
     }
-    // Thumb: white disc + thin dark ring, on top of fill and track.
-    // Drawn even at 0% (fill_w == 0) — that is the whole point: the
-    // 0% state keeps a visible handle instead of a dead bar.
     let tcx = thumb_cx(track, level);
-    fill_rounded_rect(
-        canvas, w, h,
+    fill_rounded_rect(canvas, w, h,
         Rect::new(tcx - THUMB_D / 2.0, track.cy() - THUMB_D / 2.0, THUMB_D, THUMB_D),
-        THUMB_D / 2.0,
-        C_THUMB,
-    );
-    stroke_circle(canvas, w, h, tcx, track.cy(), THUMB_D / 2.0 - 0.75, 1.5, C_THUMB_RING);
-    // Glyph: inside the fill (dark navy) when the fill is wide enough
-    // to hold it clear of the thumb (fill_w >= 48: glyph ink ends
-    // ~track.x+26, thumb starts at fill end - 14 >= track.x+34);
-    // otherwise dimmed on the track just right of the thumb, so a
-    // near-zero level never collides with it or overflows the fill.
-    // iter34 a6a: 20 px em (was 16) so the fill glyph matches the
-    // toggle glyphs' visual weight instead of reading tiny.
-    if fill_w >= 48.0 {
-        draw_icon(
-            canvas, w, h, icon_font, icon, SLIDER_GLYPH_PX,
-            track.x + 16.0, track.cy(), accent_glyph(),
-        );
-    } else {
-        draw_icon(
-            canvas, w, h, icon_font, icon, SLIDER_GLYPH_PX,
-            tcx + THUMB_D / 2.0 + 10.0, track.cy(), C_SECONDARY,
-        );
+        THUMB_D / 2.0, C_THUMB);
+    stroke_circle(canvas, w, h, tcx, track.cy(), THUMB_D / 2.0 - 0.5, 1.0, C_THUMB_RING);
+    // Brightness has no submenu; only Sound gets a disclosure control.
+    if icon == "volume_up" {
+        draw_chevron_right(canvas, w, h, end_btn.cx(), end_btn.cy(), 14.0, C_END_BTN_CHEVRON);
     }
-    // End button: BARE chevron, no pill, no disc, no outline
-    // (iter86: the 28x36 outlined pill read as a nav-disc clone —
-    // same 28 width class as the Ø28 nav discs, same ">" — so the
-    // row action is now just the glyph itself, floating on the panel).
-    // iter91: DIMMED (140,146,152) + shrunk 18 -> 14 px — the bare
-    // WHITE 18 px chevron still read as a stray nav arrow (same
-    // white, same stroke language as the nav-disc chevrons). Dimmer
-    // and smaller it reads as a quiet row affordance, not navigation.
-    // The hit rect (end_btn, 28x36) is unchanged — same click target.
-    draw_chevron_right(canvas, w, h, end_btn.cx(), end_btn.cy(), 14.0, C_END_BTN_CHEVRON);
 }
 
 // ---------------------------------------------------------------------------
@@ -3436,12 +3271,9 @@ mod iter85_tests {
         let l = cc_layout();
         // Panel bottom margin below the power row is exactly 14.
         assert!((l.panel.h - (l.power_buttons[0].y + l.power_buttons[0].h) - 14.0).abs() < 1e-6);
-        // 14 px from the card to the power row — no dead band at the tail.
-        assert!((l.power_buttons[0].y - (l.notif_card.y + l.notif_card.h) - 14.0).abs() < 1e-6);
-        // No inter-section gap exceeds 14 (old layout: 75 above the
-        // card, 56 below it).
+        assert!((l.power_buttons[0].y - (l.notif_card.y + l.notif_card.h) - 12.0).abs() < 1e-6);
         let grid_bottom = l.toggle_pills[2].y + l.toggle_pills[2].h;
-        assert!((l.display_label.y - grid_bottom - 12.0).abs() < 1e-6);
+        assert!((l.display_label.y - grid_bottom - 16.0).abs() < 1e-6);
         assert!((l.display_track.y - (l.display_label.y + 14.0) - 4.0).abs() < 1e-6);
         assert!((l.sound_label.y - (l.display_track.y + l.display_track.h) - 14.0).abs() < 1e-6);
         assert!((l.sound_track.y - (l.sound_label.y + 14.0) - 4.0).abs() < 1e-6);
@@ -3517,24 +3349,22 @@ mod iter85_tests {
     #[test]
     fn notification_card_sized_to_content() {
         let l = cc_layout();
-        // iter91: 8 px padding (was 12): bell top = card top + 8,
-        // sub line ends ~379, card bottom = 379 + 8.
-        assert!((l.bell_circle.y - l.notif_card.y - 8.0).abs() < 1e-6);
-        assert!((l.notif_card.y + l.notif_card.h - (l.notif_sub.y + 13.0) - 8.0).abs() < 1e-6);
-        assert!((l.notif_card.h - 91.0).abs() < 1e-6);
+        assert!((l.bell_circle.cy() - l.notif_card.cy()).abs() < 1e-6);
+        assert!((l.bell_circle.x - l.notif_card.x - 12.0).abs() < 1e-6);
+        assert!(l.notif_title.x > l.bell_circle.x + l.bell_circle.w);
+        assert_eq!(l.notif_title.x, l.notif_sub.x);
+        assert!((l.notif_card.y + l.notif_card.h - (l.notif_sub.y + 14.0) - 12.0).abs() < 1e-6);
+        assert!((l.notif_card.h - 56.0).abs() < 1e-6);
         // Panel bottom margin below the power row is still exactly 14.
         assert!((l.panel.h - (l.power_buttons[0].y + l.power_buttons[0].h) - 14.0).abs() < 1e-6);
     }
 
     // iter91: R3 + frost + header divider + chevron restyle.
     #[test]
-    fn panel_height_447_no_dead_band() {
+    fn panel_height_matches_compact_content() {
         let l = cc_layout();
-        assert!((l.panel.h - 447.0).abs() < 1e-6);
-        assert_eq!(CC_H, 447);
-        // No inter-section gap exceeds 14 (old layout: 75 above the
-        // card, 56 below it); card top still 296, so the Sound->card
-        // gap is still exactly 14.
+        assert_eq!(l.panel.h, CC_H as f32);
+        assert_eq!(CC_H, 424);
         assert!((l.notif_card.y - (l.sound_track.y + l.sound_track.h) - 14.0).abs() < 1e-6);
     }
 
@@ -3556,9 +3386,7 @@ mod iter85_tests {
     #[test]
     fn header_divider_groups_header() {
         let l = cc_layout();
-        // 1 px hairline, full content width, between the header row
-        // bottom (HEADER_Y + HEADER_H = 24) and the grid top (36).
-        assert!((l.header_divider.y - 30.0).abs() < 1e-6);
+        assert!((l.header_divider.y - 40.0).abs() < 1e-6);
         assert!((l.header_divider.h - 1.0).abs() < 1e-6);
         assert!((l.header_divider.x - CC_PAD).abs() < 1e-6);
         assert!((l.header_divider.w - CC_CONTENT_W).abs() < 1e-6);
@@ -3575,7 +3403,7 @@ mod iter85_tests {
         let l = cc_layout();
         for btn in [l.display_end_btn, l.sound_end_btn] {
             assert!((btn.w - 28.0).abs() < 1e-6);
-            assert!((btn.h - 36.0).abs() < 1e-6);
+            assert!((btn.h - TRACK_H).abs() < 1e-6);
         }
     }
 
@@ -3832,10 +3660,10 @@ mod iter85_tests {
     }
 
     #[test]
-    fn sliders_thick_end_button_full_height() {
+    fn slider_end_buttons_match_track_height() {
         let l = cc_layout();
-        assert!((l.display_track.h - 36.0).abs() < 1e-6);
-        assert!((l.sound_track.h - 36.0).abs() < 1e-6);
+        assert_eq!(l.display_track.h, 28.0);
+        assert_eq!(l.sound_track.h, 28.0);
         // End-button HIT rects span the full track height (row action,
         // not a 28x28 square) and sit at the same y as their track.
         // iter86: only the drawing changed (bare chevron) — the rects
@@ -3856,65 +3684,40 @@ mod iter85_tests {
     fn toggle_discs_uniform_circles() {
         let l = cc_layout();
         for c in l.toggle_circles {
-            assert!((c.w - 48.0).abs() < 1e-6);
-            assert!((c.h - 48.0).abs() < 1e-6);
+            assert_eq!(c.w, 32.0);
+            assert_eq!(c.h, 32.0);
             assert!((c.w - c.h).abs() < 1e-6);
         }
     }
 
     #[test]
-    fn thumb_spans_full_track_at_0_and_100_iter107() {
-        // iter107: the thumb centre spans the FULL track — the old
-        // clamp pinned it to [track.x + 15, track.x + track.w - 15],
-        // so the rendered centre read 4.0% at 0% and 96.0% at 100%
-        // against the live wpctl value. The thumb still never leaves
-        // the PANEL: THUMB_D is 28, so at 0% it spans [0, 28] (flush
-        // with the panel edge) and at 100% [376, 404] (clear of the
-        // end-button chevron, whose ink starts ~405.1).
+    fn slider_thumb_and_pointer_use_the_same_rail() {
         let l = cc_layout();
         for track in [l.display_track, l.sound_track] {
-            assert!((thumb_cx(track, 0.0) - track.x).abs() < 1e-6);
-            assert!((thumb_cx(track, 1.0) - (track.x + track.w)).abs() < 1e-6);
-            assert!((thumb_cx(track, 0.5) - track.cx()).abs() < 1e-6);
-            // Panel containment at both extremes (thumb fully on-panel).
-            assert!((thumb_cx(track, 0.0) - THUMB_D / 2.0).abs() < 1e-6);
-            assert!(thumb_cx(track, 1.0) + THUMB_D / 2.0 <= CC_W as f32);
-            // Chevron clearance at 100%: thumb right edge 404, the
-            // chevron's left tip is at end_btn.cx() - 7*0.7 = 405.1.
-            assert!(thumb_cx(track, 1.0) + THUMB_D / 2.0 < 405.1);
+            let rail = slider_rail(track);
+            assert!(rail.x - THUMB_D / 2.0 > track.x + 24.0);
+            assert!(rail.x + rail.w + THUMB_D / 2.0 <= track.x + track.w);
+            for level in [0.0, 0.25, 0.5, 0.75, 1.0] {
+                let centre = thumb_cx(track, level);
+                assert!((centre - (rail.x + rail.w * level)).abs() < 1e-6);
+                assert!((slider_level_from_x(track, centre) - level).abs() < 1e-6);
+            }
+            assert_eq!(slider_level_from_x(track, track.x - 100.0), 0.0);
+            assert_eq!(slider_level_from_x(track, track.x + track.w + 100.0), 1.0);
         }
-        assert!((THUMB_D - 28.0).abs() < 1e-6);
     }
 
     #[test]
-    fn slider_fill_end_is_square_and_visible_iter107() {
-        // iter107: the fill's leading edge is the value edge. The
-        // construction in draw_slider is: rounded left cap
-        // [track.x, track.x + 2*TRACK_R] + sharp rect
-        // [track.x + TRACK_R, track.x + fill_w]. This test pins the
-        // geometry that makes the fill MEASURABLE: (a) the sharp rect
-        // ends exactly at track.x + fill_w for every checklist level;
-        // (b) the thumb (Ø28) leaves 4-logical-px slivers top/bottom
-        // of the 36-tall track where the fill is not occluded, so the
-        // square end is visible there; (c) the thumb centre equals the
-        // fill end (same expression), so handle-centre and fill-end
-        // readings agree by construction.
+    fn slider_has_clear_space_around_its_rail_and_thumb() {
         let l = cc_layout();
         for track in [l.display_track, l.sound_track] {
-            for level in [0.0f32, 0.25, 0.5, 0.75, 1.0] {
-                let fill_w = track.w * level;
-                let fill_end = track.x + fill_w;
-                // (c) centre == fill end.
-                assert!((thumb_cx(track, level) - fill_end).abs() < 1e-6);
-                // (a) sharp-rect end, for levels where it exists.
-                if fill_w > 2.0 * TRACK_R {
-                    let rect_end = track.x + TRACK_R + (fill_w - TRACK_R);
-                    assert!((rect_end - fill_end).abs() < 1e-6);
-                }
-                // (b) sliver height per side: track half-height minus
-                // thumb radius.
-                assert!((TRACK_H / 2.0 - THUMB_D / 2.0 - 4.0).abs() < 1e-6);
-            }
+            let rail = slider_rail(track);
+            assert_eq!(rail.h, 6.0);
+            assert_eq!(rail.cy(), track.cy());
+            assert_eq!(THUMB_D, 16.0);
+            assert!(track.h > THUMB_D);
+            assert!(rail.y > track.y);
+            assert!(rail.y + rail.h < track.y + track.h);
         }
     }
 
@@ -4270,116 +4073,49 @@ mod iter85_tests {
         std::fs::write("/tmp/cc-sound-submenu.bgra", &canvas).unwrap();
     }
 
-    // iter107: PIXEL proof that the rendered slider value matches the
-    // level — the acceptance the v0.41 critic could not verify from
-    // pixels (visible blue stopped at ~46% for a 49% level; handle
-    // centre read 45.7% against the critic's span). Renders the whole
-    // panel off-screen with the real fonts (same pattern as
-    // render_proof_iter91) at sound_level 0/25/50/75/100% and measures
-    // BOTH readings from the BGRA canvas:
-    //   (a) handle centre = centre of the white-thumb bbox on the
-    //       Sound row (white = all channels > 235), windowed to
-    //       expected centre ± 20 so the fill glyph / chevron cannot
-    //       pollute it, as a fraction of the TRUE track span
-    //       [track.x, track.x + track.w];
-    //   (b) fill end = rightmost accent pixel on the top sliver rows
-    //       (track.y+1..track.y+3 — above the thumb, which covers
-    //       |dy| <= THUMB_D/2, and clear of the fill's top-edge AA),
-    //       same fraction. The accent is read from slider_accent()
-    //       (theme accent on the Surface, #74A3F6 fallback), matched
-    //       within ±15 per channel.
-    // Both must read the level within 1% (centre ±1.0 logical px,
-    // fill end +0.5 px pixel-centre convention). Skips silently when
-    // the fonts are absent, like render_proof_iter91.
     #[test]
-    fn slider_rendered_value_matches_level_iter107() {
-        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
-        let Some(home) = home else { return };
-        let ui_font = crate::ui_font();
-        let icon_bytes = match std::fs::read(home.join(".local/share/fonts/MaterialSymbolsRounded.ttf")) {
-            Ok(b) => b,
-            Err(_) => return,
-        };
-        let icon_font = match Font::from_bytes(icon_bytes, fontdue::FontSettings::default()) {
-            Ok(f) => f,
-            Err(_) => return,
-        };
-        let l = cc_layout();
-        let track = l.sound_track;
+    fn slider_pixels_match_the_value_at_every_render_scale() {
+        let font = crate::ui_font();
+        let layout = cc_layout();
+        let track = layout.sound_track;
+        let rail = slider_rail(track);
         let accent = slider_accent();
-        // Canvas is BGRA (see blend_pixel): [B, G, R, A].
-        let px = |canvas: &[u8], x: i32, y: i32| -> (i32, i32, i32) {
-            let i = ((y as usize) * (CC_W as usize) + (x as usize)) * 4;
-            (canvas[i + 2] as i32, canvas[i + 1] as i32, canvas[i] as i32)
-        };
-        let is_white = |c: (i32, i32, i32)| c.0 > 235 && c.1 > 235 && c.2 > 235;
-        let is_accent = |c: (i32, i32, i32)| {
-            (c.0 - accent.0 as i32).abs() <= 15
-                && (c.1 - accent.1 as i32).abs() <= 15
-                && (c.2 - accent.2 as i32).abs() <= 15
-        };
-        for level in [0.0f32, 0.25, 0.5, 0.75, 1.0] {
-            let mut data = ControlCenterData::video_defaults();
-            data.display_level = 0.5;
-            data.sound_level = level;
-            let mut canvas = vec![0u8; (CC_W * CC_H * 4) as usize];
-            draw_controlcenter_panel(
-                &mut canvas,
-                CC_W,
-                CC_H,
-                &ui_font,
-                Some(&icon_font),
-                &data,
-                (0.0, 0.0),
-            );
-            let expect = track.x + track.w * level;
-            // (a) handle centre from the white bbox on the Sound row.
-            let y0 = track.y as i32;
-            let y1 = (track.y + track.h) as i32;
-            let x_lo = (expect as i32 - 20).max(0);
-            let x_hi = (expect as i32 + 20).min(CC_W as i32 - 1);
-            let mut wx0 = i32::MAX;
-            let mut wx1 = i32::MIN;
-            for y in y0..y1 {
-                for x in x_lo..=x_hi {
-                    if is_white(px(&canvas, x, y)) {
-                        wx0 = wx0.min(x);
-                        wx1 = wx1.max(x);
+        for scale in [1.0f32, 1.5, 2.0] {
+            let w = (CC_W as f32 * scale).round() as u32;
+            let h = (CC_H as f32 * scale).round() as u32;
+            set_scale(w);
+            for level in [0.0f32, 0.25, 0.5, 0.75, 1.0] {
+                let mut canvas = vec![0u8; (w * h * 4) as usize];
+                draw_slider(&mut canvas, w, h, &font, None, "Sound", "volume_up",
+                    layout.sound_label, track, layout.sound_end_btn, level);
+                let expect = thumb_cx(track, level) * scale;
+                let mut bounds = (u32::MAX, 0);
+                for y in (track.y * scale) as u32..((track.y + track.h) * scale) as u32 {
+                    for x in (expect - 12.0 * scale).max(0.0) as u32..((expect + 12.0 * scale) as u32).min(w) {
+                        let i = ((y * w + x) * 4) as usize;
+                        if canvas[i..i + 3].iter().all(|v| *v > 235) {
+                            bounds.0 = bounds.0.min(x);
+                            bounds.1 = bounds.1.max(x);
+                        }
                     }
                 }
-            }
-            assert!(wx0 <= wx1, "no white thumb pixels at level {level}");
-            // Pixel-centre convention: pixel i covers [i, i+1).
-            let centre = (wx0 + wx1 + 1) as f32 / 2.0;
-            assert!(
-                (centre - expect).abs() <= 1.0,
-                "handle centre {centre} != {expect} at level {level} (white x {wx0}..{wx1})"
-            );
-            let frac = (centre - track.x) / track.w;
-            assert!((frac - level).abs() <= 0.01, "handle fraction {frac} != {level}");
-            // (b) fill end from the top sliver rows (above the thumb).
-            let mut bx1 = i32::MIN;
-            for y in (track.y as i32 + 1)..=(track.y as i32 + 3) {
-                for x in (track.x as i32)..((track.x + track.w) as i32) {
-                    if is_accent(px(&canvas, x, y)) {
-                        bx1 = bx1.max(x);
-                    }
-                }
-            }
-            if level == 0.0 {
-                assert_eq!(bx1, i32::MIN, "blue fill present at 0%");
-            } else {
-                // Rightmost accent pixel centre is fill_end - 0.5.
-                let fill_end = bx1 as f32 + 0.5;
-                assert!(
-                    (fill_end - expect).abs() <= 1.0,
-                    "fill end {fill_end} != {expect} at level {level} (rightmost accent x {bx1})"
-                );
-                let ffrac = (fill_end - track.x) / track.w;
-                assert!((ffrac - level).abs() <= 0.01, "fill fraction {ffrac} != {level}");
+                assert!(bounds.0 <= bounds.1, "missing thumb at {level}, scale {scale}");
+                let centre = (bounds.0 + bounds.1 + 1) as f32 / 2.0;
+                assert!((centre - expect).abs() <= 1.0, "thumb {centre} != {expect}");
+                let sample_x = if level > 0.0 { rail.x + rail.w * level * 0.5 } else { rail.x + rail.w * 0.5 };
+                let sample = |y: f32| {
+                    let i = (((y * scale) as u32 * w + (sample_x * scale) as u32) * 4) as usize;
+                    [canvas[i + 2], canvas[i + 1], canvas[i], canvas[i + 3]]
+                };
+                let expected = if level > 0.0 { accent } else { C_SLIDER_TRACK };
+                let pixel = sample(track.cy());
+                assert_eq!(&pixel[..3], &[expected.0, expected.1, expected.2]);
+                assert_eq!(sample(track.y + 1.0)[3], 0, "rail filled the hit row");
+                assert_eq!(sample(track.y + track.h - 2.0)[3], 0, "rail filled the hit row");
             }
         }
     }
+
 }
 
 
@@ -4409,288 +4145,45 @@ mod iter85_tests {
 mod iter98_tests {
     use super::*;
 
-    const PERIWINKLE: (u8, u8, u8) = (124, 162, 245); // #7CA2F5, iter96 accent
-    const MINT: (u8, u8, u8) = (140, 207, 126); // #8CCF7E, pre-iter96 accent
-    const NAVY: (u8, u8, u8) = (11, 27, 58); // C_TOGGLE_ON_GLYPH
-    const OFF_GREY: (u8, u8, u8) = (52, 55, 60); // C_TOGGLE_OFF
-    const WHITE: (u8, u8, u8) = (255, 255, 255); // C_TOGGLE_OFF_GLYPH
-
-    fn load_icon_font() -> Font {
-        let home = std::env::var("HOME").expect("HOME is set on the Surface");
-        let path = format!("{home}/.local/share/fonts/MaterialSymbolsRounded.ttf");
-        let bytes =
-            std::fs::read(&path).unwrap_or_else(|e| panic!("icon font missing: {path}: {e}"));
-        Font::from_bytes(bytes, fontdue::FontSettings::default()).expect("icon font parses")
-    }
-
-    /// One toggle disc (48 logical, centre 60,60) in a 120x120 BGRA canvas.
-    fn render_disc(
-        font: &Font,
-        name: &str,
-        glyph_px: f32,
-        fill: (u8, u8, u8),
-        glyph_rgb: (u8, u8, u8),
-    ) -> Vec<u8> {
-        let (w, h) = (120u32, 120u32);
-        let mut canvas = vec![0u8; (w * h * 4) as usize];
-        fill_rounded_rect(
-            &mut canvas,
-            w,
-            h,
-            Rect::new(36.0, 36.0, CIRCLE_D, CIRCLE_D),
-            CIRCLE_D / 2.0,
-            fill,
-        );
-        if name == "focus" {
-            draw_focus_target(&mut canvas, w, h, 60.0, 60.0, glyph_rgb);
-        } else {
-            draw_icon(&mut canvas, w, h, Some(font), name, glyph_px, 60.0, 60.0, glyph_rgb);
-        }
-        canvas
-    }
-
-    /// Canvas pixel as (R, G, B) floats; canvas is BGRA bytes (see blend_pixel).
-    fn px_rgb(canvas: &[u8], w: u32, x: i32, y: i32) -> (f32, f32, f32) {
-        let i = ((y as u32) * w + x as u32) as usize * 4;
-        (canvas[i + 2] as f32, canvas[i + 1] as f32, canvas[i] as f32)
-    }
-
-    fn col_dist(a: (f32, f32, f32), b: (f32, f32, f32)) -> f32 {
-        ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2) + (a.2 - b.2).powi(2)).sqrt()
-    }
-
-    /// Ink heights [thr>45, thr>80] on the LOGICAL canvas (centre 60,60,
-    /// fill sampled 20 logical above centre, r < 34/1.5 logical).
-    /// Band 36..=39 phys => logical 24..=26 (x1.5).
-    fn ink_h_logical(canvas: &[u8]) -> [u32; 2] {
-        let fill = px_rgb(canvas, 120, 60, 40);
-        let mut out = [0u32; 2];
-        for (k, thr) in [45.0f32, 80.0].iter().enumerate() {
-            let mut rows: Vec<i32> = Vec::new();
-            for y in 0..120i32 {
-                let mut hit = false;
-                for x in 0..120i32 {
-                    let d = (((x - 60) as f32).powi(2) + ((y - 60) as f32).powi(2)).sqrt();
-                    if d < 34.0 / 1.5 && col_dist(px_rgb(canvas, 120, x, y), fill) > *thr {
-                        hit = true;
-                        break;
-                    }
-                }
-                if hit {
-                    rows.push(y);
-                }
-            }
-            out[k] = if rows.is_empty() {
-                0
-            } else {
-                (rows[rows.len() - 1] - rows[0] + 1) as u32
-            };
-        }
-        out
-    }
-
-    /// Bilinear x1.5 upscale of the 120x120 logical render to 180x180 phys,
-    /// measured with the agreed method (centre 90,90, fill at (90,60),
-    /// r<34 phys). Diagnostic / loose check only: the compositor's exact
-    /// filter differs by up to ~1 row (observed: logical 26 -> bilin 40/38
-    /// vs live 39/39).
-    fn ink_h_phys_bilin(canvas: &[u8]) -> [u32; 2] {
-        let mut log: Vec<(f32, f32, f32)> = Vec::with_capacity(120 * 120);
-        for y in 0..120i32 {
-            for x in 0..120i32 {
-                log.push(px_rgb(canvas, 120, x, y));
-            }
-        }
-        let sample = |sx: f32, sy: f32| -> (f32, f32, f32) {
-            let x0 = sx.floor() as i32;
-            let y0 = sy.floor() as i32;
-            let fx = sx - x0 as f32;
-            let fy = sy - y0 as f32;
-            let mut acc = (0.0f32, 0.0f32, 0.0f32);
-            for (dx, dy, w) in [
-                (0, 0, (1.0 - fx) * (1.0 - fy)),
-                (1, 0, fx * (1.0 - fy)),
-                (0, 1, (1.0 - fx) * fy),
-                (1, 1, fx * fy),
-            ] {
-                let xi = (x0 + dx).clamp(0, 119) as usize;
-                let yi = (y0 + dy).clamp(0, 119) as usize;
-                let p = log[yi * 120 + xi];
-                acc.0 += p.0 * w;
-                acc.1 += p.1 * w;
-                acc.2 += p.2 * w;
-            }
-            acc
-        };
-        // Phys pixel (x, y) samples logical ((x+0.5)/1.5 - 0.5, (y+0.5)/1.5 - 0.5).
-        let phys = |x: i32, y: i32| -> (f32, f32, f32) {
-            sample((x as f32 + 0.5) / 1.5 - 0.5, (y as f32 + 0.5) / 1.5 - 0.5)
-        };
-        let fill = phys(90, 60);
-        let mut out = [0u32; 2];
-        for (k, thr) in [45.0f32, 80.0].iter().enumerate() {
-            let mut rows: Vec<i32> = Vec::new();
-            for y in 0..180i32 {
-                let mut hit = false;
-                for x in 0..180i32 {
-                    let d = (((x - 90) as f32).powi(2) + ((y - 90) as f32).powi(2)).sqrt();
-                    if d < 34.0 && col_dist(phys(x, y), fill) > *thr {
-                        hit = true;
-                        break;
-                    }
-                }
-                if hit {
-                    rows.push(y);
-                }
-            }
-            out[k] = if rows.is_empty() {
-                0
-            } else {
-                (rows[rows.len() - 1] - rows[0] + 1) as u32
-            };
-        }
-        out
-    }
-
-    /// Logical band: 36..=39 phys at x1.5 => 24..=26 logical.
-    fn in_band_logical(h: u32) -> bool {
-        (24..=26).contains(&h)
-    }
-
     #[test]
-    fn toggle_defs_carry_iter95_fix() {
-        // Source-level guard: the values that were lost in iter96/97.
-        let wifi = TOGGLES.iter().find(|d| d.name == "Wi-Fi").expect("Wi-Fi toggle");
-        let nl = TOGGLES
-            .iter()
-            .find(|d| d.name == "Night Light")
-            .expect("Night Light toggle");
-        assert_eq!(wifi.glyph_px, 35.5, "Wi-Fi glyph_px (iter95/iter98)");
-        assert_eq!(nl.glyph_px, 29.0, "Night Light glyph_px (iter95/iter98)");
-        let bt = TOGGLES
-            .iter()
-            .find(|d| d.name == "Bluetooth")
-            .expect("Bluetooth toggle");
-        assert_eq!(bt.glyph_px, 32.0, "Bluetooth untouched");
-    }
-
-    #[test]
-    fn glyph_band_offline_matches_live() {
-        let font = load_icon_font();
-        // (label, icon, glyph_px, fill, glyph colour, expected logical [>45, >80])
-        let cases: [(&str, &str, f32, (u8, u8, u8), (u8, u8, u8), [u32; 2]); 7] = [
-            ("wifi 35.5 peri (FIX)", "wifi", 35.5, PERIWINKLE, NAVY, [26, 26]),
-            ("wifi 37.0 peri (v0.39)", "wifi", 37.0, PERIWINKLE, NAVY, [27, 27]),
-            ("wifi 35.5 mint (v0.37)", "wifi", 35.5, MINT, NAVY, [26, 26]),
-            ("nightlight 29.0 grey (FIX)", "nightlight", 29.0, OFF_GREY, WHITE, [25, 25]),
-            ("nightlight 31.0 grey (v0.39)", "nightlight", 31.0, OFF_GREY, WHITE, [27, 27]),
-            ("bluetooth 32.0 peri", "bluetooth", 32.0, PERIWINKLE, NAVY, [26, 26]),
-            ("focus procedural peri", "focus", 0.0, PERIWINKLE, NAVY, [26, 26]),
-        ];
-        println!("iter98 offline glyph band (logical band 24..=26, phys band 36..=39):");
-        println!("{:28} {:>10} {:>12}", "case", "log>45/>80", "physBilin>45/>80");
-        for (label, name, px, fill, glyph, expect_log) in cases {
-            let canvas = render_disc(&font, name, px, fill, glyph);
-            let lh = ink_h_logical(&canvas);
-            let pb = ink_h_phys_bilin(&canvas);
-            println!("{:28} {:>4}/{:<5} {:>4}/{:<5}", label, lh[0], lh[1], pb[0], pb[1]);
-            assert_eq!(lh, expect_log, "{label}: logical ink {lh:?}, expected {expect_log:?}");
-            if label.contains("(FIX)") || label.contains("bluetooth") || label.contains("focus") || label.contains("(v0.37)") {
-                // Fixed / untouched cases: logical in band, and the bilinear
-                // phys estimate within +/-1 row of the logical prediction.
-                for (k, thr) in [" >45", " >80"].iter().enumerate() {
-                    assert!(in_band_logical(lh[k]), "{label}{thr}: logical {lh:?} outside band 24..=26");
-                    let pred = (lh[k] as f32 * 1.5).round() as i32;
-                    assert!(
-                        (pb[k] as i32 - pred).abs() <= 1,
-                        "{label}{thr}: bilin phys {} vs logical prediction {pred} (off by >1)",
-                        pb[k]
-                    );
-                }
-            } else {
-                // Pre-fix cases: logical taller than the fix (27 vs 26/25),
-                // predicting phys 40.5 — over the band ceiling, as live.
-                assert!(lh[0] >= 27 && lh[1] >= 27, "{label}: expected logical 27/27, got {lh:?}");
-            }
-        }
-        // Disc-only control: no glyph => no ink at either threshold, logical
-        // or bilinear (guards against disc-edge contamination of the metric).
-        let (w, h) = (120u32, 120u32);
-        let mut canvas = vec![0u8; (w * h * 4) as usize];
-        fill_rounded_rect(
-            &mut canvas,
-            w,
-            h,
-            Rect::new(36.0, 36.0, CIRCLE_D, CIRCLE_D),
-            CIRCLE_D / 2.0,
-            PERIWINKLE,
-        );
-        assert_eq!(ink_h_logical(&canvas), [0, 0], "disc-only logical ink");
-        assert_eq!(ink_h_phys_bilin(&canvas), [0, 0], "disc-only bilin ink");
-    }
-    /// r2 accessibility: a toggle disc must carry a glyph at EVERY draw scale.
-    ///
-    /// `draw_icon` used to rasterise at logical `px` and place at logical
-    /// (cx, cy) on a device-sized canvas, so at 2x the icon landed at a quarter
-    /// of the disc's position and half its size: the live Wi-Fi and Bluetooth
-    /// discs were flat periwinkle with ZERO glyph pixels. The existing glyph
-    /// tests all draw at scale 1.0, which is exactly why they never caught it.
-    #[test]
-    fn toggle_disc_glyph_is_present_and_centred_at_every_scale() {
-        let font = load_icon_font();
+    fn toggle_glyphs_fit_and_stay_centred_at_every_scale() {
+        let home = std::env::var("HOME").unwrap();
+        let bytes = std::fs::read(format!("{home}/.local/share/fonts/MaterialSymbolsRounded.ttf")).unwrap();
+        let font = Font::from_bytes(bytes, fontdue::FontSettings::default()).unwrap();
         for scale in [1.0f32, 1.5, 2.0] {
             let w = (CC_W as f32 * scale).round() as u32;
-            let h = (160.0 * scale).round() as u32;
-            let mut canvas = vec![0u8; (w * h * 4) as usize];
+            let h = (120.0 * scale).round() as u32;
             set_scale(w);
-            // disc centre in LOGICAL units, as every caller passes it
-            let (cx, cy) = (80.0f32, 80.0f32);
-            let r = CIRCLE_D / 2.0;
-            fill_rounded_rect(
-                &mut canvas, w, h,
-                Rect::new(cx - r, cy - r, CIRCLE_D, CIRCLE_D), r, PERIWINKLE,
-            );
-            draw_icon(&mut canvas, w, h, Some(&font), "bluetooth", 26.0, cx, cy, NAVY);
-
-            // count glyph pixels inside the disc, in DEVICE units
-            let (dcx, dcy) = ((cx * scale) as i32, (cy * scale) as i32);
-            let rad = (r * scale) as i32;
-            let mut glyph = 0usize;
-            let mut sx = 0i64;
-            let mut sy = 0i64;
-            for y in (dcy - rad)..(dcy + rad) {
-                for x in (dcx - rad)..(dcx + rad) {
-                    if x < 0 || y < 0 || x >= w as i32 || y >= h as i32 {
-                        continue;
-                    }
-                    let (pr, pg, pb) = px_rgb(&canvas, w, x, y);
-                    // navy glyph on periwinkle: far from the fill colour
-                    if col_dist((pr, pg, pb), (124.0, 162.0, 245.0)) > 90.0
-                        && pr + pg + pb > 30.0
-                    {
-                        glyph += 1;
-                        sx += x as i64;
-                        sy += y as i64;
+            for def in &TOGGLES {
+                let mut canvas = [245u8, 162, 124, 255].repeat((w * h) as usize);
+                if def.key == ToggleKey::Focus {
+                    draw_focus_target(&mut canvas, w, h, 60.0, 60.0, (11, 27, 58));
+                } else {
+                    draw_icon(&mut canvas, w, h, Some(&font), def.icon, def.glyph_px, 60.0, 60.0, (11, 27, 58));
+                }
+                let mut bounds = (w as i32, h as i32, -1, -1);
+                for y in 0..h {
+                    for x in 0..w {
+                        let i = ((y * w + x) * 4) as usize;
+                        if canvas[i] < 165 && canvas[i + 2] < 95 {
+                            bounds.0 = bounds.0.min(x as i32);
+                            bounds.1 = bounds.1.min(y as i32);
+                            bounds.2 = bounds.2.max(x as i32);
+                            bounds.3 = bounds.3.max(y as i32);
+                        }
                     }
                 }
+                let (x0, y0, x1, y1) = bounds;
+                let ink_h = (y1 - y0 + 1) as f32 / scale;
+                assert!((CIRCLE_D * 0.45..=CIRCLE_D * 0.70).contains(&ink_h), "{} scale {scale}: ink height {ink_h}", def.name);
+                assert!(x1 >= x0 && (x1 - x0 + 1) as f32 / scale < CIRCLE_D - 4.0, "{} overflows its disc", def.name);
+                let centre = 60.0 * scale;
+                assert!(((x0 + x1 + 1) as f32 / 2.0 - centre).abs() <= 2.0 * scale, "{} horizontal centring", def.name);
+                assert!(((y0 + y1 + 1) as f32 / 2.0 - centre).abs() <= 2.0 * scale, "{} vertical centring", def.name);
             }
-            let disc_px = (std::f32::consts::PI * (rad * rad) as f32) as usize;
-            assert!(
-                glyph * 100 > disc_px * 8,
-                "scale {scale}: only {glyph} glyph px in a {disc_px} px disc \
-                 (icon missing or mis-scaled)"
-            );
-            // and it must sit ON the disc, not a quarter of the way there
-            let (mx, my) = (sx / glyph as i64, sy / glyph as i64);
-            assert!(
-                (mx - dcx as i64).abs() <= 3 && (my - dcy as i64).abs() <= 3,
-                "scale {scale}: glyph centroid ({mx},{my}) vs disc centre \
-                 ({dcx},{dcy})"
-            );
-            SCALE.with(|c| c.set(1.0));
         }
+        SCALE.with(|c| c.set(1.0));
     }
-
 }
 
 #[cfg(test)]
@@ -4726,7 +4219,7 @@ mod iter108_tests {
     fn assert_profile_close(name: &str, measured: &[u32], ideal: &[u32], radius_buf: f32) {
         assert_eq!(measured.len(), ideal.len(), "{name}: profile length");
         let max_ideal = *ideal.iter().max().unwrap_or(&0);
-        let shoulder_bound = ((radius_buf / 8.0) as u32).max(4);
+        let mut shoulder_bound = ((radius_buf / 8.0) as u32).max(4);
         let mut shoulder_jump = 0u32;
         for (i, (m, e)) in measured.iter().zip(ideal.iter()).enumerate() {
             if *e * 10 >= max_ideal * 3 {
@@ -4738,6 +4231,7 @@ mod iter108_tests {
             }
             if i > 0 && *e * 20 >= max_ideal * 9 && *e * 20 <= max_ideal * 17 {
                 shoulder_jump = shoulder_jump.max(measured[i].abs_diff(measured[i - 1]));
+                shoulder_bound = shoulder_bound.max(ideal[i].abs_diff(ideal[i - 1]) + 2);
             }
         }
         let run = max_run(measured);

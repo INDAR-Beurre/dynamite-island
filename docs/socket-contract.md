@@ -4,6 +4,15 @@
 datagram. A separate live binary depends on these exact literals, so a fixer
 must treat them as a frozen public API.
 
+## CLI locking versus renderer test states
+
+The public `dynamite-rust lock` and `lockscreen` commands launch the authenticated
+Hyprlock/Howdy backend; the Power-menu Lock button uses the same launcher.
+`dynamite-rust lock-preview` explicitly opens the visual harness. Legacy raw
+`lockscreen` / `unlock` datagrams remain renderer-test states for the existing
+regression harness. They neither acquire nor release Hyprlock's session lock.
+Never substitute a preview datagram for the real lock command.
+
 ## The external producer
 
 `tools/dictation/` builds `static-dictation`, the dictation tool the user asked

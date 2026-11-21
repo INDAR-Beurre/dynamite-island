@@ -1,69 +1,80 @@
-# dynamite-rust
+<div align="center">
 
-A minimal Wayland "dynamic island": a small black capsule at top-centre showing
-the clock, which expands into panels (control centre, music, calendar, themes,
-clipboard, wallpapers) and a giant-clock lock screen. Written in Rust against
-`wlr-layer-shell`. No GTK, no Qt, no QML — one binary, direct Wayland.
+# 🏝️ Dynamite Island (`dynamite-rust`)
 
-Plus `tools/dictation/`: hold a key, speak, release; the transcription is typed
-into the focused window and the island shows a live level bar.
+**A fast, lightweight Wayland Dynamic Island written in pure Rust.**  
+One binary. Direct `wlr-layer-shell`. Zero GTK, Qt, or QML overhead.
 
-> **Status:** the panel is usable daily on MangoWM. The lock screen is a
-> **visual replica only** — see [Lock screen](#lock-screen) before relying on it.
+[![Rust](https://img.shields.io/badge/Rust-1.88%2B-orange?style=for-the-badge&logo=rust&logoColor=white)](https://www.rust-lang.org/)
+[![Wayland](https://img.shields.io/badge/Wayland-wlr--layer--shell-blue?style=for-the-badge&logo=wayland&logoColor=white)](https://wayland.freedesktop.org/)
+[![Compositor](https://img.shields.io/badge/MangoWM-0.18.3-purple?style=for-the-badge)](https://github.com/DreamMaoMao/mangowc)
+[![Memory](https://img.shields.io/badge/RAM-~30--45%20MB-brightgreen?style=for-the-badge)](#)
+[![Fonts License](https://img.shields.io/badge/Fonts-SIL%20OFL%201.1-lightgrey?style=for-the-badge)](#licence)
 
-## Prerequisites
+</div>
 
-**Build-time** (hard requirements — the build fails without them):
+---
 
-| Need | Why | Arch/Artix package |
+**Dynamite Island** sits as a sleek, frosted-glass pill at the top-centre of your Wayland screen, displaying the live clock at rest and smoothly spring-morphing into rich interactive panels—**Control Center**, **Notifications**, **Music**, **Calendar**, **Displays**, **Clipboard**, **Wallpapers**, **Themes**, **Power**, and **Dictation**—all rendered directly into Wayland shared memory in ~30–45 MB of RAM.
+
+> **Status:** Daily-usable on **MangoWM**. The `lock-preview` command is a visual preview only; real session locking integrates with Hyprlock + PAM/Howdy (see [Lock screen](#lock-screen)).
+
+---
+
+## ✨ Features
+
+| Area | What it does |
+|---|---|
+| 🕒 **Collapsed Pill & Clusters** | Compact top-centre clock capsule. Hovering reveals the MangoWM workspace strip on the left and active system tray icons on the right. |
+| 🎛️ **Control Center** | Live Wi-Fi, Bluetooth, Display Brightness, Sound Volume, latest notification preview, and quick Power access. |
+| 🔔 **Notifications & OSD** | Mirrors `org.freedesktop.Notifications` over D-Bus (up to 32 recent messages, interactive inbox with scroll & dismiss). Volume and brightness keys expand the pill briefly instead of cluttering the corner. |
+| 🎵 **Music (MPRIS)** | Track metadata, album art, playback progress, and play/pause/next/prev controls via `playerctl`. |
+| 🖥️ **Displays** | Per-output scale presets and fine `0.05` stepping; applies immediately and persists to `~/.config/mango/monitor.conf`. |
+| 📅 **Calendar, Clipboard, Wallpapers & Themes** | Built-in monthly calendar, `cliphist` clipboard browser, wallpaper switcher (`swaybg`), and island accent theme picker. |
+| 🎙️ **Hold-to-Speak Dictation** | Companion crate in [`tools/dictation/`](tools/dictation/README.md): hold a key, speak, release—transcribes via Groq Whisper and types into the focused window while the pill animates a live audio level bar. |
+| 🔒 **Session Lock** | Authenticated Hyprlock + Howdy/PAM session lock styled with Dynamite's wallpaper frost and giant clock. |
+
+---
+
+## 📦 Prerequisites
+
+### Build-time (required)
+
+| Dependency | Purpose | Arch / Artix Package |
 |---|---|---|
-| Rust **1.88+** (edition 2021) | both crates — locked deps need 1.88 | `rust` |
-| C compiler and linker (`cc`) | native dependencies including dictation TLS | `base-devel` |
-| `libxkbcommon` + headers | keymap handling | `libxkbcommon` |
-| `libasound` + headers | dictation microphone capture | `alsa-lib` |
-| `pkg-config` | locating the two above | `pkgconf` |
+| **Rust 1.88+** (2021 ed.) | Compiles both crates (locked deps require 1.88) | `rust` |
+| **C toolchain (`cc`)** | Native deps including dictation TLS | `base-devel` |
+| **`libxkbcommon`** | Keymap handling | `libxkbcommon` |
+| **`libasound`** | Dictation microphone capture | `alsa-lib` |
+| **`pkg-config`** | Locates native libraries above | `pkgconf` |
 
-**Runtime:** a compositor implementing `wlr-layer-shell`. **Tested on MangoWM
-0.18.3 only.** The workspace discs and the wallpaper picker are Mango-specific
-(`mmsg`, `~/.config/mango/wallpaper/`), so on Hyprland or sway expect the pill
-and panels to work and those two integrations to be empty. The
-`ext_session_lock_v1` protocol is not used.
+### Runtime
 
-**Dictation additionally needs** evdev access to the keyboard and a writable
-`/dev/uinput` — normally the `input` group:
+- **Compositor:** Any compositor implementing `wlr-layer-shell` (**tested on MangoWM 0.18.3**). Workspace discs and the wallpaper picker are Mango-specific (`mmsg`, `~/.config/mango/wallpaper/`); on Hyprland or Sway, the pill and panels work while those two integrations stay empty. `ext_session_lock_v1` is not used.
+- **Dictation:** Needs evdev keyboard access and writable `/dev/uinput` (usually `input` group + `sudo modprobe uinput`), plus a Groq API key (`GROQ_API_KEY` or `static-dictation/api_key`). See [`tools/dictation/README.md`](tools/dictation/README.md) and [`deploy/README.md`](deploy/README.md#dictation).
 
-```sh
-sudo usermod -aG input "$USER"      # then log out and back in
-```
+### Optional External Tools
 
-Load `uinput` if `/dev/uinput` is missing (`sudo modprobe uinput`), then check
-its permissions. Dictation sends speech to `api.groq.com` and requires a Groq
-API key in `GROQ_API_KEY` or a private `static-dictation/api_key` file under your
-config directory. See [`tools/dictation/README.md`](tools/dictation/README.md)
-for setup and [`deploy/README.md`](deploy/README.md#dictation) for autostart.
+Every external tool is invoked defensively—missing tools degrade gracefully to an empty row rather than crashing:
 
-**Optional external tools.** Every one is invoked defensively — a missing tool
-degrades to an empty row rather than crashing, which also means **a missing tool
-looks identical to "no data"**. Install what you want to see:
-
-| Tool | Buys you | Without it |
+| Tool | Enables | Without it |
 |---|---|---|
-| `bluetoothctl`, `rfkill` | Bluetooth row + toggle | blank Bluetooth row |
-| `nmcli`, `iw` | Wi-Fi row, SSID, signal | blank Wi-Fi row |
-| `wpctl`, `pactl` | volume slider + mute | volume shows nothing |
-| `playerctl` | music panel (track, art, position) | empty music panel |
-| `brightnessctl` | brightness slider | brightness shows nothing |
-| `swaync-client` | notification count / DND | no notification badge |
-| `cliphist`, `wl-copy` | clipboard history panel | empty clipboard |
-| `mmsg` | MangoWM workspace + output state | workspaces don't track |
-| `grim` | wallpaper frost sampling for the lock screen | flat lock background |
-| `curl` | wallpaper download in the themes panel | download fails quietly |
-| `swaybg` | display wallpaper selections | saved selection is not displayed |
-| `socat` | manual socket command examples below | use the panel's CLI state argument |
-| Python 3 | one-time browser profile theme setup | generated website CSS is not imported |
-| `wtype` *(or `xdotool` on X11)* | dictation types into the focused window | transcription goes nowhere |
+| `bluetoothctl`, `rfkill` | Bluetooth row & toggle | Blank Bluetooth row |
+| `nmcli`, `iw` | Wi-Fi row, SSID, signal | Blank Wi-Fi row |
+| `wpctl`, `pactl` | Volume slider & mute | Volume shows nothing |
+| `playerctl` | Music panel (track, art, position) | Empty music panel |
+| `brightnessctl` | Brightness slider | Brightness shows nothing |
+| `swaync-client` | Notification count / DND sync | No notification badge |
+| `cliphist`, `wl-copy` | Clipboard history panel | Empty clipboard |
+| `mmsg` | MangoWM workspace & output state | Workspaces don't track |
+| `grim` | Wallpaper frost sampling for lock screen | Flat lock background |
+| `curl` | Wallpaper download in Themes panel | Download fails quietly |
+| `swaybg` | Applying wallpaper selections | Selection not displayed |
+| `socat` | Sending manual socket commands | Use CLI args instead |
+| `wtype` *(or `xdotool`)* | Dictation auto-typing | Transcription not typed |
+| `python3` | Optional locker launcher & selftests | Dev/locker helpers unavailable |
 
-Check what you have:
+Quick check:
 
 ```sh
 for t in bluetoothctl rfkill nmcli iw wpctl pactl playerctl brightnessctl \
@@ -72,158 +83,125 @@ for t in bluetoothctl rfkill nmcli iw wpctl pactl playerctl brightnessctl \
 done
 ```
 
-## Build
+---
 
-Two separate crates, deliberately **not** a Cargo workspace: the panel pins
-`smithay-client-toolkit 0.19` and dictation pins `0.21.1`, so a shared lockfile
-would force one of them onto a version it was not built against.
+## 🛠️ Build & Install
+
+The panel (`smithay-client-toolkit 0.19`) and dictation (`0.21.1`) are intentionally kept as **two separate crates** rather than a single Cargo workspace so their lockfiles stay independent.
 
 ```sh
-./build.sh          # builds both, fails loudly if either fails
+./build.sh                   # builds both release binaries
+./deploy/install.sh          # installs bindings, layer rules, and autostart (--check to preview)
 ```
 
-The first build needs network access to fetch locked Rust dependencies. Only
-part of the dependency tree is vendored; `--offline` works after Cargo's cache
-is populated. This is not a fully vendored offline distribution.
-
-Or by hand:
+Or build manually:
 
 ```sh
-cargo build --release                    # -> target/release/dynamite-rust
+cargo build --release                         # -> target/release/dynamite-rust
 cd tools/dictation && cargo build --release   # -> tools/dictation/target/release/static-dictation
 ```
 
-Binaries land in those two paths; the launcher scripts resolve them relative to
-the repo, so keep the checkout where you build it.
+> **Note:** The first build requires network access to fetch locked crates. Launcher scripts resolve binaries relative to the repo, so keep the checkout where you build it. See [`deploy/README.md`](deploy/README.md) for deployment details.
 
-## Install
+---
 
-```sh
-./build.sh
-./deploy/install.sh          # --check to preview
-```
+## 🚀 Usage & IPC
 
-Installs the key bindings (`SUPER+space` launcher, `SUPER+v` clipboard), the
-layer rule, and an autostart wrapper. Unrelated `bind.conf` / `rule.conf` entries
-and customized wrappers are preserved; obsolete Dynamite includes are repaired.
-See [`deploy/README.md`](deploy/README.md).
-
-## Run
+Run directly:
 
 ```sh
 ./target/release/dynamite-rust
 ```
 
-If the panel re-attaches after a compositor crash while the screen is still
-blank, see `docs/restart-checklist.md` — bring the compositor up BEFORE
-judging any visual gate.
-
-It creates its control socket at `$XDG_RUNTIME_DIR/dynamite-rust.sock` and
-anchors a layer surface to the top edge, centred horizontally by the compositor.
-
-Drive it by sending a word to that socket:
+It opens a `wlr-layer-shell` surface anchored to the top edge and listens on `$XDG_RUNTIME_DIR/dynamite-rust.sock` (UNIX datagram). Drive it from keybinds or scripts:
 
 ```sh
 printf 'controlcenter' | socat - UNIX-SENDTO:"$XDG_RUNTIME_DIR/dynamite-rust.sock"
 ```
 
-Words include `collapsed`, `controlcenter`, `music`, `calendar`, `themes`,
-`clipboard`, `wallpapers`, `lockscreen`, `unlock`, `dictation_start`,
-`dictation_end`. See `docs/socket-contract.md` for the full contract — those
-literals are an API shared with the dictation tool, not internal strings.
+Supported state words include `collapsed`, `controlcenter`, `notifications`, `displays`, `music`, `calendar`, `themes`, `clipboard`, `wallpapers`, `lockscreen`, `unlock`, `dictation_start`, and `dictation_end` (see [`docs/socket-contract.md`](docs/socket-contract.md)).
 
-### The bar needs a wallpaper behind it
+### 🔔 Notifications & Volume/Brightness OSD
 
-The capsule is a near-black shape. On a bare compositor root it is almost
-invisible, and the frost material has nothing to sample. If the bar looks flat
-or wrong, check that a wallpaper daemon is actually running:
+- The island mirrors `org.freedesktop.Notifications` on the session bus without claiming the daemon name.
+- Incoming volume/brightness notifications using the `x-canonical-private-synchronous` hint expand the pill briefly without stealing keyboard focus or interrupting an open menu.
+- SwayNC's Do Not Disturb state suppresses incoming banners.
+- Run `python3 scripts/notification_selftest.py` to test the headless D-Bus/compositor notification flow.
+
+### 🖼️ Wallpaper & Frost
+
+The capsule uses a frosted-glass backdrop sampled from your active wallpaper. Make sure a wallpaper daemon (such as `swaybg`) is running behind the compositor:
 
 ```sh
 pgrep -a swaybg || swaybg -i ~/.config/mango/wallpaper/wallpaper.png -m fill &
 ```
 
-Without one you see MangoWM's `root_color` (`config.conf`) behind the bar, not
-your wallpaper. The panel reads the wallpaper *file* for its frost, so the
-capsule still renders — which makes this easy to miss.
+---
 
-## Configuration
+## ⚙️ Configuration
 
-`~/.config/dynamite-rust/config.conf`, `key=value`, `#` comments. A missing file
-means defaults; unknown keys are ignored; every number is clamped, so a malformed
-value cannot break startup.
+Config lives at `~/.config/dynamite-rust/config.conf` (`key=value`, `#` comments). Missing files use defaults, unknown keys are ignored, and all numeric values are clamped safely.
 
-| Key | Default | Range | Meaning |
+- **Workspace strip:** Hidden at rest; hover over the clock and move left to switch workspaces.
+- **`hover_open`:** Controls whether hovering over the pill opens an expanded menu.
+
+| Key | Default | Range | Description |
 |---|---|---|---|
-| `collapsed_width` | 74 | 40–600 | capsule width, logical px |
-| `bar_height` | 28 | 18–80 | capsule height, logical px |
-| `expanded_height` | 150 | 60–800 | panel height |
-| `gap_top` | 3 | 0–200 | gap above the capsule |
-| `inner_padding` | 14 | 0–64 | panel inset |
-| `anim_ms` | 160 | ≤1000 | legacy key; morph currently uses a fixed 233 ms duration |
-| `hover_open` | true | bool | expand on pointer hover |
-| `hover_state` | controlcenter | state name | which panel hover opens |
-| `scroll_cycle` | true | bool | scroll wheel cycles panels |
-| `clock_24h` | true | bool | 24-hour clock |
-| `notch_mode` | 0 | 0/1 | notch-style geometry |
-| `wallpaper` | — | filename | wallpaper for frost sampling |
-| `theme` | — | name | selected palette for shell accents, GTK and websites |
+| `collapsed_width` | `74` | `40–600` | Collapsed capsule width (logical px) |
+| `bar_height` | `28` | `18–80` | Collapsed capsule height (logical px) |
+| `expanded_height` | `150` | `150–448` | Music panel height |
+| `gap_top` | `3` | `0–200` | Top margin above the capsule |
+| `inner_padding` | `14` | `0–64` | Panel inner padding |
+| `anim_ms` | `160` | `≤1000` | Legacy key (transitions use a 560 ms spring) |
+| `hover_open` | `true` | `bool` | Expand on pointer hover |
+| `hover_state` | `controlcenter` | state name | Target panel opened on hover |
+| `scroll_cycle` | `true` | `bool` | Scroll wheel cycles between panels |
+| `clock_24h` | `true` | `bool` | 24-hour clock format |
+| `notch_mode` | `0` | `0 / 1` | Notch-style top geometry |
+| `wallpaper` | `—` | filename | Wallpaper file for frost sampling |
+| `theme` | `—` | name | Accent palette for the island UI |
 
-## Themes
+---
 
-Click a row in **Themes**, or run `target/release/dynamite-rust --apply-theme NAME`.
-The shell accent changes immediately. Restart open GTK 3/4 apps to pick up the
-new styles. Apps that do not use GTK or that paint their own interface may not
-follow the palette. Selecting a theme does not change the wallpaper.
+## 🎨 Themes
 
-To enable the same colours in your browser, find **Profile Directory** in
-`about:support`, then run:
+Select a palette in the **Themes** panel or apply from the CLI:
 
 ```sh
-python3 deploy/waterfox-theme.py /path/to/waterfox/profile
+./target/release/dynamite-rust --apply-theme NAME
 ```
 
-Restart the browser after enabling it and after selecting a new palette. The
-stylesheet applies to HTTP and HTTPS pages, not the browser toolbar or internal
-pages. It changes common backgrounds, text, links and controls. Images and
-videos keep their original colours, and some sites draw parts of their own UI
-that the stylesheet cannot cover. There is no extension or background service.
-To detach it, run the same command with `--remove` and restart the browser.
+Themes only style the island's own accents—your GTK apps, websites, and browser chrome are untouched. To clean up legacy browser overrides from older versions:
 
-GTK imports are added to `gtk-3.0/gtk.css` and `gtk-4.0/gtk.css` under your config
-directory. To remove the desktop overrides, delete the Dynamite `@import` line
-from those files and restart the affected apps. Any pre-existing files changed by
-setup are backed up alongside the originals with a `.before-dynamite` suffix.
+```sh
+python3 deploy/waterfox-theme.py /path/to/waterfox/profile --remove
+```
 
-## Lock screen
+---
 
-The panel's lock preview is **not a security boundary**. It has no keyboard
-grab or authentication; click it to return to the capsule.
+## 🔒 Lock Screen
 
-For a real lock, the optional Dynamite launcher gives Hyprlock the same
-wallpaper and clock. Hyprlock owns the session lock and password field; the
-dedicated PAM service tries your existing Howdy setup first, then the normal
-password stack. See the [setup and attended test](deploy/README.md#dynamite-session-lock).
-The panel installer does not enable the new locker or replace your shortcut.
+The Power menu's **Lock** button and `dynamite-rust lockscreen` (or `lock`) launch the authenticated Hyprlock session lock with Dynamite's wallpaper and clock. Its PAM configuration tries your existing Howdy setup first, then your Linux login password.
 
-## Development
+`dynamite-rust lock-preview` is a clickable visual preview for development only and provides no security. See [`deploy/README.md`](deploy/README.md#dynamite-session-lock) for setup.
+
+---
+
+## 🧪 Development & Verification
 
 ```sh
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --release
 python3 scripts/stress/stress.py        # >=1000 assertions, 5 groups
-python3 scripts/measure.py              # geometry + sharpness vs the reference
+python3 scripts/measure.py              # geometry + sharpness vs reference
 python3 scripts/blurtest.py <png>       # contrast-budget check
 ./scripts/motion/run_all.sh <outdir> 3  # frame-by-frame smoothness
 ```
 
-`scripts/measure.py` refuses to report geometry unless the panel is settled and
-collapsed — a capture taken mid-morph or over a dark window measures the wrong
-surface. Each instrument has a self-test; run it after touching a detector.
+`scripts/measure.py` requires the pill to be settled and collapsed. See [`docs/restart-checklist.md`](docs/restart-checklist.md) and `COUNCIL_LOG.md` for measurement methodology and review history.
 
-`COUNCIL_LOG.md` records the review loop that produced this state, including
-findings that were **retracted** after measurement contradicted them.
+---
 
-## Licence
+## 📄 Licence
 
-Fonts under `assets/fonts/` are SIL Open Font License 1.1 (see
-`OFL-Quicksand.txt`); Inter is likewise OFL.
+Fonts under `assets/fonts/` are licensed under the **SIL Open Font License 1.1** (see `OFL-Quicksand.txt`; Inter is likewise OFL).

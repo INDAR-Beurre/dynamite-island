@@ -1,0 +1,24 @@
+#!/bin/sh
+# Boot greeter only: keep DisplayLink/EVDI out of the compositor's GPU list.
+set -eu
+umask 077
+export HOME=/var/cache/dynamite-greeter
+export XDG_CACHE_HOME="$HOME/.cache"
+export XDG_CONFIG_HOME="$HOME/.config"
+mkdir -p "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME"
+if [ -z "${XDG_RUNTIME_DIR:-}" ] || [ ! -d "$XDG_RUNTIME_DIR" ]; then
+    export XDG_RUNTIME_DIR="$HOME/runtime"
+    mkdir -p -m 700 "$XDG_RUNTIME_DIR"
+fi
+intel=/dev/dri/by-path/pci-0000:00:02.0-card
+if [ -e "$intel" ]; then
+    # Resolve the by-path name: wlroots interprets its colons as device separators.
+    export WLR_DRM_DEVICES="$(readlink -f "$intel")"
+    export WLR_RENDER_DRM_DEVICE="$(readlink -f /dev/dri/by-path/pci-0000:00:02.0-render)"
+fi
+export WLR_RENDERER=gles2
+export GSK_RENDERER=gl
+export XDG_CURRENT_DESKTOP=sway
+export XDG_SESSION_TYPE=wayland
+unset DISPLAY WAYLAND_DISPLAY WAYLAND_SOCKET SWAYSOCK
+exec dbus-run-session -- sway -c /etc/greetd/sway-greeter.conf >"$XDG_CACHE_HOME/greeter-session.log" 2>&1

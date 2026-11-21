@@ -38,7 +38,7 @@ from leak_gate import verdict as leak_verdict   # ONE implementation (r2 #13)
 
 STATE_WORDS = [
     b"collapsed", b"dictation", b"lock", b"power", b"music", b"calendar",
-    b"controlcenter", b"launcher", b"wallpaper", b"themes", b"clipboard",
+    b"controlcenter", b"displays", b"launcher", b"wallpaper", b"themes", b"clipboard",
     b"traymenu",
 ]
 SPECIAL_WORDS = [
@@ -465,8 +465,10 @@ class App:
         # unrelated full-width dark band below the bar) and then took min/max
         # over a 600 px window, so x0/x1 were literally the window edges and
         # collapsed / controlcenter / themes all measured the same 599 px box.
-        half = 110
-        lo, hi = W // 2 - half, W // 2 + half
+        # Include the 88 logical px of workspace cells left of the clock.
+        scale = W / 1504.0
+        half = max(20, round(145 * scale))
+        lo, hi = max(0, W // 2 - half), min(W, W // 2 + half)
 
         def row_dark(y):
             base = y * W * 3
@@ -489,9 +491,8 @@ class App:
             return lum(y * W * 3 + x * 3) < DARK
 
         # Widest contiguous dark run near screen centre, taken over EVERY row
-        # of the capsule. A single row can be split by the clock's colon gap
-        # (which measured an 11 px "pill"), and min/max over the whole window
-        # would swallow the workspace discs to the left.
+        # of the capsule. Clock and workspace ink can split an individual row.
+        # Min/max over the whole window would include nearby tray icons.
         x0 = x1 = None
         best_w = 0
         for y in range(y0, y1 + 1):
@@ -519,7 +520,6 @@ class App:
         # row scan never hits a sparse row and the box grows to the window.
         if y0 == 0 and (y1 - y0) >= band - 2:
             return None
-        cx = (x0 + x1) // 2
 
         def dark_frac(pts):
             if not pts:
@@ -530,18 +530,22 @@ class App:
                   for y in range(y0 + 4, max(y0 + 5, y1 - 4), 3)
                   for x in range(x0 + 8, max(x0 + 9, x1 - 8), 3)]
         outside = [lum(y * W * 3 + x * 3)
-                   for x in (x0 - 30, x0 - 45, x1 + 30, x1 + 45)
+                   for x in (x0 - 30, x0 - 45, x1 + 30, x1 + 45) if 0 <= x < W
                    for y in range(max(0, y0), min(band, y1 + 1), 3)]
         # POSITIVE evidence, not just absence of disqualifiers. Critic #22
         # fooled every check above with a plain dark stripe from y=1..119 and
         # no capsule at all: the y0==0 refusal misses y=1, and nothing required
         # the box to CONTAIN anything. The collapsed pill always carries a
         # clock, so demand bright glyph ink inside it.
-        ink = sum(1 for v in inside if v > 120)
+        clock = [lum(y * W * 3 + x * 3)
+                 for y in range(y0 + 4, y1 - 4, 3)
+                 for x in range(max(x0 + 8, W // 2 - round(22 * scale)),
+                                min(x1 - 8, W // 2 + round(22 * scale)), 3)]
+        ink = sum(1 for v in clock if v > 120)
         return {
             "w": W, "h": H, "x0": x0, "x1": x1, "y0": y0, "y1": y1,
             "inside_dark": dark_frac(inside), "outside_dark": dark_frac(outside),
-            "ink_frac": (ink / len(inside)) if inside else 0.0,
+            "ink_frac": ink / len(clock) if clock else 0.0,
             "best_row": best_row,
         }
 
@@ -583,7 +587,7 @@ class App:
             return False
         width = m["x1"] - m["x0"]
         height = m["y1"] - m["y0"]
-        return (width > height and width < 260
+        return (height < width < 200 * m["w"] / 1504
                 and m["inside_dark"] > 0.55 and m.get("ink_frac", 0.0) >= 0.02)
 
     def check_pill(self, label):
@@ -598,7 +602,7 @@ class App:
             time.sleep(0.2)
             if self.screenshot(png):
                 m = self.pill_metrics(png)
-                if m is not None and (m["x1"] - m["x0"]) < 260:
+                if m is not None and (m["x1"] - m["x0"]) < 200 * m["w"] / 1504:
                     break
         if not self.screenshot(png):
             return False, "grim failed"
@@ -606,13 +610,14 @@ class App:
         if m is None:
             return False, "no dark capsule found in the top band"
         scale = m["w"] / 1504.0            # LOCKSCREEN_SIZE is the 1x stage
-        want_w = 74 * scale                # cfg collapsed_width
+        # The workspace row extends the clock only while hovered.
+        want_widths = (76 * scale, (76 + 88) * scale)
         width = m["x1"] - m["x0"]
         errs = []
         if m["y0"] > 14 * scale:
             errs.append(f"pill not at top (y0={m['y0']})")
-        if not (0.6 * want_w <= width <= 1.6 * want_w):
-            errs.append(f"pill width {width}px outside 0.6-1.6x of {want_w:.0f}px")
+        if not any(0.6 * want <= width <= 1.6 * want for want in want_widths):
+            errs.append(f"pill width {width}px outside clock/hovered-row ranges")
         if m["inside_dark"] < 0.55:
             errs.append(f"pill interior not filled (dark={m['inside_dark']:.2f})")
         if m["outside_dark"] > 0.55:
@@ -879,16 +884,17 @@ def group_state(app, out):
     problems = []
     seqs = {
         "forward": [b"collapsed", b"dictation", b"lock", b"power", b"music",
-                    b"calendar", b"controlcenter", b"launcher", b"wallpaper",
+                    b"calendar", b"controlcenter", b"displays", b"launcher", b"wallpaper",
                     b"themes", b"clipboard", b"traymenu"],
         "reverse": [b"traymenu", b"clipboard", b"themes", b"wallpaper",
-                    b"launcher", b"controlcenter", b"calendar", b"music",
+                    b"launcher", b"displays", b"controlcenter", b"calendar", b"music",
                     b"power", b"lock", b"dictation", b"collapsed"],
     }
     keyword = {
         b"collapsed": b"-> Collapsed", b"dictation": b"-> Dictation",
         b"lock": b"-> Lock", b"power": b"-> Power", b"music": b"-> Music",
         b"calendar": b"-> Calendar", b"controlcenter": b"-> ControlCenter",
+        b"displays": b"-> Displays",
         b"launcher": b"-> Launcher", b"wallpaper": b"-> Wallpaper",
         b"themes": b"-> Themes", b"clipboard": b"-> Clipboard",
         b"traymenu": b"-> TrayMenu", b"lockscreen": b"-> Lockscreen",

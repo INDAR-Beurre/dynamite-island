@@ -1092,316 +1092,82 @@ pub fn ensure_tray_host() {
 // Canvas is BGRA premultiplied (Format::Argb8888), same as main.rs.
 // ---------------------------------------------------------------------------
 
-/// Blit a 16x16 straight-alpha RGBA icon onto the stage canvas at
-/// (x0, y0): same alpha-over convention as
-/// launcher_icons::blit_icon (source RGB, dest BGRA, A forced 255).
-fn blit_rgba16(canvas: &mut [u8], w: u32, h: u32, x0: i32, y0: i32, rgba: &[u8], op: f32) {
-    debug_assert_eq!(rgba.len(), 16 * 16 * 4);
-    for sy in 0..16i32 {
-        let y = y0 + sy;
-        if y < 0 || y >= h as i32 {
-            continue;
-        }
-        for sx in 0..16i32 {
-            let x = x0 + sx;
-            if x < 0 || x >= w as i32 {
-                continue;
-            }
-            let si = (sy as usize * 16 + sx as usize) * 4;
-            let sa = rgba[si + 3] as f32 / 255.0 * op;
-            if sa <= 0.0 {
-                continue;
-            }
-            let i = ((y as u32) * w + x as u32) as usize * 4;
-            if i + 3 >= canvas.len() {
-                continue;
-            }
-            let inv = 1.0 - sa;
-            canvas[i] = (rgba[si + 2] as f32 * sa + canvas[i] as f32 * inv) as u8;
-            canvas[i + 1] = (rgba[si + 1] as f32 * sa + canvas[i + 1] as f32 * inv) as u8;
-            canvas[i + 2] = (rgba[si] as f32 * sa + canvas[i + 2] as f32 * inv) as u8;
-            canvas[i + 3] = 255;
-        }
+/// Premultiplied BGRA source-over, including fractional icon coverage.
+fn tray_over(canvas: &mut [u8], i: usize, rgb: (f32, f32, f32), a: f32) {
+    let a = a.clamp(0.0, 1.0);
+    for (ch, ink) in [rgb.2, rgb.1, rgb.0].into_iter().enumerate() {
+        canvas[i + ch] = (ink * a + canvas[i + ch] as f32 * (1.0-a)).round() as u8;
     }
+    canvas[i + 3] = (255.0*a + canvas[i+3] as f32*(1.0-a)).round() as u8;
 }
 
-/// Placeholder for an item with no usable icon: a Ø16 dark disc in
-/// the workspace-disc material (fill #1C1E22 at 0.92) with the
-/// item's first letter centred (near-white, 11 px — the same size
-/// as the workspace numbers).
-fn draw_placeholder_disc(
-    canvas: &mut [u8],
-    w: u32,
-    h: u32,
-    cx: f32,
-    cy: f32,
-    font: &fontdue::Font,
-    label: &str,
-    op: f32,
-) {
-    let (fr, fg, fb) = (28u8, 30u8, 34u8);
-    let x0 = ((cx - 8.0 - 1.0).floor() as i32).max(0);
-    let x1 = ((cx + 8.0 + 1.0).ceil() as i32).min(w as i32);
-    let y0 = ((cy - 8.0 - 1.0).floor() as i32).max(0);
-    let y1 = ((cy + 8.0 + 1.0).ceil() as i32).min(h as i32);
-    for y in y0..y1 {
-        for x in x0..x1 {
-            let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
-            let d = ((px - cx).powi(2) + (py - cy).powi(2)).sqrt();
-            let a = (8.0 + 0.5 - d).clamp(0.0, 1.0) * 0.92 * op;
+/// Fit the app silhouette into a 12px optical box; interpolate its alpha
+/// without exposing RGB from transparent source pixels.
+fn draw_fitted_icon(canvas: &mut [u8], w: u32, h: u32, cx: f32, cy: f32, rgba: &[u8], n: usize, scale: f32, opacity: f32, ink: u8) -> bool {
+    if n == 0 || rgba.len() < n*n*4 { return false; }
+    let (mut x0,mut y0,mut x1,mut y1) = (n,n,0,0);
+    let mut peak = 0.0_f32;
+    for y in 0..n { for x in 0..n {
+        let p = &rgba[(y*n+x)*4..(y*n+x)*4+4];
+        if p[3] > 8 {
+            x0=x0.min(x); y0=y0.min(y); x1=x1.max(x+1); y1=y1.max(y+1);
+            peak = peak.max((54.0*p[0] as f32 + 183.0*p[1] as f32 + 19.0*p[2] as f32)/256.0);
+        }
+    }}
+    if x0 == n { return false; }
+    let ratio = 12.0*scale / (x1-x0).max(y1-y0) as f32;
+    let (dw,dh) = ((x1-x0) as f32*ratio,(y1-y0) as f32*ratio);
+    for y in ((cy-dh/2.0).floor() as i32).max(0)..((cy+dh/2.0).ceil() as i32).min(h as i32) {
+        for x in ((cx-dw/2.0).floor() as i32).max(0)..((cx+dw/2.0).ceil() as i32).min(w as i32) {
+            let sx = (x0 as f32+(x as f32+0.5-cx+dw/2.0)/ratio-0.5).clamp(0.0,n as f32-1.0);
+            let sy = (y0 as f32+(y as f32+0.5-cy+dh/2.0)/ratio-0.5).clamp(0.0,n as f32-1.0);
+            let (ix,iy) = (sx.floor() as usize,sy.floor() as usize);
+            let (fx,fy) = (sx-ix as f32,sy-iy as f32);
+            let mut a = 0.0;
+            let mut grey = 0.0;
+            for (xx,yy,weight) in [(ix,iy,(1.0-fx)*(1.0-fy)),((ix+1).min(n-1),iy,fx*(1.0-fy)),
+                (ix,(iy+1).min(n-1),(1.0-fx)*fy),((ix+1).min(n-1),(iy+1).min(n-1),fx*fy)] {
+                let p = &rgba[(yy*n+xx)*4..(yy*n+xx)*4+4];
+                let coverage = p[3] as f32/255.0*weight;
+                a += coverage;
+                let luma = (54.0*p[0] as f32 + 183.0*p[1] as f32 + 19.0*p[2] as f32)/256.0;
+                grey += ink as f32 * if peak > 0.0 { (luma/peak).min(1.0) } else { 1.0 } * coverage;
+            }
             if a > 0.0 {
-                let i = (((y as u32 * w) + x as u32) * 4) as usize;
-                let inv = 1.0 - a;
-                canvas[i] = (fb as f32 * a + canvas[i] as f32 * inv) as u8;
-                canvas[i + 1] = (fg as f32 * a + canvas[i + 1] as f32 * inv) as u8;
-                canvas[i + 2] = (fr as f32 * a + canvas[i + 2] as f32 * inv) as u8;
-                canvas[i + 3] = 255;
+                tray_over(canvas, ((y as u32*w+x as u32)*4) as usize,
+                    (grey/a, grey/a, grey/a),a.clamp(0.0,1.0)*opacity);
             }
         }
     }
-    let initial: String = label.chars().next().unwrap_or('?').to_uppercase().collect();
-    let row = crate::layout_text(font, &initial, 11.0);
-    let baseline = cy - row.height / 2.0 + row.ascent;
-    let mut pen = cx - row.width / 2.0;
-    for (gm, cov) in &row.glyphs {
-        let gx0 = (pen + gm.xmin as f32).round() as i32;
-        let gy0 = (baseline - gm.ymin as f32 - gm.height as f32).round() as i32;
-        for gy in 0..gm.height as i32 {
-            for gx in 0..gm.width as i32 {
-                let (px_x, px_y) = (gx0 + gx, gy0 + gy);
-                if px_x < 0 || px_y < 0 || px_x >= w as i32 || px_y >= h as i32 {
-                    continue;
-                }
-                let cc = cov[(gy as usize) * gm.width + gx as usize] as f32 / 255.0 * op;
-                if cc <= 0.0 {
-                    continue;
-                }
-                let i = (((px_y as u32) * w + px_x as u32) * 4) as usize;
-                let inv = 1.0 - cc;
-                canvas[i] = (237.0 * cc + canvas[i] as f32 * inv) as u8;
-                canvas[i + 1] = (234.0 * cc + canvas[i + 1] as f32 * inv) as u8;
-                canvas[i + 2] = (232.0 * cc + canvas[i + 2] as f32 * inv) as u8;
-                canvas[i + 3] = 255;
-            }
-        }
-        pen += gm.advance_width;
-    }
+    true
 }
 
-/// Flat two-tone composite of a square RGBA icon at device
-/// resolution (F-G): the source colour is discarded, alpha becomes
-/// coverage, and one near-white ink is laid over the background. The
-/// tray glyph then matches the clock's monochrome treatment instead of
-/// introducing a second, painted look.
-fn blit_rgba_flat(
-    canvas: &mut [u8],
-    bw: u32,
-    bh: u32,
-    x0: i32,
-    y0: i32,
-    rgba: &[u8],
-    n: usize,
-) {
-    const INK: (f32, f32, f32) = (232.0, 234.0, 237.0);
-    if rgba.len() < n * n * 4 {
-        return;
-    }
-    for sy in 0..n as i32 {
-        let y = y0 + sy;
-        if y < 0 || y >= bh as i32 {
-            continue;
-        }
-        for sx in 0..n as i32 {
-            let x = x0 + sx;
-            if x < 0 || x >= bw as i32 {
-                continue;
-            }
-            let si = (sy as usize * n + sx as usize) * 4;
-            let sa = rgba[si + 3] as f32 / 255.0;
-            if sa <= 0.0 {
-                continue;
-            }
-            let i = ((y as u32 * bw + x as u32) * 4) as usize;
-            let inv = 1.0 - sa;
-            canvas[i] = (INK.2 * sa + canvas[i] as f32 * inv) as u8;
-            canvas[i + 1] = (INK.1 * sa + canvas[i + 1] as f32 * inv) as u8;
-            canvas[i + 2] = (INK.0 * sa + canvas[i + 2] as f32 * inv) as u8;
-            canvas[i + 3] = 255;
-        }
-    }
-}
-
-/// 16 px theme icon scaled to device resolution by nearest sample —
-/// only used when a theme lookup (not a native IconPixmap) supplied
-/// the icon.
-fn blit_rgba16_scaled(canvas: &mut [u8], bw: u32, bh: u32, x0: i32, y0: i32, rgba: &[u8], s: f32) {
-    if rgba.len() < 16 * 16 * 4 {
-        return;
-    }
-    let n = (16.0 * s).round() as i32;
-    for dy in 0..n {
-        for dx in 0..n {
-            let sx = ((dx as f32 / s) as usize).min(15);
-            let sy = ((dy as f32 / s) as usize).min(15);
-            let si = (sy * 16 + sx) * 4;
-            let sa = rgba[si + 3] as f32 / 255.0;
-            if sa <= 0.0 {
-                continue;
-            }
-            let x = x0 + dx;
-            let y = y0 + dy;
-            if x < 0 || y < 0 || x >= bw as i32 || y >= bh as i32 {
-                continue;
-            }
-            let i = ((y as u32 * bw + x as u32) * 4) as usize;
-            let inv = 1.0 - sa;
-            canvas[i] = (232.0 * sa + canvas[i] as f32 * inv) as u8;
-            canvas[i + 1] = (234.0 * sa + canvas[i + 1] as f32 * inv) as u8;
-            canvas[i + 2] = (237.0 * sa + canvas[i + 2] as f32 * inv) as u8;
-            canvas[i + 3] = 255;
-        }
-    }
-}
-
-/// Placeholder at device resolution: flat Ø16 disc (no shadow, no rim)
-/// with the item's initial, same treatment as the workspace numbers.
-fn draw_placeholder_disc_scaled(
-    canvas: &mut [u8],
-    bw: u32,
-    bh: u32,
-    cx: f32,
-    cy: f32,
-    font: &fontdue::Font,
-    label: &str,
-    s: f32,
-) {
-    let r = 8.0 * s;
-    let (fr, fg, fb) = (28u8, 30u8, 34u8);
-    let x0 = ((cx - r - 1.0).floor() as i32).max(0);
-    let x1 = ((cx + r + 1.0).ceil() as i32).min(bw as i32);
-    let y0 = ((cy - r - 1.0).floor() as i32).max(0);
-    let y1 = ((cy + r + 1.0).ceil() as i32).min(bh as i32);
-    for y in y0..y1 {
-        for x in x0..x1 {
-            let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
-            let d = ((px - cx).powi(2) + (py - cy).powi(2)).sqrt();
-            let a = (r + 0.5 - d).clamp(0.0, 1.0);
-            if a <= 0.0 {
-                continue;
-            }
-            let i = ((y as u32 * bw + x as u32) * 4) as usize;
-            let inv = 1.0 - a;
-            canvas[i] = (fb as f32 * a + canvas[i] as f32 * inv) as u8;
-            canvas[i + 1] = (fg as f32 * a + canvas[i + 1] as f32 * inv) as u8;
-            canvas[i + 2] = (fr as f32 * a + canvas[i + 2] as f32 * inv) as u8;
-            canvas[i + 3] = ((a + canvas[i + 3] as f32 / 255.0 * inv) * 255.0) as u8;
-        }
-    }
-    let initial: String = label.chars().next().unwrap_or('?').to_uppercase().collect();
-    let row = crate::layout_text(font, &initial, 11.0 * s);
-    let baseline = cy - row.height / 2.0 + row.ascent;
-    let mut pen = cx - row.width / 2.0;
-    for (gm, cov) in &row.glyphs {
-        let gx0 = (pen + gm.xmin as f32).round() as i32;
-        let gy0 = (baseline - gm.ymin as f32 - gm.height as f32).round() as i32;
-        for gy in 0..gm.height as i32 {
-            for gx in 0..gm.width as i32 {
-                let (px_x, px_y) = (gx0 + gx, gy0 + gy);
-                if px_x < 0 || px_y < 0 || px_x >= bw as i32 || px_y >= bh as i32 {
-                    continue;
-                }
-                let cc = cov[(gy as usize) * gm.width + gx as usize] as f32 / 255.0;
-                if cc <= 0.0 {
-                    continue;
-                }
-                let i = ((px_y as u32 * bw + px_x as u32) * 4) as usize;
-                let inv = 1.0 - cc;
-                canvas[i] = (237.0 * cc + canvas[i] as f32 * inv) as u8;
-                canvas[i + 1] = (234.0 * cc + canvas[i + 1] as f32 * inv) as u8;
-                canvas[i + 2] = (232.0 * cc + canvas[i + 2] as f32 * inv) as u8;
-                canvas[i + 3] = 255;
-            }
-        }
-        pen += gm.advance_width;
-    }
-}
-
-/// Device-resolution tray cluster for the settled top row (F-G): the
-/// same centres as draw_tray_cluster_stage, at `scale` device px per
-/// logical px, with the native 32x32 IconPixmap when available.
-pub fn draw_tray_cluster_2x(canvas: &mut [u8], bw: u32, bh: u32, font: &fontdue::Font, scale: f32) {
+fn draw_tray_cluster(canvas: &mut [u8], w: u32, h: u32, font: &fontdue::Font, scale: f32, opacity: f32) {
+    if opacity <= 0.0 { return; }
     with_items(|items| {
-    if items.is_empty() {
-        return;
-    }
-    for (i, (cx, cy)) in crate::tray_icon_centres(items.len()).iter().enumerate() {
-        let it = &items[i];
-        let (dcx, dcy) = (cx * scale, cy * scale);
-        let (x0, y0) = (
-            (cx - 8.0).round() as i32 * 2,
-            (cy - 8.0).round() as i32 * 2,
-        );
-        match (&it.icon32, &it.icon) {
-            (Some(rgba), _) => blit_rgba_flat(canvas, bw, bh, x0, y0, rgba, 32),
-            (None, Some(rgba)) => blit_rgba16_scaled(canvas, bw, bh, x0, y0, rgba, scale),
-            (None, None) => draw_placeholder_disc_scaled(
-                canvas,
-                bw,
-                bh,
-                dcx,
-                dcy,
-                font,
-                if it.title.is_empty() { &it.id } else { &it.title },
-                scale,
-            ),
+        for (item, (cx, cy)) in items.iter().zip(crate::tray_icon_centres(items.len())) {
+            let (cx,cy) = (cx*scale,cy*scale);
+            let ink = if item.status == "NeedsAttention" { 240 } else { 192 };
+            let shown = item.icon32.as_ref().is_some_and(|pixels| draw_fitted_icon(canvas, w, h, cx, cy, pixels, 32, scale, opacity, ink))
+                || item.icon.as_ref().is_some_and(|pixels| draw_fitted_icon(canvas, w, h, cx, cy, pixels, 16, scale, opacity, ink));
+            if !shown {
+                let label = if item.title.is_empty() { &item.id } else { &item.title };
+                let initial = label.chars().next().unwrap_or('?').to_uppercase().next().unwrap_or('?').to_string();
+                let row = crate::layout_text(font, &initial, 10.0 * scale);
+                blit_menu_text(canvas, w, h, &row, cx - row.width / 2.0, cy - row.height / 2.0,
+                    (ink, ink, ink), opacity);
+            }
         }
-    }
     });
 }
 
-/// Draw the tray cluster into the stage canvas (called from
-/// draw(), after the workspace circles, in every non-lockscreen
-/// state). Empty snapshot = nothing drawn.
-pub fn draw_tray_cluster_stage(
-    canvas: &mut [u8],
-    w: u32,
-    h: u32,
-    font: &fontdue::Font,
-    op: f32,
-) {
-    if op <= 0.0 {
-        return;
-    }
-    // Centres come from main.rs (crate::tray_icon_centres, iter108-C).
-    with_items(|items| {
-    if items.is_empty() {
-        return;
-    }
-    for (i, (cx, cy)) in crate::tray_icon_centres(items.len()).iter().enumerate() {
-        let it = &items[i];
-        match &it.icon {
-            Some(rgba) => blit_rgba16(
-                canvas,
-                w,
-                h,
-                (cx - 8.0).round() as i32,
-                (cy - 8.0).round() as i32,
-                rgba,
-                op,
-            ),
-            None => draw_placeholder_disc(
-                canvas,
-                w,
-                h,
-                *cx,
-                *cy,
-                font,
-                if it.title.is_empty() { &it.id } else { &it.title },
-                op,
-            ),
-        }
-    }
-    });
+/// Both raster paths share the same unboxed monochrome icons and alpha handling.
+pub fn draw_tray_cluster_2x(canvas: &mut [u8], w: u32, h: u32, font: &fontdue::Font, scale: f32) {
+    draw_tray_cluster(canvas,w,h,font,scale,1.0);
+}
+
+pub fn draw_tray_cluster_stage(canvas: &mut [u8], w: u32, h: u32, font: &fontdue::Font, opacity: f32) {
+    draw_tray_cluster(canvas,w,h,font,1.0,opacity);
 }
 
 /// Draw the open DBusMenu panel content (panel-local coords; the
@@ -1451,6 +1217,20 @@ fn draw_menu_text(
     rgb: (u8, u8, u8),
 ) {
     let row = crate::layout_text(font, text, px);
+    blit_menu_text(canvas, w, h, &row, x, y, rgb, 1.0);
+}
+
+fn blit_menu_text(
+    canvas: &mut [u8],
+    w: u32,
+    h: u32,
+    row: &crate::TextRow,
+    x: f32,
+    y: f32,
+    rgb: (u8, u8, u8),
+    opacity: f32,
+) {
+    let (r, g, b) = rgb;
     let baseline = y + row.ascent;
     let mut pen = x;
     for (gm, cov) in &row.glyphs {
@@ -1462,16 +1242,11 @@ fn draw_menu_text(
                 if px_x < 0 || px_y < 0 || px_x >= w as i32 || px_y >= h as i32 {
                     continue;
                 }
-                let cc = cov[(gy as usize) * gm.width + gx as usize] as f32 / 255.0;
-                if cc <= 0.0 {
-                    continue;
+                let coverage = cov[gy as usize * gm.width + gx as usize] as f32 / 255.0;
+                if coverage > 0.0 {
+                    let idx = ((px_y as u32 * w + px_x as u32) * 4) as usize;
+                    tray_over(canvas, idx, (r as f32, g as f32, b as f32), coverage * opacity);
                 }
-                let idx = (((px_y as u32) * w + px_x as u32) * 4) as usize;
-                let inv = 1.0 - cc;
-                canvas[idx] = (rgb.2 as f32 * cc + canvas[idx] as f32 * inv) as u8;
-                canvas[idx + 1] = (rgb.1 as f32 * cc + canvas[idx + 1] as f32 * inv) as u8;
-                canvas[idx + 2] = (rgb.0 as f32 * cc + canvas[idx + 2] as f32 * inv) as u8;
-                canvas[idx + 3] = 255;
             }
         }
         pen += gm.advance_width;
@@ -1512,7 +1287,7 @@ mod tests {
             vec![(638.0, cy), (658.0, cy), (678.0, cy)]
         );
         let rect = crate::tray_cluster_rect(3).unwrap();
-        assert_eq!(rect, (626.0, cy - 8.0, 60.0, 16.0));
+        assert_eq!(rect, (626.0, cy - 10.0, 62.0, 20.0));
         assert_eq!(crate::tray_cluster_rect(0), None);
         // The cluster sits inside the reserved strip (pill_h tall, from
         // STAGE_PAD_TOP) like the workspace cluster.
@@ -1528,10 +1303,8 @@ mod tests {
         // holds: all eight points are on-axis, where square and
         // circular agree (the corner case is what differs, and the
         // circular form is the specified one).
-        let cy = crate::ws_cy();
-                let cy = crate::ws_cy();
-        let cy64 = cy as f64;
-assert_eq!(crate::tray_hit_stage((638.0, cy64), 2), Some(0));
+        let cy64 = crate::ws_cy() as f64;
+        assert_eq!(crate::tray_hit_stage((638.0, cy64), 2), Some(0));
         assert_eq!(crate::tray_hit_stage((658.0, cy64), 2), Some(1));
         assert_eq!(crate::tray_hit_stage((647.0, cy64), 2), Some(0)); // +9 slack edge
         assert_eq!(crate::tray_hit_stage((648.0, cy64), 2), None); // gap between icons
@@ -1539,6 +1312,39 @@ assert_eq!(crate::tray_hit_stage((638.0, cy64), 2), Some(0));
         assert_eq!(crate::tray_hit_stage((638.0, cy64), 0), None);
         assert_eq!(crate::tray_hit_stage((638.0, cy64 + 9.0), 2), Some(0)); // slack edge, inclusive
         assert_eq!(crate::tray_hit_stage((638.0, cy64 + 10.0), 2), None); // below icon+slack
+    }
+
+    #[test]
+    fn fitted_icon_is_neutral_and_keeps_its_alpha_and_aspect_at_both_scales() {
+        let mut icon = [0; 16 * 16 * 4];
+        for y in 6..10 {
+            for x in 4..12 {
+                let i = (y * 16 + x) * 4;
+                icon[i..i + 4].copy_from_slice(&[240, 60, 20, 128]);
+            }
+        }
+        for scale in [1, 2] {
+            let w = 40 * scale;
+            let mut pixels = vec![0; (w * w * 4) as usize];
+            let mid = w / 2;
+            assert!(draw_fitted_icon(&mut pixels, w, w, mid as f32, mid as f32, &icon, 16, scale as f32, 1.0, 192));
+            let at = |x, y| ((y * w + x) * 4) as usize;
+            let centre = at(mid, mid);
+            assert_eq!(&pixels[centre..centre + 4], &[96, 96, 96, 128]);
+            assert_eq!(pixels[at(mid, mid + 4 * scale) + 3], 0);
+            assert_ne!(pixels[at(mid + 4 * scale, mid) + 3], 0);
+            assert!(pixels.chunks_exact(4).all(|p| p[..3].iter().all(|&v| v <= p[3])));
+            let mut detailed = icon;
+            for y in 7..9 {
+                for x in 7..9 {
+                    let i = (y * 16 + x) * 4;
+                    detailed[i..i + 3].copy_from_slice(&[10, 10, 10]);
+                }
+            }
+            pixels.fill(0);
+            draw_fitted_icon(&mut pixels, w, w, mid as f32, mid as f32, &detailed, 16, scale as f32, 1.0, 192);
+            assert!(pixels[centre] < pixels[at(mid + 4 * scale, mid)], "monochrome must retain the app's inner detail");
+        }
     }
 
     #[test]

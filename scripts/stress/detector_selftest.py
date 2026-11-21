@@ -53,11 +53,18 @@ def main():
         if not ok:
             fails += 1
 
-    # 1. Bright wallpaper: the easy case must still work.
+    # 1. Workspaces stay hidden until the pointer enters the clock.
     a = np.full((H, W, 3), 200)
     capsule(a)
-    check("bright wallpaper finds capsule", metrics(a), True,
-          lambda g: abs(g["x0"] - 1079) <= 4 and g["outside_dark"] < 0.55)
+    check("idle capsule contains only the clock", metrics(a), True,
+          lambda g: g["x0"] == 1079 and g["x1"] == 1176
+          and g["outside_dark"] < 0.55 and g["ink_frac"] >= 0.02)
+    # Hover adds 132 physical px to the clock's left edge.
+    a[19:56, 947:1079] = 2
+    a[30:44, 1028:1033] = 210  # workspace digit
+    check("joined capsule includes the workspace row", metrics(a), True,
+          lambda g: g["x0"] == 947 and g["x1"] == 1176
+          and g["outside_dark"] < 0.55 and g["ink_frac"] >= 0.02)
 
     # 2. DARK wallpaper (p25=21). This is the regression that failed 138
     #    assertions: at DARK=40 the outside scored 0.90 and every liveness
@@ -102,13 +109,14 @@ def main():
         if not rejected:
             fails += 1
 
-    # 7. A capsule whose clock has vanished must be rejected too: the shape is
-    #    right but the panel is not drawing text.
+    # 7. Workspace digits alone cannot satisfy the clock ink check.
     a = np.full((H, W, 3), 200)
-    a[19:56, 1079:1177] = 2
+    a[19:56, 947:1177] = 2
+    for x in (970, 1000, 1030, 1060):
+        a[30:44, x:x + 7] = 210
     g = metrics(a)
     ok = g is not None and g.get("ink_frac", 0.0) < 0.02
-    print(f"{'ok  ' if ok else 'FAIL'} blank capsule reports no ink: "
+    print(f"{'ok  ' if ok else 'FAIL'} missing clock reports no clock ink: "
           f"{None if g is None else round(g.get('ink_frac', 0.0), 3)}")
     if not ok:
         fails += 1

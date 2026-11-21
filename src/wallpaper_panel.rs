@@ -162,8 +162,8 @@ const SEARCH_TEXT_TOP: f32 = 19.0; // 12 px, glyph band ~21..33 (iter13)
 const SEARCH_PX: f32 = 12.0;
 const SEARCH_PLACEHOLDER: &str = "Search wallpapers...";
 
-/// "anime" chip, top-right: pill 56x20, right margin 8, centred y 31.
-const CHIP_X: f32 = 944.0;
+/// Theme chip, top-right: minimum 56x20, matching the footer's 24 px inset.
+const CHIP_X: f32 = 928.0;
 const CHIP_Y: f32 = 21.0;
 const CHIP_W: f32 = 56.0;
 const CHIP_H: f32 = 20.0;
@@ -637,7 +637,8 @@ fn draw_text_centered(
     rgb: (u8, u8, u8),
     bold: bool,
 ) {
-    let tw = text_width(font, text, px) * scale_of(w);
+    let s = scale_of(w);
+    let tw = text_width(font, text, px * s) / s;
     draw_text(canvas, w, h, font, text, px, cx - tw / 2.0, y_top, rgb, bold);
 }
 
@@ -1148,10 +1149,10 @@ pub fn draw_wallpaper_panel_live(
     let (sel_theme, sel_file) = m.wallpaper_at(sel).unwrap();
 
     // Theme chip, top-right: the selected wallpaper's owning theme.
-    // Width grows with the name (right edge fixed at 1000). Computed
-    // before the search line so a live query can be truncated to it.
-    let chip_w = (text_width(font, sel_theme, CHIP_PX) + 16.0).max(CHIP_W);
-    let chip_x = 1000.0 - chip_w;
+    // Share the footer's right inset and leave room for the search field.
+    let chip_w = (text_width(font, sel_theme, CHIP_PX) + 20.0).clamp(CHIP_W, 200.0);
+    let chip_x = COUNTER_RIGHT - chip_w;
+    let chip_label = truncate_to_width(font, sel_theme, CHIP_PX, chip_w - 20.0);
 
     // Search line — flat, NO field fill (video wins over QS).
     // Placeholder, or the live query in white (truncated to the chip).
@@ -1184,7 +1185,7 @@ pub fn draw_wallpaper_panel_live(
         C_CHIP_BG,
     );
     draw_text_centered(
-        canvas, w, h, font, sel_theme, CHIP_PX, chip_x + chip_w / 2.0,
+        canvas, w, h, font, &chip_label, CHIP_PX, chip_x + chip_w / 2.0,
         CHIP_Y + (CHIP_H - CHIP_PX) / 2.0 - 1.0, C_SECONDARY, false,
     );
 
@@ -1575,6 +1576,28 @@ mod tests {
         assert_eq!(filmstrip_index_n(0, 0, 56), 54);
         assert_eq!(filmstrip_index_n(4, 55, 56), 1);
         assert_eq!(filmstrip_index_n(0, 2, 5), 0);
+    }
+
+    #[test]
+    fn theme_label_stays_centered_at_native_and_double_scale() {
+        let font = load_test_font();
+        assert_eq!(CHIP_X + CHIP_W, COUNTER_RIGHT);
+        for scale in [1, 2] {
+            let (w, h) = (PANEL_W * scale, PANEL_H * scale);
+            let mut canvas = vec![0u8; (w * h * 4) as usize];
+            set_scale(w);
+            let cx = CHIP_X + CHIP_W / 2.0;
+            draw_text_centered(&mut canvas, w, h, font, "sakura", CHIP_PX,
+                cx, CHIP_Y + 2.0, C_SECONDARY, false);
+            let xs: Vec<u32> = canvas.chunks_exact(4).enumerate()
+                .filter(|(_, p)| p[3] > 100)
+                .map(|(i, _)| i as u32 % w).collect();
+            let left = *xs.iter().min().expect("theme text has ink") as f32;
+            let right = *xs.iter().max().unwrap() as f32;
+            assert!(((left + right) / 2.0 - cx * scale as f32).abs() <= 2.0);
+            assert!(left >= CHIP_X * scale as f32);
+            assert!(right < COUNTER_RIGHT * scale as f32);
+        }
     }
 
     #[test]

@@ -35,8 +35,9 @@ The optional `upscale_region_perf` wall-time benchmark requires an idle host:
 The regular suite checks region output and unchanged out-of-damage pixels without
 using scheduler-dependent timing as a correctness assertion.
 
-The panel's lock preview is **not a security boundary**. The optional real
-locker has its own [setup and attended tests](../deploy/README.md#dynamite-session-lock).
-Do not invoke it, change authentication, or enable lock-at-boot as part of this
-remote recovery procedure. For isolated regressions, use
+The Power-menu Lock button and the `lock` / `lockscreen` CLI commands start
+the **real authenticated locker**; do not invoke them during remote recovery.
+The explicit `lock-preview` command is only a clickable visual harness. See
+the [setup and attended tests](../deploy/README.md#dynamite-session-lock).
+Do not change authentication or enable lock-at-boot during recovery. For isolated regressions, use
 `python3 scripts/keyboard_selftest.py` and `python3 scripts/lock_selftest.py`.

@@ -50,7 +50,7 @@ SOCK = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "dynamite-rust.so
 
 STATE_WORDS = {
     "collapsed", "dictation", "lock", "power", "music", "calendar",
-    "controlcenter", "launcher", "themes", "clipboard", "traymenu", "clock",
+    "controlcenter", "displays", "launcher", "themes", "clipboard", "traymenu", "clock",
 }
 SAFE_WORDS = {"reload", "locktype", "lockback", "lockwrong",
               "dictation_start", "dictation_end"}

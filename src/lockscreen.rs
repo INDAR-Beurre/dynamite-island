@@ -28,8 +28,8 @@ pub const REF_H: f32 = 1080.0;
 
 /// Giant clock pixelSize as a fraction of surface height (0.27).
 pub const CLOCK_PX_FRAC: f32 = 0.27;
-/// Cap-height ratio of Quicksand Bold (~0.70) — used for the layout box.
-pub const CAP_HEIGHT_RATIO: f32 = 0.70;
+/// Match the reference's wider visible ink without increasing cap height.
+pub const CLOCK_WIDTH_SCALE: f32 = 1.05;
 
 pub const C_WHITE: (u8, u8, u8) = (255, 255, 255);
 pub const C_BLACK: (u8, u8, u8) = (0, 0, 0);
@@ -274,11 +274,11 @@ pub struct LockLayout {
 pub fn lockscreen_layout(w: u32, h: u32, dots: u8, font: &Font, time: &str) -> LockLayout {
     let s = scale(h);
     let px = CLOCK_PX_FRAC * h as f32;
-    // Same proportional advances the rasteriser uses, so the audited block
-    // and the drawn block agree. Depends on the time string: "11:11" is
-    // narrower than "00:08", exactly as in the reference.
-    let block_w: f32 = time.chars().map(|c| font.rasterize(c, px).0.advance_width).sum();
-    let block_h = CAP_HEIGHT_RATIO * px;
+    // Audit actual visible ink; advance widths include side bearings and
+    // previously hid the narrow-clock mismatch against the video.
+    let mask = rasterize_clock(font, time, px);
+    let block_w = (mask.bbox.2 - mask.bbox.0 + 1) as f32;
+    let block_h = (mask.bbox.3 - mask.bbox.1 + 1) as f32;
     let pill_w = pill_width_1080(dots) * s;
     LockLayout {
         scale: s,
@@ -495,9 +495,8 @@ fn draw_text_centred(
 }
 
 // ---------------------------------------------------------------------------
-// Clock mask: the giant "HH:MM" rasterised once into a float coverage
-// mask, glyphs centred in fixed-width tabular cells (digit 0.60 em,
-// colon 0.21 em) so the minute rollover never shifts the digits.
+// Clock mask: proportional glyph advances with a small optical width
+// correction, resampled into a continuous antialiased coverage mask.
 // ---------------------------------------------------------------------------
 struct Mask {
     w: usize,
@@ -578,8 +577,21 @@ fn rasterize_clock(font: &Font, text: &str, px: f32) -> Mask {
         }
         pen += cell_w;
     }
-    let bbox = mask_bbox(&cov, mw, mh);
-    Mask { w: mw, h: mh, cov, bbox }
+    // Inverse sampling fills every destination pixel; stretching forward
+    // would leave vertical gaps in these large frosted glyphs.
+    let wide = (mw as f32 * CLOCK_WIDTH_SCALE).ceil() as usize;
+    let mut stretched = vec![0.0f32; wide * mh];
+    for (dst, src) in stretched.chunks_exact_mut(wide).zip(cov.chunks_exact(mw)) {
+        for (x, value) in dst.iter_mut().enumerate() {
+            let sx = ((x as f32 + 0.5) / CLOCK_WIDTH_SCALE - 0.5)
+                .clamp(0.0, (mw - 1) as f32);
+            let x0 = sx.floor() as usize;
+            let x1 = (x0 + 1).min(mw - 1);
+            *value = src[x0] + (src[x1] - src[x0]) * (sx - x0 as f32);
+        }
+    }
+    let bbox = mask_bbox(&stretched, wide, mh);
+    Mask { w: wide, h: mh, cov: stretched, bbox }
 }
 
 /// Separable box blur (edge-clamped sliding window), radius in mask px.
@@ -1125,7 +1137,6 @@ fn draw_frame(
 ) {
     let s = scale(h);
     let anim = data.anim;
-    let l = lockscreen_layout(w, h, data.dots, font, &data.time_hhmm);
 
     // --- (1) Registered wallpaper + (2) vertical veil + (3) clock. ---
     // Registration (1.030x about centre) and the material blur are the same
@@ -1172,9 +1183,6 @@ fn draw_frame(
         );
     }
 
-    // Silence unused-layout warnings in builds that only call this fn:
-    // `l` documents the auditable layout (see lockscreen_layout).
-    let _ = l;
 }
 
 // ---------------------------------------------------------------------------
@@ -1303,19 +1311,41 @@ mod tests {
     #[test]
     fn clock_block_uses_proportional_advances() {
         let f = clock_test_font();
-        let px = CLOCK_PX_FRAC * H as f32;
-        let cap = CAP_HEIGHT_RATIO * px;
-        let wide = lockscreen_layout(1504, H, 0, &f, "11:28").clock_block.w;
-        let ratio = wide / cap;
+        let block = lockscreen_layout(1504, H, 0, &f, "11:28").clock_block;
+        let wide = block.w;
+        let ratio = wide / block.h;
         assert!(
-            (ratio - 3.122).abs() < 0.10,
-            "'11:28' width/cap {ratio:.4}, reference 3.122"
+            (ratio - 3.112).abs() < 0.035,
+            "'11:28' visible width/cap {ratio:.4}, reference 3.112"
         );
         let narrow = lockscreen_layout(1504, H, 0, &f, "11:11").clock_block.w;
         assert!(
             narrow < wide * 0.92,
             "'11:11' ({narrow:.1}) should be clearly narrower than '11:28' ({wide:.1})"
         );
+    }
+
+    #[test]
+    fn clock_visible_ink_is_wider_without_getting_taller() {
+        let font = clock_test_font();
+        for height in [720u32, 1440] {
+            let mask = rasterize_clock(&font, "11:28", CLOCK_PX_FRAC * height as f32);
+            let width = (mask.bbox.2 - mask.bbox.0 + 1) as f32;
+            let cap = (mask.bbox.3 - mask.bbox.1 + 1) as f32;
+            assert!((width / cap - 868.0 / 279.0).abs() < 0.035,
+                    "{height}p clock ink {width}x{cap} misses reference aspect");
+            assert!((cap / height as f32 - 279.0 / 1440.0).abs() < 0.003,
+                    "{height}p clock cap height changed: {cap}");
+            let mut pixels = vec![0; (height * 2 * height * 4) as usize];
+            let rect = blit_glyph_material(&mut pixels, height * 2, height, &mask,
+                                           1.0, height as f32, height as f32 / 2.0,
+                                           0.0, None, 1.0);
+            let row = rect.cy().round() as usize;
+            let ink = pixels[row * height as usize * 8..(row + 1) * height as usize * 8]
+                .chunks_exact(4).filter(|p| p[3] != 0).count();
+            assert!(ink > 0, "widened mask failed to paint actual glyph coverage");
+            println!("{height}p '11:28': visible clock {width}x{cap}, aspect {:.4}", width / cap);
+        }
     }
 
     /// The discriminating property of a VERTICAL veil: at any given row the

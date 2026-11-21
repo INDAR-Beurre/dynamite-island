@@ -17,9 +17,8 @@
 //! chosen library image over `~/.config/mango/wallpaper/wallpaper.png`
 //! (the current one is preserved in `wallpaper.png.bak-iter36` on the
 //! first apply), restarts swaybg detached, persists `wallpaper=` +
-//! `theme=` in `config.conf`. Theme selection generates GTK and website
-//! styles from that palette and updates the shell's active controls.
-//! It does not replace the wallpaper or the browser's toolbar theme.
+//! `theme=` in `config.conf`. Theme selection updates only the island's
+//! active controls; application and website colours remain independent.
 
 use std::collections::{HashMap, VecDeque};
 use std::ffi::{OsStr, OsString};
@@ -719,13 +718,11 @@ pub fn apply_wallpaper(filename: &str) -> Result<String, String> {
     Ok(theme)
 }
 
-/// Apply one palette to the shell, GTK 3/4, and the installed website stylesheet.
-/// The wallpaper and browser toolbar theme are independent.
+/// Apply one palette to the island only; leave apps and websites alone.
 pub fn apply_theme(name: &str) -> Result<(u8, u8, u8), String> {
     let theme = manifest().and_then(|m| m.theme(name))
         .ok_or_else(|| format!("{name} is not in the library"))?;
     let palette = crate::theme::Palette::from_swatches(&theme.palette);
-    crate::theme::apply_at(&crate::theme::config_home(), palette)?;
     save_config_keys(&[("theme", name)]).map_err(|e| format!("theme config: {e}"))?;
     set_theme_accent(palette.accent);
     Ok(palette.accent)

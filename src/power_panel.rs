@@ -608,17 +608,14 @@ pub fn button_hit(px: f32, py: f32) -> Option<usize> {
 
 /// (label, exact command) for disc `i`.
 ///
-/// REFERENCE ONLY — no entry here is ever executed by the panel. They
-/// document what the real system command would be. In particular the
-/// lock entry must stay unexecuted: the panel's lockscreen is a visual
-/// preview with no PAM and no session-lock, so spawning a real locker
-/// from it could lock the owner out irrecoverably. The Lock disc opens
-/// the preview instead (see `PressAction::PowerButton` in main.rs).
+/// The Lock disc uses the maintained Hyprlock/Howdy launcher through
+/// `start_session_locker` in main.rs. Other entries remain reference-only;
+/// selecting them does not run suspend/logout/reboot/poweroff commands.
 pub fn action_command(i: usize) -> (&'static str, &'static str) {
     match i {
         0 => ("suspend", "loginctl suspend"),
         1 => ("logout", "loginctl terminate-session $XDG_SESSION_ID"),
-        2 => ("lock", "swaylock -f -c 000000"),
+        2 => ("lock", "dynamite-rust lockscreen"),
         3 => ("reboot", "loginctl reboot"),
         _ => ("poweroff", "loginctl poweroff"),
     }

@@ -3,10 +3,10 @@
 //! v0.4: collapsed clock (17 px, Bold) + lock icon + real power,
 //! control-centre (live time/battery), music, calendar and launcher
 //! panels; themes ported iter19 (wallpaper ported iter15).
-//! Lockscreen PREVIEW state (iter10 builder, local only): socket words
-//! `lockscreen` / `unlock` render the held lock frame fullscreen via
-//! lockscreen.rs — a visual harness, NOT a session lock (no
-//! ext-session-lock surface, no PAM, no keyboard input yet).
+//! The Power-menu Lock action and `lock` / `lockscreen` CLI commands launch
+//! Hyprlock with Howdy and normal-password fallback. `lock-preview` and the
+//! legacy raw socket states exercise the renderer only; they cannot unlock
+//! an authenticated session.
 //! Morph animation (400 ms, ease-out cubic + two-phase content
 //! cross-fade) is implemented in morph.rs and wired via begin_morph.
 //! - Layer: overlay, anchored TOP (unanchored horizontally = centred by the
@@ -32,12 +32,12 @@
 //! - Control: a second invocation sends a one-word datagram to the daemon's
 //!   unix socket ($XDG_RUNTIME_DIR/dynamite-rust.sock):
 //!     dynamite-rust [collapsed|clock|lock|power|music|calendar|
-//!                    controlcenter|launcher|wallpaper|themes|
+//!                    controlcenter|displays|launcher|wallpaper|themes|
 //!                    lockscreen|unlock|quit]
-//!   `lockscreen` / `unlock` are the fullscreen lockscreen PREVIEW (visual
-//!   harness only — see lockscreen.rs; NOT a session lock).
+//!   `lock` / `lockscreen` run the authenticated locker instead of sending
+//!   a datagram. `lock-preview` / `unlock` control only the visual harness.
 //! - Pointer (iter20, a1 iter22, a2 iter24): hover is OFF in the live config
-//!   (hover_open=0) — hovering the pill does nothing; a pill click
+//!   (hover_open=0) — hovering the pill reveals workspaces; a pill click
 //!   opens the FIRST menu (Music / Clock-Media), wheel cycles menus,
 //!   click toggles, nav discs OUTSIDE the expanded panel edges cycle on
 //!   click (stage coords, shared constants with draw — see the stage
@@ -111,9 +111,11 @@ use smithay_client_toolkit::{
 // lockscreen preview wired in iter 10 — draw-only, see lockscreen.rs).
 mod calendar_panel;
 mod controlcenter_panel;
+mod activity;
 mod dictation_canvas; // waveform rendered inside the island pill
 mod launcher_panel;
 mod launcher_icons; // iter17: real video-set icons (blitted by launcher_panel.rs)
+mod displays_panel;
 mod clipboard_panel; // iter39: Clipboard view (a9)
 mod theme;
 mod library; // iter36 a6b: wallpaper + theme library (themes.json, apply paths)
@@ -142,6 +144,11 @@ enum IslandState {
     Music,
     Calendar,
     ControlCenter,
+    /// Incoming notification or volume/brightness feedback; never grabs the keyboard.
+    Preview,
+    /// Recent notifications, opened deliberately from the control center or a banner.
+    Notifications,
+    Displays,
     Launcher,
     Wallpaper,
     Themes,
@@ -172,6 +179,8 @@ impl IslandState {
             "music" => Self::Music,
             "calendar" => Self::Calendar,
             "controlcenter" => Self::ControlCenter,
+            "notifications" => Self::Notifications,
+            "displays" => Self::Displays,
             "launcher" => Self::Launcher,
             "wallpaper" => Self::Wallpaper,
             "themes" => Self::Themes,
@@ -189,6 +198,9 @@ impl IslandState {
             Self::Music => "music",
             Self::Calendar => "calendar",
             Self::ControlCenter => "controlcenter",
+            Self::Preview => "preview",
+            Self::Notifications => "notifications",
+            Self::Displays => "displays",
             Self::Launcher => "launcher",
             Self::Wallpaper => "wallpaper",
             Self::Themes => "themes",
@@ -200,13 +212,16 @@ impl IslandState {
     fn size(self) -> (u32, u32) {
         match self {
             Self::Collapsed => (cfg().collapsed_width, cfg().bar_height),
-            Self::Dictation => (220, 64),
+            Self::Dictation => (dictation_canvas::SURF_W, dictation_canvas::SURF_H),
             Self::Lock => (54, 24),
             Self::Power => (power_panel::PANEL_W, power_panel::PANEL_H),
-            Self::Music => (612, cfg().expanded_height),
+            Self::Music => (music_panel::PANEL_W, cfg().expanded_height.clamp(music_panel::PANEL_H, STAGE_H - 64)),
             Self::Calendar => (342, 262), // iter89: was 280 — column -18, PANEL_H 262 (was 300 iter88)
-            Self::ControlCenter => (438, 447), // iter109: +46 power-level row, CC_H 447
-            Self::Launcher => (504, 366),
+            Self::ControlCenter => (controlcenter_panel::CC_W, controlcenter_panel::CC_H),
+            Self::Preview => activity::preview_size(),
+            Self::Notifications => activity::inbox_size(),
+            Self::Displays => (displays_panel::PANEL_W, displays_panel::PANEL_H),
+            Self::Launcher => launcher_panel::panel_size(),
             Self::Wallpaper => (1008, 270),
             Self::Themes => (600, 366),
             Self::Clipboard => clipboard_panel::panel_size(),
@@ -218,7 +233,7 @@ impl IslandState {
         match self {
             Self::Collapsed => 14.0,
             Self::Lock => 12.0,
-            Self::Dictation => 20.0,
+            Self::Dictation => dictation_canvas::SURF_H as f32 / 2.0,
             // Fullscreen rect: square corners, no capsule.
             Self::Lockscreen => 0.0,
             _ => 20.0,
@@ -398,11 +413,12 @@ fn load_config() {
 // ---------------------------------------------------------------------------
 /// Menu states in wheel/arrow cycle order — the video's view sequence
 /// (interaction-spec §1): Clock/Media -> Launcher -> ControlCentre ->
-/// Calendar -> Wallpaper -> Themes -> Power -> Clipboard -> wrap.
-const MENU_CYCLE: [IslandState; 8] = [
+/// Displays -> Calendar -> Wallpaper -> Themes -> Power -> Clipboard -> wrap.
+const MENU_CYCLE: [IslandState; 9] = [
     IslandState::Music,
     IslandState::Launcher,
     IslandState::ControlCenter,
+    IslandState::Displays,
     IslandState::Calendar,
     IslandState::Wallpaper,
     IslandState::Themes,
@@ -410,9 +426,7 @@ const MENU_CYCLE: [IslandState; 8] = [
     IslandState::Clipboard,
 ];
 
-/// States that actually consume typed keys. `press_key` routes real per-view
-/// input only to these four; the other menu states understand nothing but
-/// Esc/Left/Right.
+/// States that consume typed search text. Displays handles control keys only.
 const TYPING_STATES: [IslandState; 4] = [
     IslandState::Launcher,
     IslandState::Clipboard,
@@ -423,7 +437,7 @@ const TYPING_STATES: [IslandState; 4] = [
 /// Open menus need compositor keyboard focus for Esc and arrow navigation.
 /// OnDemand does not grant focus just because the pointer is inside a menu.
 fn keyboard_mode_for(state: IslandState) -> KeyboardInteractivity {
-    if MENU_CYCLE.contains(&state) || state == IslandState::TrayMenu {
+    if MENU_CYCLE.contains(&state) || matches!(state, IslandState::TrayMenu | IslandState::Notifications) {
         KeyboardInteractivity::Exclusive
     } else {
         KeyboardInteractivity::None
@@ -623,6 +637,14 @@ pub(crate) fn clip_rect(
         r.2.clamp(0, w),
         r.3.clamp(0, h),
     )
+}
+
+/// Include every reused buffer's old pixels, even after a rapid retarget shrinks the frame.
+fn buffer_damage_rect(
+    rect: (i32, i32, i32, i32),
+    buffers: &[Option<(i32, i32, i32, i32)>],
+) -> (i32, i32, i32, i32) {
+    buffers.iter().flatten().copied().fold(rect, union_rect)
 }
 
 /// Zero one logical rect of a stage canvas. Settled frames clear only
@@ -1035,6 +1057,11 @@ fn pill_strip_px() -> i32 {
     cfg().gap_top + cfg().bar_height as i32
 }
 
+fn pill_exclusive_zone() -> i32 {
+    // The compositor already adds the layer's top margin to its exclusive zone.
+    pill_strip_px() - stage_margin_top()
+}
+
 /// Screen-logical coords of the stage top-left: the layer is anchored
 /// TOP and centred horizontally (pill centre 752 = screen centre), so
 /// x0 = (1504 - STAGE_W)/2 = 164 and y0 = the layer top margin (2).
@@ -1123,133 +1150,93 @@ fn nav_disc_centres(state: IslandState) -> ((f32, f32), (f32, f32)) {
     ((ox - off, cy), (ox + pw as f32 + off, cy))
 }
 
-// ---------------------------------------------------------------------------
-// Workspace circles (iter90, item a8 — Alexandre, 13 Nov 16:25, asked
-// 3x; RESIZED iter92, 14 Nov — Alexandre's binding spec, option 2):
-// four Ø16 discs numbered 1-4 at pill height, LEFT of the pill. The
-// whole row is exactly 76 wide — the pill's width — with 4 px gaps.
-// ---------------------------------------------------------------------------
-/// Number of workspace circles (mango tags 1..=4).
+// Workspace cells occupy the left side of the clock capsule.
 const WS_COUNT: usize = 4;
-/// Workspace disc radius (iter92: Ø16 — the whole 4-circle row is
-/// exactly 76 wide, the pill's width: 4*16 + 3*4 = 76).
-const WS_DISC_R: f32 = 8.0;
-/// Edge-to-edge gap between the rightmost circle and the pill's left edge.
-const WS_GAP_PILL: f32 = 4.0;
-/// Edge-to-edge gap between neighbouring circles.
-const WS_GAP_CIRCLE: f32 = 4.0;
-/// Circle centre line = pill centre line.
+const WS_CELL_W: f32 = 20.0;
+const WS_LEADING_PAD: f32 = 8.0;
+const WS_WIDTH: f32 = WS_LEADING_PAD + WS_COUNT as f32 * WS_CELL_W;
+const WS_NUMBER_PX: f32 = 11.0;
+const WS_ACTIVE_SURFACE: (u8, u8, u8) = (37, 41, 50);
+const WS_IDLE_INK: (u8, u8, u8) = (156, 166, 182);
+const WS_OCCUPIED_INK: (u8, u8, u8) = (197, 207, 222);
+
 fn ws_cy() -> f32 {
     STAGE_PAD_TOP + pill_h() / 2.0
 }
-/// Number glyph size inside a circle (iter92: digit ~8 px tall at
-/// 11.0 em — ~0.5 x the Ø16 disc, same ratio as the old Ø28/14 em).
-const WS_NUMBER_PX: f32 = 11.0;
-/// Active-workspace fill: the island accent, bound to the one
-/// definition in library.rs so the disc and the CC toggles can never
-/// drift into two periwinkles side by side.
-#[cfg(test)]
-const WS_ACTIVE_FILL: (u8, u8, u8) = library::ISLAND_ACCENT;
-/// Glyph on the active (periwinkle) fill: dark navy, as the CC toggle glyph.
-const WS_ACTIVE_GLYPH: (u8, u8, u8) = (11, 27, 58);
-/// Glyph on the inactive (dark) fill: near-white, as the nav chevron.
-const WS_INACTIVE_GLYPH: (u8, u8, u8) = (232, 234, 237);
-/// Inactive fill: the nav-disc dark (#1C1E22) at the same 0.92 coverage
-/// as draw_nav_disc — the nav-disc material, reused at Ø16 here.
-const WS_INACTIVE_FILL: (u8, u8, u8) = (28, 30, 34);
-/// Inactive but HOLDING WINDOWS (r1c finding 4): the palette's existing
-/// dark toggle-off grey, one step up from the empty-disc dark, so an
-/// occupied workspace reads as "something is there" without a new hue
-/// and without competing with the accent.
-const WS_OCCUPIED_FILL: (u8, u8, u8) = (52, 55, 60);
-/// Disc labels, indexed by tag-1. Static so a settled frame does not
-/// allocate four Strings per draw (r1c finding 6).
-const WS_LABELS: [&str; 9] = ["1", "2", "3", "4", "5", "6", "7", "8", "9"];
 
-/// Workspace disc centres in STAGE coords, left-to-right tag 1..4.
-/// Derived from the collapsed pill rect so they follow the configured
-/// collapsed_width: pill_x = (STAGE_W - 76)/2 = 550 live; rightmost
-/// centre = 550 - 4 (gap) - 8 (r) = 538; step = 2*8 + 4 = 20.
-/// Live centres: (478, 15), (498, 15), (518, 15), (538, 15); cluster
-/// spans x 470..546, y 7..23 — exactly 76 wide, the pill's width,
-/// and fully INSIDE the a3d reserved strip (y 3..27) with 4 px to
-/// spare top and bottom (iter92: Ø16 < 24 pill height, so unlike the
-/// old Ø28 there is no overhang). Hugs the pill with a 4 px gap.
-/// First tag shown in the four disc slots.
-/// r1c finding 3: mango binds SUPER+1..9 to `view` (bind.conf:78-82),
-/// so tags 5..9 are reachable while WS_COUNT is 4. A FIXED 1..4 window
-/// left every disc inactive on tags 5..9 — the one "you are here" cue
-/// the bar has disappeared. The window slides so the active tag is
-/// always drawn; tags 1..4 keep the window at 1, so the layout every
-/// other test and the reference geometry were measured against does
-/// not move.
-fn ws_window_start(active: u8) -> u8 {
-    let a = active.clamp(1, 9) as i32;
-    let max_start = 10 - WS_COUNT as i32;
-    (a - (WS_COUNT as i32 - 1)).clamp(1, max_start) as u8
-}
-
-/// The tags the four slots currently show, left to right.
+/// Slide the four-slot window only when needed to show Super+5..9.
 fn ws_visible_tags(active: u8) -> [u8; WS_COUNT] {
-    let start = ws_window_start(active);
-    let mut out = [1u8; WS_COUNT];
-    for (i, slot) in out.iter_mut().enumerate() {
-        *slot = start + i as u8;
-    }
-    out
+    let start = active.saturating_sub(WS_COUNT as u8 - 1).clamp(1, 10 - WS_COUNT as u8);
+    std::array::from_fn(|i| start + i as u8)
 }
 
-fn workspace_disc_centres() -> [(f32, f32); WS_COUNT] {
-    let (pill_x, _, _, _) = panel_rect_stage(IslandState::Collapsed);
-    let mut out = [(0.0f32, ws_cy()); WS_COUNT];
-    for i in 0..WS_COUNT {
-        // i = 0 is tag 1 (leftmost); count back from the pill.
-        let from_right = (WS_COUNT - 1 - i) as f32;
-        let cx = pill_x - WS_GAP_PILL - WS_DISC_R
-            - from_right * (2.0 * WS_DISC_R + WS_GAP_CIRCLE);
-        out[i] = (cx, ws_cy());
+fn workspace_pill(state: IslandState) -> IslandState {
+    if state == IslandState::Lock {
+        state
+    } else {
+        IslandState::Collapsed
     }
-    out
 }
 
-/// Workspace cluster bounding box in stage coords (circles + the 4 px
-/// gaps between them + the 4 px bridge to the pill): one rect for the
-/// input region / Leave check, so travelling pill <-> circles never
-/// crosses outside the region (same reason as the nav-disc bridges).
-fn workspace_cluster_rect() -> (f32, f32, f32, f32) {
-    let centres = workspace_disc_centres();
-    let (x0, _) = centres[0];
-    let (pill_x, _, _, _) = panel_rect_stage(IslandState::Collapsed);
-    (
-        x0 - WS_DISC_R,
-        ws_cy() - WS_DISC_R,
-        pill_x - (x0 - WS_DISC_R),
-        2.0 * WS_DISC_R,
-    )
+fn workspace_cluster_rect(state: IslandState) -> (f32, f32, f32, f32) {
+    let (x, y, _, h) = panel_rect_stage(workspace_pill(state));
+    (x - WS_WIDTH, y, WS_WIDTH, h)
 }
 
-/// Workspace hit test in STAGE coords: Some(1..=4) = tag number,
-/// None = elsewhere. Circular, Ø16 + 1 px slack like the nav discs.
-/// NOTE: event.position is ALWAYS stage coords (iter24 a2) — a driver
-/// click at SCREEN (789, 176) arrives as STAGE (625, 176) because the
-/// stage origin is x = 164 on screen (stage_screen_origin); callers
-/// must never add the 164 here.
-fn workspace_hit_stage(pos: (f64, f64)) -> Option<u8> {
-    let radius = (WS_DISC_R + 1.0) as f64;
-    let tags = ws_visible_tags(active_tag_cached());
-    for (i, (cx, cy)) in workspace_disc_centres().iter().enumerate() {
-        let d = ((pos.0 - *cx as f64).powi(2) + (pos.1 - *cy as f64).powi(2)).sqrt();
-        if d <= radius {
-            return Some(tags[i]);
-        }
+fn workspace_hit_stage(pos: (f64, f64), state: IslandState) -> Option<u8> {
+    let (x, y, w, h) = workspace_cluster_rect(state);
+    if !((f64::from(x)..f64::from(x + w)).contains(&pos.0)
+        && (f64::from(y)..f64::from(y + h)).contains(&pos.1))
+    {
+        return None;
     }
-    None
+    let offset = (pos.0 - f64::from(x + WS_LEADING_PAD)).max(0.0);
+    let slot = (offset / f64::from(WS_CELL_W)) as usize;
+    Some(ws_visible_tags(active_tag_cached())[slot])
+}
+
+/// The clock body stretches with the strip, keeping its centre line steady.
+fn workspace_core_rect(state: IslandState, reveal: f32) -> (f32, f32, f32, f32) {
+    let (x, y, w, h) = panel_rect_stage(workspace_pill(state));
+    let p = reveal.clamp(0.0, 1.25);
+    let pulse = if p == 0.0 || p == 1.0 { 0.0 } else { (std::f32::consts::PI * p).sin() };
+    let width = w * (1.0 - 0.09 * pulse);
+    let height = h * (1.0 + 0.18 * pulse);
+    (x + w + w * 0.035 * pulse - width, (y + (h - height) / 2.0).max(0.0), width, height)
+}
+
+fn workspace_live_rect(state: IslandState, reveal: f32) -> (f32, f32, f32, f32) {
+    let (x, y, w, h) = workspace_core_rect(state, reveal);
+    let strip = WS_WIDTH * reveal.clamp(0.0, 1.25);
+    (x - strip, y, w + strip, h)
+}
+
+fn point_in_rect(pos: (f64, f64), (x, y, w, h): (f32, f32, f32, f32)) -> bool {
+    (x as f64..(x + w) as f64).contains(&pos.0)
+        && (y as f64..(y + h) as f64).contains(&pos.1)
+}
+
+fn workspace_hit_animated(pos: (f64, f64), state: IslandState, reveal: f32) -> Option<u8> {
+    if reveal <= 0.0 { return None; }
+    let p = reveal.clamp(0.0, 1.25);
+    let (core_x, y, _, h) = workspace_core_rect(state, p);
+    let left = core_x - WS_WIDTH * p;
+    if !point_in_rect(pos, (left, y, WS_WIDTH * p, h)) { return None; }
+    let (x, py, _, ph) = workspace_cluster_rect(state);
+    workspace_hit_stage((x as f64 + (pos.0 - left as f64) / p as f64, (py + ph / 2.0) as f64), state)
+}
+
+fn workspace_hovered(pos: Option<(f64, f64)>, state: IslandState, revealed: bool) -> bool {
+    let Some(pos) = pos else { return false };
+    row_has_clusters(state)
+        && (point_in_panel_stage(pos, workspace_pill(state))
+            || (revealed && workspace_hit_stage(pos, state).is_some()))
 }
 
 // ---------------------------------------------------------------------------
 // Tray cluster (iter108, Builder C — GEOMETRY ONLY, no D-Bus work):
-// SNI tray icons sit RIGHT of the pill, mirroring the workspace
-// circles on the left (Alexandre, 15 Nov 2026, 09:27 — "all the tray
+// SNI tray icons sit RIGHT of the pill, opposite the workspace row
+// (Alexandre, 15 Nov 2026, 09:27 — "all the tray
 // icons, even new ones, should be at the right side of the pill, on
 // the other side of the workspaces").
 //
@@ -1267,7 +1254,7 @@ fn workspace_hit_stage(pos: (f64, f64)) -> Option<u8> {
 // a HEIGHT (pill_strip_px() = gap_top + 24 = 27) spanning the whole
 // output edge, so it already covers the tray row (y 7..23) for any
 // item count — no zone change is needed, only the containment tests
-// below. Like the workspace circles, the tray cluster is anchored to
+// below. Like the workspace row, the tray cluster is anchored to
 // the COLLAPSED pill rect in every state (including Lock, whose pill
 // is 54 wide — the cluster does not chase it, exactly as the circles
 // do not). Builder B (SNI host, ~/build-iter108-tray/) owns icon
@@ -1277,7 +1264,7 @@ fn workspace_hit_stage(pos: (f64, f64)) -> Option<u8> {
 // here is in LOGICAL px, so a scale change rescales every number
 // below uniformly and cannot move the pill relative to the tray.
 // ---------------------------------------------------------------------------
-/// Tray icon diameter (mirrors the Ø16 workspace discs).
+/// Tray icon diameter.
 const TRAY_ICON_D: f32 = 16.0;
 /// Tray icon radius.
 const TRAY_ICON_R: f32 = 8.0;
@@ -1291,6 +1278,16 @@ fn tray_cy() -> f32 {
 }
 /// Step between neighbouring tray icon centres (16 + 4).
 const TRAY_STEP: f32 = TRAY_ICON_D + TRAY_GAP_ICON;
+const TRAY_CAPSULE_H: f32 = 20.0;
+
+fn tray_capsule_rect(n: usize) -> Option<(f32, f32, f32, f32)> {
+    if n == 0 {
+        return None;
+    }
+    let (pill_x, _, pw, _) = panel_rect_stage(IslandState::Collapsed);
+    let h = TRAY_CAPSULE_H.min(pill_h());
+    Some((pill_x + pw + 2.0, tray_cy() - h / 2.0, n as f32 * TRAY_STEP, h))
+}
 
 /// Live tray item count, owned by the geometry (this) side; the SNI
 /// host (iter108-B) writes it via set_tray_count() as items register /
@@ -1338,36 +1335,20 @@ fn tray_icon_centres(n: usize) -> Vec<(f32, f32)> {
         .collect()
 }
 
-/// Tray cluster bounding box in stage coords (icons + the gaps between
-/// them + the 4 px bridge to the pill): one rect for the input region
-/// / Leave check, mirroring workspace_cluster_rect(). None when n == 0
-/// (no cluster, no region). n=1: (626, 7, 20, 16); n=2: (626, 7, 40, 16);
-/// n=3: (626, 7, 60, 16). The rect's left edge is the pill's right
-/// edge, so travelling pill <-> tray never crosses outside the region.
+/// Tray capsule plus its bridge back to the pill, shared by the input
+/// region and Leave checks.
 fn tray_cluster_rect(n: usize) -> Option<(f32, f32, f32, f32)> {
-    if n == 0 {
-        return None;
-    }
-    let (pill_x, _, pw, _) = panel_rect_stage(IslandState::Collapsed);
-    let pill_right = pill_x + pw as f32;
-    Some((
-        pill_right,
-        tray_cy() - TRAY_ICON_R,
-        n as f32 * TRAY_STEP,
-        2.0 * TRAY_ICON_R,
-    ))
+    let (x, y, w, h) = tray_capsule_rect(n)?;
+    Some((x - 2.0, y, w + 2.0, h))
 }
 
-/// Top-row content span in stage coords: workspace circles' left edge
+/// Top-row content span in stage coords: workspace row's left edge
 /// to the tray cluster's right edge (or the pill's right edge when the
-/// tray is empty). This is the "stage width" that grows rightward:
-/// n=0: 470..626 = 156; n=1: 470..646 = 176; n=2: 470..666 = 196;
-/// n=3: 470..686 = 216. The wl_surface stays STAGE_W (1176)
-/// throughout; the pill centre stays screen 752 throughout (see
-/// pill_centre_screen_x).
+/// tray is empty). Adding icons grows the row to the right, not the
+/// surface or the clock's position.
 #[allow(dead_code)] // proof helper: consumed by the tray tests below.
 fn top_row_span(n: usize) -> (f32, f32) {
-    let (wx, _, _, _) = workspace_cluster_rect();
+    let (wx, _, _, _) = workspace_cluster_rect(IslandState::Collapsed);
     let (pill_x, _, pw, _) = panel_rect_stage(IslandState::Collapsed);
     let pill_right = pill_x + pw as f32;
     let right = match tray_cluster_rect(n) {
@@ -1383,19 +1364,13 @@ fn top_row_span(n: usize) -> (f32, f32) {
 /// 2x top-row painter clears — one source, no drift.
 fn top_row_rect() -> (i32, i32, i32, i32) {
     let (px, py, pw, ph) = panel_rect_stage(IslandState::Collapsed);
-    let c = workspace_disc_centres();
-    let n = tray_item_count();
-    let right = if n > 0 {
-        let tc = tray_icon_centres(n);
-        tc[n - 1].0 + TRAY_ICON_R
-    } else {
-        px + pw
-    };
+    let (wx, _, _, _) = workspace_cluster_rect(IslandState::Collapsed);
+    let right = tray_capsule_rect(tray_item_count()).map_or(px + pw, |(x, _, w, _)| x + w);
     (
-        (c[0].0 - WS_DISC_R - 2.0).floor() as i32,
-        ((py - 2.0).max(0.0)).floor() as i32,
-        (right + 2.0).ceil() as i32,
-        (py + ph + 2.0).ceil() as i32,
+        (wx - WS_WIDTH * 0.3 - pw * 0.15 - 2.0).floor() as i32,
+        ((py - ph * 0.15 - 2.0).max(0.0)).floor() as i32,
+        (right + pw * 0.05 + 2.0).ceil() as i32,
+        (py + ph * 1.15 + 2.0).ceil() as i32,
     )
 }
 
@@ -1403,6 +1378,15 @@ fn top_row_rect() -> (i32, i32, i32, i32) {
 /// row plus the state's own panel (padded for its shadow and, for
 /// menu states, the nav discs). Used for both the clear and the
 /// damage rect, so what is drawn is exactly what is presented.
+fn morph_content_rect(from: IslandState, to: IslandState, frame: &morph::MorphFrame) -> (i32, i32, i32, i32) {
+    let x = (STAGE_W as f32 - frame.width) / 2.0;
+    let y = morph_capsule_oy(from, to, frame.progress);
+    let pad = PANEL_SHADOW_BLUR + PANEL_SHADOW_OFF.1.abs() + 2.0 * NAV_DISC_R + NAV_DISC_GAP + 2.0;
+    let live = ((x - pad).floor() as i32, (y - pad).floor() as i32,
+                (x + frame.width + pad).ceil() as i32, (y + frame.height + pad).ceil() as i32);
+    union_rect(union_rect(content_rect(from), content_rect(to)), live)
+}
+
 fn content_rect(state: IslandState) -> (i32, i32, i32, i32) {
     let top = top_row_rect();
     if state == IslandState::Lockscreen {
@@ -1410,13 +1394,14 @@ fn content_rect(state: IslandState) -> (i32, i32, i32, i32) {
     }
     let (ox, oy, pw, ph) = panel_rect_stage(state);
     let pad = if MENU_CYCLE.contains(&state) || state == IslandState::TrayMenu {
-        (PANEL_SHADOW_BLUR + PANEL_SHADOW_OFF.1.abs() + NAV_DISC_R + NAV_DISC_GAP + 2.0).ceil()
+        (PANEL_SHADOW_BLUR + PANEL_SHADOW_OFF.1.abs() + 2.0 * NAV_DISC_R + NAV_DISC_GAP + 2.0).ceil()
             as i32
     } else {
         2
     };
+    let left = if state == IslandState::Lock { ox - WS_WIDTH } else { ox };
     let panel = (
-        ox as i32 - pad,
+        left.floor() as i32 - pad,
         (oy as i32 - pad).max(0),
         (ox + pw) as i32 + pad,
         (oy + ph) as i32 + pad,
@@ -1436,10 +1421,13 @@ fn pill_centre_screen_x() -> f32 {
     sox + pill_x + pw as f32 / 2.0
 }
 
+fn row_has_clusters(state: IslandState) -> bool {
+    matches!(state, IslandState::Collapsed | IslandState::Lock | IslandState::TrayMenu)
+}
+
 /// Tray hit test in STAGE coords: Some(i) = 0-based tray slot index,
-/// None = elsewhere. Circular, Ø16 + 1 px slack like the nav discs /
-/// workspace circles. The gap between icons (and the 4 px bridge to
-/// the pill) is NOT a hit — a press there must be NoOp, never Collapse.
+/// None = elsewhere. Circular, Ø16 + 1 px slack. The gap between
+/// icons (and the 4 px bridge to the pill) is a NoOp, never Collapse.
 fn tray_hit_stage(pos: (f64, f64), n: usize) -> Option<usize> {
     let radius = (TRAY_ICON_R + 1.0) as f64;
     for (i, (cx, cy)) in tray_icon_centres(n).iter().enumerate() {
@@ -1497,10 +1485,13 @@ impl TagState {
 /// Cached tag state (active + occupancy). Seed = tag 1 active, nothing
 /// occupied, which is mango's startup state.
 fn tag_state_cached() -> TagState {
-    *TAG_OCC
+    let active = active_tag_cached();
+    let mut tags = *TAG_OCC
         .get_or_init(|| std::sync::RwLock::new(TagState::default()))
         .read()
-        .unwrap()
+        .unwrap();
+    tags.active = active;
+    tags
 }
 /// Write a fresh snapshot; returns true when the DRAWN state changed
 /// (so the watcher only pokes the loop for a real change).
@@ -1785,11 +1776,10 @@ fn arrow_hit_stage(pos: (f64, f64), state: IslandState, radius: f64) -> Option<i
 
 /// Panel rect + disc squares + bridge strips for ONE state — the same
 /// rects add_panel_region adds to the wl region.
-fn point_in_state_region(pos: (f64, f64), state: IslandState) -> bool {
-    // iter90 a8: the workspace cluster (circles + gaps + pill bridge)
-    // is part of every state's region, so hovering it never fires Leave.
-    {
-        let (wx, wy, ww, wh) = workspace_cluster_rect();
+fn point_in_state_region(pos: (f64, f64), state: IslandState, workspaces_revealed: bool) -> bool {
+    // Keep pointer travel through the revealed workspace row continuous.
+    if row_has_clusters(state) && workspaces_revealed {
+        let (wx, wy, ww, wh) = workspace_cluster_rect(state);
         if pos.0 >= wx as f64
             && pos.0 < (wx + ww) as f64
             && pos.1 >= wy as f64
@@ -1800,7 +1790,7 @@ fn point_in_state_region(pos: (f64, f64), state: IslandState) -> bool {
     }
     // iter108-C: the tray cluster rect (same rect as add_panel_region
     // commits) — hovering it never fires Leave either.
-    if let Some((tx, ty, tw, th)) = tray_cluster_rect(tray_item_count()) {
+    if let Some((tx, ty, tw, th)) = tray_cluster_rect(tray_item_count()).filter(|_| row_has_clusters(state)) {
         if pos.0 >= tx as f64
             && pos.0 < (tx + tw) as f64
             && pos.1 >= ty as f64
@@ -1896,10 +1886,13 @@ fn point_in_panel_stage(pos: (f64, f64), state: IslandState) -> bool {
 /// stage is fixed STAGE_W x STAGE_H, so no morph-time translation.
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum PressAction {
+    Display(displays_panel::Action),
     OpenMusic,
+    ReviewNotifications,
+    NotificationCenter,
+    NotificationPress(f32, f32),
     Cycle(i32),
-    /// iter90 a8: workspace circle `n` (1..=4) — switches mango to
-    /// that tag for real (`mmsg dispatch view,N`).
+    /// Switch Mango to the selected workspace (`mmsg dispatch view,N`).
     WorkspaceTag(u8),
     /// iter108: tray icon `i` (0-based snapshot index) — left
     /// click Activates the item for real.
@@ -1998,9 +1991,12 @@ fn classify_cc_press(px: f32, py: f32, bt_submenu: bool, sound_submenu: bool) ->
     }
     for (which, track) in [(0u8, layout.display_track), (1u8, layout.sound_track)] {
         if track.contains(px, py + 4.0) || track.contains(px, py - 4.0) {
-            let level = ((px - track.x) / track.w).clamp(0.0, 1.0);
+            let level = controlcenter_panel::slider_level_from_x(track, px);
             return PressAction::CcSlider(which, level);
         }
+    }
+    if layout.notif_card.contains(px, py) {
+        return PressAction::ReviewNotifications;
     }
     for (i, btn) in layout.power_buttons.iter().enumerate() {
         if btn.contains(px, py) {
@@ -2017,12 +2013,29 @@ fn classify_press(
     wall_selected: usize,
     theme_selected: usize,
     tray_count: usize,
+    workspaces_revealed: bool,
 ) -> PressAction {
     match state {
-        IslandState::Collapsed | IslandState::Dictation | IslandState::Lock => {
-            // iter90 a8: workspace circles first — they sit outside
-            // the pill rect, so the D2 guard below would swallow them.
-            if let Some(n) = workspace_hit_stage(pos) {
+        IslandState::Dictation | IslandState::Lockscreen => PressAction::NoOp,
+        IslandState::Preview | IslandState::Notifications => {
+            if !point_in_panel_stage(pos, state) { return PressAction::NoOp; }
+            let (ox, oy) = panel_origin(state);
+            let (x, y) = (pos.0 as f32 - ox, pos.1 as f32 - oy);
+            if state == IslandState::Preview {
+                if matches!(activity::preview(), Some(activity::Event::Notification(_))) {
+                    PressAction::ReviewNotifications
+                } else { PressAction::Collapse }
+            } else if y < 48.0 && x > activity::WIDTH as f32 - 52.0 {
+                PressAction::Collapse
+            } else if y >= state.size().1 as f32 - 42.0 {
+                PressAction::NotificationCenter
+            } else {
+                PressAction::NotificationPress(x, y)
+            }
+        }
+        IslandState::Collapsed | IslandState::Lock => {
+            // The workspace row is outside the clock's click rect.
+            if let Some(n) = workspace_hit_stage(pos, state).filter(|_| workspaces_revealed) {
                 return PressAction::WorkspaceTag(n);
             }
             // iter108-C: tray icons first too — they sit outside the
@@ -2041,7 +2054,6 @@ fn classify_press(
                 PressAction::NoOp
             }
         }
-        IslandState::Lockscreen => PressAction::NoOp,
         _ => {
             // 1) Nav discs cycle (never collapse). Mid-morph the target
             // disc is still fading in, so the radius stays widened +10
@@ -2054,14 +2066,9 @@ fn classify_press(
             if let Some(dir) = arrow_hit_stage(pos, state, hit_radius) {
                 return PressAction::Cycle(dir);
             }
-            // 1b) iter90 a8: workspace circles (fixed stage coords,
-            // outside every panel rect — checked before the panel
-            // membership guard in (3) would swallow them as NoOp).
-            // r1d §0: the clusters are drawn only in the pill-row
-            // states — Collapsed, Dictation, Lock (draw()'s row arm)
-            // and TrayMenu (its hang-below arm keeps the pill row
-            // visible). Cycled menus swallow the row, so no cluster
-            // hits there.
+            // TrayMenu keeps the top row visible above the panel.
+            // The cycled menus replace it, so workspace and tray hits
+            // must not go through to a hidden row.
             if matches!(
                 state,
                 IslandState::Collapsed
@@ -2069,7 +2076,7 @@ fn classify_press(
                     | IslandState::Lock
                     | IslandState::TrayMenu
             ) {
-                if let Some(n) = workspace_hit_stage(pos) {
+                if let Some(n) = workspace_hit_stage(pos, state).filter(|_| workspaces_revealed) {
                     return PressAction::WorkspaceTag(n);
                 }
                 // 1c) iter108-C: tray icons (fixed stage coords, outside
@@ -2106,6 +2113,11 @@ fn classify_press(
             // 3) Transparent stage margin (or a bridge strip): no-op.
             if !point_in_panel_stage(pos, state) {
                 return PressAction::NoOp;
+            }
+            if state == IslandState::Displays {
+                let (ox, oy) = panel_origin(state);
+                return displays_panel::hit(pos.0 as f32 - ox, pos.1 as f32 - oy)
+                    .map(PressAction::Display).unwrap_or(PressAction::NoOp);
             }
             // 4) Launcher rows launch on click (panel-local coords).
             if state == IslandState::Launcher {
@@ -2269,11 +2281,44 @@ fn spawn_exec(exec: &str) {
         .spawn();
 }
 
+fn session_locker_command() -> Result<std::process::Command, String> {
+    let executable = std::env::current_exe().map_err(|e| e.to_string())?;
+    let launcher = executable.ancestors().skip(1).take(4)
+        .map(|directory| directory.join("deploy/dynamite-lock.py"))
+        .find(|path| path.is_file())
+        .ok_or("cannot locate deploy/dynamite-lock.py beside this build")?;
+    let mut command = std::process::Command::new("python3");
+    command.arg(launcher).arg("--lock").stdin(std::process::Stdio::null());
+    Ok(command)
+}
+
+fn start_session_locker() {
+    // Authentication can take arbitrarily long; keep the UI thread free and reap the launcher.
+    let result = std::thread::Builder::new().name("session-lock".into()).spawn(|| {
+        let result = session_locker_command().and_then(|mut command| {
+            command.status().map_err(|e| e.to_string())
+        });
+        match result {
+            Ok(status) if status.success() => {}
+            Ok(status) => eprintln!("dynamite-rust: session locker failed: {status}"),
+            Err(error) => eprintln!("dynamite-rust: could not start session locker: {error}"),
+        }
+    });
+    if let Err(error) = result {
+        eprintln!("dynamite-rust: could not start session-lock worker: {error}");
+    }
+}
+
 const TOP_MARGIN: i32 = 3;
 const NAMESPACE: &str = "dynamite-rust";
 
 // Dictation waveform is drawn INSIDE the island pill, not as a second layer.
-static DICTATION_BARS: Mutex<[f32; 27]> = Mutex::new([0.0; 27]);
+static RECORDING: Mutex<dictation_canvas::Recording> = Mutex::new(dictation_canvas::Recording::new());
+
+fn draw_recording(canvas: &mut [u8], w: u32, h: u32) {
+    let recording = RECORDING.lock().unwrap();
+    dictation_canvas::render_pill(canvas, w, h, &recording.bars);
+}
 /// Fullscreen lockscreen-preview size: the Surface's logical output
 /// (mmsg `get all-monitors`, 12 Nov 2026: eDP-1 1504x1002 @ scale 1.5).
 /// NOTE: 1002, not the 1003 quoted in older docs (1504/1.5 = 1002.67;
@@ -2375,6 +2420,8 @@ fn rounded_rect_alpha(x: f32, y: f32, w: f32, h: f32, r: f32) -> f32 {
     let d = (ax * ax + ay * ay).sqrt() + qx.max(qy).min(0.0) - r;
     (0.5 - d).clamp(0.0, 1.0)
 }
+
+
 
 struct TextRow {
     glyphs: Vec<(fontdue::Metrics, std::sync::Arc<[u8]>)>,
@@ -2633,6 +2680,7 @@ fn icon_font_for(
     match state {
         IslandState::Power
         | IslandState::ControlCenter
+        | IslandState::Preview
         | IslandState::Music
         | IslandState::Launcher
         | IslandState::Lockscreen => icon_font.get_or_init(load_icon_font).as_ref(),
@@ -2665,8 +2713,9 @@ fn draw_panel_into(
     cal_offset: i32,
     wall_selected: usize,
     theme_selected: usize,
+    native_recording_or_music: bool,
 ) {
-    // r1d §22: `canvas` may be a DEVICE-sized canvas (`w` = logical * S)
+    // `canvas` may be a DEVICE-sized canvas (`w` = logical * S)
     // for the settled 2x panel redraw; everything below keeps working in
     // logical units and only the capsule SDF is evaluated per device px.
     let (lw, _lh) = state.size();
@@ -2681,6 +2730,7 @@ fn draw_panel_into(
     if state != IslandState::ControlCenter
         && state != IslandState::Launcher
         && state != IslandState::Lockscreen
+        && state != IslandState::Dictation
     {
         // Opaque black is the reference material; sampling a backdrop here
         // both tinted the upper panel and did work whose result should be zero.
@@ -2698,13 +2748,14 @@ fn draw_panel_into(
         }
     }
     match state {
+        IslandState::Preview => activity::draw_preview(canvas, w, h, font, icon_font),
+        IslandState::Notifications => activity::draw_inbox(canvas, w, h, font),
+        IslandState::Displays => displays_panel::draw(canvas, w, h, font),
         IslandState::Collapsed => {
             lock_timer::draw_collapsed(canvas, w, h, clock_font().unwrap_or(font), &hhmm());
         }
-        IslandState::Dictation => {
-            let bars = *DICTATION_BARS.lock().unwrap();
-            dictation_canvas::render_pill(canvas, w, h, &bars, 0.0, 1.0, 1.0);
-        }
+        IslandState::Dictation if !native_recording_or_music => draw_recording(canvas, w, h),
+        IslandState::Dictation => {}
         IslandState::Lock => {
             lock_timer::draw_lock_icon(canvas, w, h);
         }
@@ -2727,7 +2778,7 @@ fn draw_panel_into(
                 canvas, w, h, font, cal_offset,
             );
         }
-        IslandState::Music => {
+        IslandState::Music if !native_recording_or_music => {
             music_panel::draw_music_panel(
                 canvas,
                 w,
@@ -2737,6 +2788,7 @@ fn draw_panel_into(
                 &music_panel::live_cached(),
             );
         }
+        IslandState::Music => {}
         IslandState::Launcher => {
             // Functional launcher: draw the LIVE data (real .desktop
             // apps + the typed query), not the video-default still.
@@ -2849,18 +2901,15 @@ fn blit_panel(
 /// capsule fill repeats draw_panel_into's collapsed path exactly (same
 /// frost sample and formula, same 1-logical-px AA band), so geometry and
 /// margins are untouched and only the glyphs get sharper.
-/// Top-row painter for settled frames (F-G): the pill, the workspace
-/// discs and the tray cluster are all rasterised at RENDER_SCALE
-/// straight into the 2x shm buffer, so nothing in the top row is ever
-/// resampled by the 1x -> 2x upscale. Flat treatments only: no disc
-/// shadows, no rims, no gradients. Clears the top-row rect (in device
-/// px) first, exactly the rect the damage covers.
+/// Draw the clock, workspace row and tray directly at buffer scale.
+/// Clear the same top-row rect the damage covers.
 fn draw_top_row_2x(
     canvas: &mut [u8],
     bw: u32,
     bh: u32,
     font: &fontdue::Font,
-    active_tag: u8,
+    tags: TagState,
+    reveal: f32,
 ) {
     let s = RENDER_SCALE as f32;
     let row = top_row_rect();
@@ -2878,12 +2927,11 @@ fn draw_top_row_2x(
         canvas[i..i + n].fill(0);
     }
     let state = IslandState::Collapsed;
-    let (pw, ph) = state.size();
-    let (wf, hf) = (pw as f32, ph as f32);
-    let (w2, h2) = (pw * RENDER_SCALE, ph * RENDER_SCALE);
-    let (pox, poy) = panel_origin(state);
+    let (_, ph) = state.size();
+    let (pox, poy, wf, hf) = workspace_core_rect(state, reveal);
+    let (w2, h2) = ((wf * s).ceil() as u32, (hf * s).ceil() as u32);
     let (x0, y0) = ((pox * s).round() as i32, (poy * s).round() as i32);
-    let radius = state.radius();
+    let radius = state.radius().min(hf / 2.0);
     let (sox, soy) = stage_screen_origin();
     let bg_origin = (sox + pox, soy + poy);
     let bg = wallpaper_blur::ensure_loaded();
@@ -2940,20 +2988,8 @@ fn draw_top_row_2x(
         lock_timer::text_px(ph as f32) * s,
         1.0,
     );
-    for (i, (cx, cy)) in workspace_disc_centres().iter().enumerate() {
-        let tags = ws_visible_tags(active_tag_cached());
-        let tag = tags[i];
-        draw_workspace_disc_flat_2x(
-            canvas,
-            bw,
-            bh,
-            font,
-            *cx * s,
-            *cy * s,
-            tag == active_tag_cached(),
-            tag_state_cached().is_occupied(tag),
-            WS_LABELS[(tag - 1) as usize],
-        );
+    if reveal > 0.0 {
+        draw_workspace_row(canvas, (bw, bh), font, state, s, 1.0, tags, reveal);
     }
     crate::tray::draw_tray_cluster_2x(canvas, bw, bh, font, s);
 }
@@ -3027,89 +3063,7 @@ fn draw_text_centred_in(
     }
 }
 
-/// One workspace disc at device resolution, FLAT (F-G): plain fill, no
-/// drop shadow, no lit rim. AA is a 4x4 supersampled SDF edge so the
-/// 32 px disc is round without a halo. The label uses the clock's font
-/// and the same alpha-over treatment as the clock.
-fn draw_workspace_disc_flat_2x(
-    canvas: &mut [u8],
-    bw: u32,
-    bh: u32,
-    font: &fontdue::Font,
-    cx: f32,
-    cy: f32,
-    active: bool,
-    occupied: bool,
-    label: &str,
-) {
-    const SS: usize = 4;
-    let s = RENDER_SCALE as f32;
-    let r = WS_DISC_R * s;
-    let (fr, fg, fb) = if active {
-        library::theme_accent()
-    } else if occupied {
-        WS_OCCUPIED_FILL
-    } else {
-        WS_INACTIVE_FILL
-    };
-    let glyph_rgb = if active { theme::ink_on((fr, fg, fb), WS_ACTIVE_GLYPH) } else { WS_INACTIVE_GLYPH };
-    let x0 = ((cx - r - 1.0).floor() as i32).max(0);
-    let x1 = ((cx + r + 1.0).ceil() as i32).min(bw as i32);
-    let y0 = ((cy - r - 1.0).floor() as i32).max(0);
-    let y1 = ((cy + r + 1.0).ceil() as i32).min(bh as i32);
-    for y in y0..y1 {
-        for x in x0..x1 {
-            let mut a_sum = 0.0f32;
-            for sub_y in 0..SS {
-                for sub_x in 0..SS {
-                    let ox = (sub_x as f32 + 0.5) / SS as f32 - 0.5;
-                    let oy = (sub_y as f32 + 0.5) / SS as f32 - 0.5;
-                    let px = x as f32 + 0.5 + ox;
-                    let py = y as f32 + 0.5 + oy;
-                    let d = ((px - cx).powi(2) + (py - cy).powi(2)).sqrt();
-                    a_sum += (r + 0.5 - d).clamp(0.0, 1.0);
-                }
-            }
-            let cov = a_sum / (SS * SS) as f32;
-            if cov <= 0.0 {
-                continue;
-            }
-            let i = (((y as u32) * bw + x as u32) * 4) as usize;
-            let inv = 1.0 - cov;
-            // Premultiplied source (fill is opaque): out = c*cov + dst*inv.
-            canvas[i] = (fb as f32 * cov + canvas[i] as f32 * inv) as u8;
-            canvas[i + 1] = (fg as f32 * cov + canvas[i + 1] as f32 * inv) as u8;
-            canvas[i + 2] = (fr as f32 * cov + canvas[i + 2] as f32 * inv) as u8;
-            canvas[i + 3] = ((cov + canvas[i + 3] as f32 / 255.0 * inv) * 255.0) as u8;
-        }
-    }
-    let row = layout_text(clock_font().unwrap_or(font), label, WS_NUMBER_PX * s);
-    let baseline = cy - row.height / 2.0 + row.ascent;
-    let mut pen = cx - row.width / 2.0;
-    for (gm, cov) in &row.glyphs {
-        let gx0 = (pen + gm.xmin as f32).round() as i32;
-        let gy0 = (baseline - gm.ymin as f32 - gm.height as f32).round() as i32;
-        for gy in 0..gm.height as i32 {
-            for gx in 0..gm.width as i32 {
-                let (px_x, px_y) = (gx0 + gx, gy0 + gy);
-                if px_x < 0 || px_y < 0 || px_x >= bw as i32 || px_y >= bh as i32 {
-                    continue;
-                }
-                let cc = cov[(gy as usize) * gm.width + gx as usize] as f32 / 255.0;
-                if cc <= 0.0 {
-                    continue;
-                }
-                let i = (((px_y as u32) * bw + px_x as u32) * 4) as usize;
-                let inv = 1.0 - cc;
-                canvas[i] = (glyph_rgb.2 as f32 * cc + canvas[i] as f32 * inv) as u8;
-                canvas[i + 1] = (glyph_rgb.1 as f32 * cc + canvas[i + 1] as f32 * inv) as u8;
-                canvas[i + 2] = (glyph_rgb.0 as f32 * cc + canvas[i + 2] as f32 * inv) as u8;
-                canvas[i + 3] = 255;
-            }
-        }
-        pen += gm.advance_width;
-    }
-}
+
 
 thread_local! {
     /// Device-sized panel scratch for the settled 2x panel redraw (§22).
@@ -3171,6 +3125,18 @@ fn redraw_panel_content_2x(
         let (sox, soy) = stage_screen_origin();
         let bg_origin = (sox + ox, soy + oy);
         let drew = match state {
+            IslandState::Preview => {
+                activity::draw_preview(scratch, dw, dh, font, icon_font);
+                true
+            }
+            IslandState::Notifications => {
+                activity::draw_inbox(scratch, dw, dh, font);
+                true
+            }
+            IslandState::Dictation => {
+                draw_recording(scratch, dw, dh);
+                true
+            }
             IslandState::Power => {
                 power_panel::draw_power_panel(scratch, dw, dh, font, icon_font, "");
                 true
@@ -3216,6 +3182,10 @@ fn redraw_panel_content_2x(
                         bg_origin,
                     );
                 });
+                true
+            }
+            IslandState::Displays => {
+                displays_panel::draw(scratch, dw, dh, font);
                 true
             }
             IslandState::Clipboard => {
@@ -3282,6 +3252,7 @@ fn draw_pill_over_stage(
             0,
             0,
             0,
+            false,
         );
         blit_panel(canvas, w, h, scratch, pw, ph, ox as i32, oy as i32);
     });
@@ -3321,6 +3292,8 @@ fn draw(
     icon_font: Option<&fontdue::Font>,
     lock_data: &lockscreen::LockscreenData,
     lock_wallpaper: Option<&[u8]>,
+    native_recording_or_music: bool,
+    workspaces_progress: f32,
 ) {
     ensure_tag_poller();
     crate::tray::ensure_tray_host();
@@ -3350,6 +3323,7 @@ fn draw(
             cal_offset,
             wall_selected,
             theme_selected,
+            native_recording_or_music,
         );
         blit_panel(canvas, w, h, scratch, pw, ph, ox as i32, oy as i32);
     });
@@ -3370,16 +3344,11 @@ fn draw(
         // hang-below origin, so the pill row stays visible.
         draw_panel_shadow_stage(canvas, w, h, state, 1.0);
         draw_pill_over_stage(canvas, w, h, font, icon_font, lock_data, lock_wallpaper);
-        // iter90 a8: workspace circles ride with the pill cluster in
-        // every state that still shows the pill row — collapsed, lock,
-        // dictation, and the tray menu.
-        draw_workspace_circles_stage(canvas, w, h, font, active_tag_cached(), 1.0);
-        // iter108: tray cluster rides with the pill cluster too,
-        // on the RIGHT of the pill.
-        crate::tray::draw_tray_cluster_stage(canvas, w, h, font, 1.0);
-    } else if state != IslandState::Lockscreen {
-        // Pill-row states (collapsed / dictation / lock): clusters on.
-        draw_workspace_circles_stage(canvas, w, h, font, active_tag_cached(), 1.0);
+    }
+    if row_has_clusters(state) {
+        if workspaces_progress > 0.0 {
+            draw_workspace_row(canvas, (w, h), font, state, 1.0, 1.0, tag_state_cached(), workspaces_progress);
+        }
         crate::tray::draw_tray_cluster_stage(canvas, w, h, font, 1.0);
     }
 }
@@ -3424,14 +3393,11 @@ fn rounded_rect_sdf(x: f32, y: f32, w: f32, h: f32, r: f32) -> f32 {
 /// Alpha of the disc drop shadow at (px, py) for a disc centred
 /// (cx, cy): full DISC_SHADOW_ALPHA inside the offset circle, smooth
 /// falloff over DISC_SHADOW_BLUR outside it.
-/// disc_shadow_alpha_r is the same shadow at an arbitrary radius
-/// (iter92: the Ø16 workspace discs).
 fn disc_shadow_alpha(px: f32, py: f32, cx: f32, cy: f32) -> f32 {
     disc_shadow_alpha_r(px, py, cx, cy, NAV_DISC_R)
 }
 
-/// Radius-parameterised disc shadow (iter92: the workspace discs are
-/// Ø16, so their shadow must be sized by WS_DISC_R, not NAV_DISC_R).
+/// Disc shadow with the supplied radius.
 fn disc_shadow_alpha_r(px: f32, py: f32, cx: f32, cy: f32, r: f32) -> f32 {
     let (sx, sy) = (cx + DISC_SHADOW_OFF.0, cy + DISC_SHADOW_OFF.1);
     let d = ((px - sx).powi(2) + (py - sy).powi(2)).sqrt();
@@ -3490,15 +3456,11 @@ fn composite_black_shadow(canvas: &mut [u8], i: usize, a: f32) {
 /// (R, G, B, alpha) to blend over the disc fill, or None away from
 /// the edge band. The chevron (radius <= ~7) never reaches the band,
 /// so it stays untouched and fully legible.
-///
-/// disc_rim_r is the same band at an arbitrary radius (iter92:
-/// the Ø16 workspace discs).
 fn disc_rim(px: f32, py: f32, cx: f32, cy: f32) -> Option<(f32, f32, f32, f32)> {
     disc_rim_r(px, py, cx, cy, NAV_DISC_R)
 }
 
-/// Radius-parameterised rim (iter92: the Ø16 workspace discs need the
-/// 1.5 px band hugging THEIR edge, r = 8, not the nav-disc r = 14).
+/// Rim band with the supplied radius.
 fn disc_rim_r(px: f32, py: f32, cx: f32, cy: f32, r: f32) -> Option<(f32, f32, f32, f32)> {
     let d = ((px - cx).powi(2) + (py - cy).powi(2)).sqrt();
     let band = 1.0 - ((d - (r - RIM_WIDTH / 2.0)).abs() / (RIM_WIDTH / 2.0));
@@ -3559,189 +3521,112 @@ fn draw_panel_shadow_stage(canvas: &mut [u8], w: u32, h: u32, state: IslandState
 /// on the lower arc — so the discs read as floating coins, not flat
 /// cutouts. The chevron stays centred and untouched by the rim.
 
-/// Supersample factor for the workspace-disc rasteriser (iter109):
-/// every stage pixel of a workspace disc is evaluated on an 8 x 8
-/// sub-grid and the results averaged. The disc is only 16 px across,
-/// so a single point sample per pixel quantises the edge into ~8 flat
-/// facets (the octagon Alexandre reported 15 Nov 2026); the
-/// supersampled mean carries the true sub-pixel edge position in
-/// every pixel's coverage, and the 2x upscale + compositor downsample
-/// then reconstruct a smooth circle from it. The same grid is used
-/// for the shadow, the fill and the rim, so all three agree.
-const WS_DISC_SS: usize = 8;
-
-/// Draw one workspace disc (iter90 a8, resized iter92): the nav-disc
-/// treatment — drop shadow, Ø16 fill, 1.5 px rim — with the tag number
-/// centred where the chevron sits in a nav disc. Active = periwinkle
-/// fill + dark-navy number; inactive = dark #1C1E22 + near-white number.
-/// Shadow and rim are sized by WS_DISC_R via the _r helpers — the
-/// plain disc_shadow_alpha/disc_rim hardcode the nav-disc Ø28.
-/// The number is rasterized with the UI font at WS_NUMBER_PX and
-/// alpha-over blended (same convention as the nav chevron).
-fn draw_workspace_disc(
+/// Extend the clock's silhouette without touching its text or doubling its AA.
+fn draw_workspace_row(
     canvas: &mut [u8],
-    w: u32,
-    h: u32,
-    cx: f32,
-    cy: f32,
-    active: bool,
-    occupied: bool,
+    (w, h): (u32, u32),
     font: &fontdue::Font,
-    label: &str,
-    op: f32,
+    state: IslandState,
+    scale: f32,
+    opacity: f32,
+    tags: TagState,
+    reveal: f32,
 ) {
-    let (fr, fg, fb) = if active {
-        library::theme_accent()
-    } else if occupied {
-        WS_OCCUPIED_FILL
-    } else {
-        WS_INACTIVE_FILL
-    };
-    let glyph_rgb = if active {
-        theme::ink_on((fr, fg, fb), WS_ACTIVE_GLYPH)
-    } else {
-        WS_INACTIVE_GLYPH
-    };
-    let x0 = ((cx - WS_DISC_R - 1.0).floor() as i32).max(0);
-    let x1 = ((cx + WS_DISC_R + 1.0).ceil() as i32).min(w as i32);
-    let y0 = ((cy - WS_DISC_R - 1.0).floor() as i32).max(0);
-    let y1 = ((cy + WS_DISC_R + 1.0).ceil() as i32).min(h as i32);
-    // Fill + rim, supersampled (iter109). For each stage pixel the
-    // 1 px SDF ramp is evaluated at every sub-sample and averaged, so
-    // the pixel's coverage is the true area of the disc inside it
-    // (0.5 exactly at d = R) instead of the point sample at the pixel
-    // centre. The rim is evaluated per sub-sample too, so its 1.5 px
-    // band does not quantise either.
-    //
-    // The pixel is written as a proper premultiplied sample:
-    // RGB = rim-blended fill * 0.92 * coverage, A = coverage.
-    // The old code wrote A = 255 for every fringe pixel, which made
-    // the 1 px AA fringe an opaque dark ring: the 2x upscale +
-    // compositor downsample then smeared that ring outward and the
-    // darkness test counted it as disc, fattening every silhouette
-    // by ~1 px (tip row 12 px instead of 7, an 11-row flat run —
-    // the octagon). With A = coverage the fringe is translucent,
-    // the wallpaper shows through it, and the counted silhouette is
-    // the true circle. Interior pixels still land at A = 255 with
-    // the same RGB as before, so the disc's look is unchanged.
-    // Canvas is BGRA; rgb_sum is accumulated as (R, G, B).
-    for y in y0..y1 {
-        for x in x0..x1 {
-            let mut rgb_sum = [0.0f32; 3];
-            let mut a_sum = 0.0f32;
-            for sub_y in 0..WS_DISC_SS {
-                for sub_x in 0..WS_DISC_SS {
-                    let ox = (sub_x as f32 + 0.5) / WS_DISC_SS as f32 - 0.5;
-                    let oy = (sub_y as f32 + 0.5) / WS_DISC_SS as f32 - 0.5;
-                    let px = x as f32 + 0.5 + ox;
-                    let py = y as f32 + 0.5 + oy;
-                    let d_disc = ((px - cx).powi(2) + (py - cy).powi(2)).sqrt();
-                    let a_sub = (WS_DISC_R + 0.5 - d_disc).clamp(0.0, 1.0);
-                    if a_sub > 0.0 {
-                        a_sum += a_sub;
-                        // Rim highlight (iter26), per sub-sample: the
-                        // _r variant, sized by WS_DISC_R — the plain
-                        // disc_rim hardcodes the nav Ø28.
-                        let mut col = [fr as f32 * 0.92, fg as f32 * 0.92, fb as f32 * 0.92];
-                        if let Some((rr, gg, bb, aa)) =
-                            disc_rim_r(px, py, cx, cy, WS_DISC_R)
-                        {
-                            if aa > 0.0 {
-                                let inv = 1.0 - aa;
-                                col = [
-                                    rr * aa + col[0] * inv,
-                                    gg * aa + col[1] * inv,
-                                    bb * aa + col[2] * inv,
-                                ];
-                            }
-                        }
-                        rgb_sum[0] += col[0] * a_sub;
-                        rgb_sum[1] += col[1] * a_sub;
-                        rgb_sum[2] += col[2] * a_sub;
-                    }
-                }
-            }
-            if a_sum > 0.0 {
-                let n = (WS_DISC_SS * WS_DISC_SS) as f32;
-                let cov = (a_sum / n) * op;
-                let i = (((y as u32 * w) + x as u32) * 4) as usize;
-                let dst_a = canvas[i + 3] as f32 / 255.0;
-                let inv = 1.0 - cov;
-                canvas[i] = (rgb_sum[2] / n + canvas[i] as f32 * inv) as u8;
-                canvas[i + 1] = (rgb_sum[1] / n + canvas[i + 1] as f32 * inv) as u8;
-                canvas[i + 2] = (rgb_sum[0] / n + canvas[i + 2] as f32 * inv) as u8;
-                canvas[i + 3] = ((cov + dst_a * inv) * 255.0) as u8;
-            }
-        }
-    }
-    // Number, centred on (cx, cy): same line-box centring as
-    // lock_timer::draw_text_centred (baseline = cy - height/2 + ascent).
-    let row = layout_text(font, label, WS_NUMBER_PX);
-    let baseline = cy - row.height / 2.0 + row.ascent;
-    let mut pen = cx - row.width / 2.0;
-    for (gm, cov) in &row.glyphs {
-        let gx0 = (pen + gm.xmin as f32).round() as i32;
-        let gy0 = (baseline - gm.ymin as f32 - gm.height as f32).round() as i32;
-        for gy in 0..gm.height as i32 {
-            for gx in 0..gm.width as i32 {
-                let (px_x, px_y) = (gx0 + gx, gy0 + gy);
-                if px_x < 0 || px_y < 0 || px_x >= w as i32 || px_y >= h as i32 {
-                    continue;
-                }
-                let cc = cov[(gy as usize) * gm.width + gx as usize] as f32 / 255.0 * op;
-                if cc <= 0.0 {
-                    continue;
-                }
-                let i = (((px_y as u32) * w + px_x as u32) * 4) as usize;
-                let inv = 1.0 - cc;
-                canvas[i] = (glyph_rgb.2 as f32 * cc + canvas[i] as f32 * inv) as u8;
-                canvas[i + 1] = (glyph_rgb.1 as f32 * cc + canvas[i + 1] as f32 * inv) as u8;
-                canvas[i + 2] = (glyph_rgb.0 as f32 * cc + canvas[i + 2] as f32 * inv) as u8;
-                canvas[i + 3] = 255;
-            }
-        }
-        pen += gm.advance_width;
-    }
-}
-
-/// Draw all four workspace circles into the stage canvas (iter90 a8).
-/// `active_tag` is the cached mango tag (1..=9); only 1..=4 ever
-/// Draw all four workspace circles into the stage canvas (iter90 a8).
-/// `active_tag` is the cached mango tag (1..=9); only 1..=4 ever
-/// matches a circle — a tag 5..9 leaves every circle inactive.
-/// `op` scales the whole cluster's alpha: 1.0 for settled draws, the
-/// cluster fade on morph frames (r1d §0 — the clusters follow the
-/// pill row, so they ride the outgoing/incoming opacity of the state
-/// that shows the row).
-fn draw_workspace_circles_stage(
-    canvas: &mut [u8],
-    w: u32,
-    h: u32,
-    font: &fontdue::Font,
-    active_tag: u8,
-    op: f32,
-) {
-    if op <= 0.0 {
+    if opacity <= 0.0 || reveal <= 0.0 {
         return;
     }
-    // r1c: one snapshot read for the whole row (the active tag can move
-    // between two reads, and a half-updated row would draw two actives).
-    let tags = ws_visible_tags(active_tag);
-    let state = tag_state_cached();
-    for (i, (cx, cy)) in workspace_disc_centres().iter().enumerate() {
-        let tag = tags[i];
-        draw_workspace_disc(
-            canvas,
+    let p = reveal.clamp(0.0, 1.25);
+    let pill = workspace_pill(state);
+    let (px, py, pw, ph) = workspace_core_rect(state, p);
+    let px = (px * scale).floor();
+    let top = py * scale;
+    let width = WS_WIDTH * p * scale;
+    let height = ph * scale;
+    let left = px - width;
+    let radius = pill.radius().min(ph / 2.0) * scale;
+    let bounds = clip_rect(
+        (left as i32, top as i32, (px + radius).ceil() as i32, (top + height) as i32),
+        w,
+        h,
+    );
+    for y in bounds.1..bounds.3 {
+        for x in bounds.0..bounds.2 {
+            let distance = rounded_rect_sdf(
+                x as f32 + 0.5 - left,
+                y as f32 + 0.5 - top,
+                width + pw * scale,
+                height,
+                radius,
+            );
+            // Match the clock's AA band in logical pixels at both scales.
+            let alpha = ((0.5 - distance / scale).clamp(0.0, 1.0) * opacity * 255.0) as u8;
+            let i = ((y as u32 * w + x as u32) * 4) as usize;
+            canvas[i + 3] = canvas[i + 3].max(alpha);
+        }
+    }
+
+    let font = clock_font().unwrap_or(font);
+    let font_px = WS_NUMBER_PX * scale;
+    let cy = top + height / 2.0;
+    let baseline = cy + font.horizontal_line_metrics(font_px)
+        .map_or(font_px / 2.0, |line| (line.ascent + line.descent) / 2.0);
+    for (slot, tag) in ws_visible_tags(tags.active).into_iter().enumerate() {
+        let opacity = opacity * morph::smoothstep(0.20 + slot as f32 * 0.045, 0.65 + slot as f32 * 0.045, p);
+        let active = tag == tags.active;
+        let occupied = tags.is_occupied(tag);
+        let (r, g, b) = if active {
+            theme::ink_on(WS_ACTIVE_SURFACE, library::theme_accent())
+        } else if occupied {
+            WS_OCCUPIED_INK
+        } else {
+            WS_IDLE_INK
+        };
+        let digit = char::from(b'0' + tag);
+        let (glyph, mask) = lock_timer::rasterize_cached(font, digit, font_px);
+        let cx = left + (WS_LEADING_PAD + (slot as f32 + 0.5) * WS_CELL_W) * p * scale;
+        let gx = (cx - glyph.width as f32 / 2.0).round() as i32;
+        let gy = (baseline - glyph.ymin as f32 - glyph.height as f32).round() as i32;
+        let chip = 8.0 * scale;
+        let dot = 1.25 * scale;
+        let bounds = clip_rect(
+            ((cx - chip).floor() as i32, (cy - chip).floor() as i32,
+             (cx + chip).ceil() as i32, (cy + chip).ceil() as i32),
             w,
             h,
-            *cx,
-            *cy,
-            tag == active_tag,
-            state.is_occupied(tag),
-            font,
-            WS_LABELS[(tag - 1) as usize],
-            op,
         );
+        let (br, bg, bb) = if active { WS_ACTIVE_SURFACE } else { WS_OCCUPIED_INK };
+        for y in bounds.1..bounds.3 {
+            for x in bounds.0..bounds.2 {
+                let dx = x as f32 + 0.5 - cx;
+                let dy = y as f32 + 0.5 - cy;
+                let shape = if active {
+                    rounded_rect_alpha(dx + chip, dy + chip, 2.0 * chip, 2.0 * chip, 5.0 * scale)
+                } else if occupied {
+                    (dot + 0.5 - (dx - 6.0 * scale).hypot(dy)).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                let (mx, my) = (x - gx, y - gy);
+                let glyph_alpha = if (0..glyph.width as i32).contains(&mx)
+                    && (0..glyph.height as i32).contains(&my)
+                {
+                    f32::from(mask[my as usize * glyph.width + mx as usize]) / 255.0
+                } else {
+                    0.0
+                };
+                let coverage = (0.5 - rounded_rect_sdf(
+                    x as f32 + 0.5 - left, y as f32 + 0.5 - top,
+                    width + pw * scale, height, radius) / scale).clamp(0.0, 1.0);
+                let fill = shape * (1.0 - glyph_alpha) * opacity * coverage;
+                let ink = glyph_alpha * opacity * coverage;
+                let keep = 1.0 - fill - ink;
+                let i = ((y as u32 * w + x as u32) * 4) as usize;
+                for (c, (base, text)) in [(bb, b), (bg, g), (br, r)].into_iter().enumerate() {
+                    canvas[i + c] = (f32::from(base) * fill + f32::from(text) * ink
+                        + f32::from(canvas[i + c]) * keep) as u8;
+                }
+            }
+        }
     }
 }
 
@@ -3983,6 +3868,8 @@ fn draw_state_into(
             icon_font,
             lock_data,
             lock_wallpaper,
+            false,
+            0.0, // The workspace row is drawn live, outside the cached morph endpoints.
         );
     }
 }
@@ -4014,6 +3901,7 @@ fn draw_morph_frame(
     // endpoint scratches are frame-invariant, so the caller keeps them
     // (see Island::morph_ep_gen).
     render_endpoints: bool,
+    workspaces_progress: f32,
 ) {
     let rgn = clip_rect(region, w, h);
     let wf = w as f32;
@@ -4290,24 +4178,8 @@ fn draw_morph_frame(
     if from_state == IslandState::TrayMenu || to_state == IslandState::TrayMenu {
         draw_pill_over_stage(canvas, w, h, font, icon_from, lock_data, lock_wallpaper);
     }
-    // iter90 a8 + r1d §0: the clusters (workspace circles, tray icons)
-    // are fixed in stage coords and the capsule loop zeroed their
-    // strip, so they are re-drawn here — FADED with the same rule the
-    // shadow uses, but keyed to the ROW states that show them
-    // (collapsed / dictation / lock / tray menu): out with the
-    // outgoing row state, in with the incoming one, steady on
-    // row->row morphs. A lockscreen endpoint is not a row state and
-    // never sees cluster content mid-morph either.
-    let row_state = |s: IslandState| {
-        matches!(
-            s,
-            IslandState::Collapsed
-                | IslandState::Dictation
-                | IslandState::Lock
-                | IslandState::TrayMenu
-        )
-    };
-    let cluster_op = match (row_state(from_state), row_state(to_state)) {
+    // The tray and workspace row fade away when a wider capsule occupies it.
+    let cluster_op = match (row_has_clusters(from_state), row_has_clusters(to_state)) {
         (true, true) => frame.outgoing_opacity.max(frame.incoming_opacity),
         (true, false) => frame.outgoing_opacity,
         (false, true) => frame.incoming_opacity,
@@ -4317,30 +4189,24 @@ fn draw_morph_frame(
         && from_state != IslandState::Lockscreen
         && to_state != IslandState::Lockscreen
     {
-        draw_workspace_circles_stage(canvas, w, h, font, active_tag_cached(), cluster_op);
+        let row_state = if row_has_clusters(to_state) { to_state } else { from_state };
+        if workspaces_progress > 0.0 {
+            draw_workspace_row(canvas, (w, h), font, row_state, 1.0, cluster_op, tag_state_cached(), workspaces_progress);
+        }
         crate::tray::draw_tray_cluster_stage(canvas, w, h, font, cluster_op);
     }
-    // r1d §14: ONE migrating clock on pill <-> cycled-menu morphs.
-    // Measured on the 60 fps reference (capsule-relative, device-px
-    // invariant): collapsed clock centre (0.437, 0.512) of the pill,
-    // cap = 0.333 * pill_h; expanded centre (0.104, 0.330) of the
-    // panel, cap = 0.181 * panel_h (clock 40x14 -> 95x34 device,
-    // 2.4x growth). It rides the SAME eased progress as the capsule:
-    // slides centre -> top-left, sits higher (0.512 -> 0.330 vertical
-    // centre), and grows. Opacity: full until the incoming panel
-    // content starts arriving (the reference keeps its clock, ours
-    // has no clock in the expanded state, so the clock dissolves
-    // over the incoming fade's tail — and mirrors it on collapse).
+    // The clock moves with the capsule and fades out before the preview appears.
+    // Closing reverses the position and size tracks back into the small pill.
     if migrating_clock {
         let to_collapsed = to_state == IslandState::Collapsed;
-        let (from_menu, to_menu) = (!to_collapsed, to_collapsed);
-        let p = frame.progress;
+        let to_menu = !to_collapsed;
+        let p = frame.progress.clamp(0.0, 1.0);
         // Centre fractions interpolate between the two endpoint
         // positions; the pair flips on collapse so the track reverses.
-        let fx0 = if to_menu { 0.437 } else { 0.104 };
-        let fx1 = if to_menu { 0.104 } else { 0.437 };
-        let fy0 = if to_menu { 0.512 } else { 0.330 };
-        let fy1 = if to_menu { 0.330 } else { 0.512 };
+        let fx0 = if to_menu { 0.500 } else { 0.104 };
+        let fx1 = if to_menu { 0.104 } else { 0.500 };
+        let fy0 = if to_menu { 0.500 } else { 0.330 };
+        let fy1 = if to_menu { 0.330 } else { 0.500 };
         let cx = ox + fw * (fx0 + (fx1 - fx0) * p);
         let cy = oy + fh * (fy0 + (fy1 - fy0) * p);
         // px track: collapsed anchor is today's text_px(pill_h)
@@ -4357,15 +4223,15 @@ fn draw_morph_frame(
             from_state.size().1 as f32
         };
         let px_expanded = (0.181 / 0.77 * menu_h).min(px_collapsed * 2.4);
-        let px = px_collapsed + (px_expanded - px_collapsed) * p;
-        // Fade: expand — out with the incoming content's arrival
-        // (clock never sits under full panel ink); collapse — in with
-        // the incoming fade (the empty-capsule mid-morph stays
-        // clock-free, same ink timing as everything else).
+        let size_p = if to_menu { p } else { 1.0 - p };
+        let px = px_collapsed + (px_expanded - px_collapsed) * size_p;
+        // Opening uses the outgoing fade; closing fades the clock in early so the shrunk pill never sits blank.
         let clock_op = if to_menu {
-            1.0 - frame.incoming_opacity
+            frame.outgoing_opacity
         } else {
-            frame.incoming_opacity
+            frame
+                .incoming_opacity
+                .max(morph::smoothstep(0.04, 0.22, frame.raw_progress))
         };
         if clock_op > 0.0 {
             // A window centred on the migrating centre, generous
@@ -4452,6 +4318,7 @@ struct Island {
     morph: Option<morph::Morph>,
     morph_from_state: IslandState,
     morph_token: Option<calloop::RegistrationToken>,
+    preview_token: Option<calloop::RegistrationToken>,
     // Morph endpoints (v0.7, S-1): the geometries the running morph
     // interpolates between, so draw_if_ready can recover the raw
     // progress from the PRESENTED width (see the morph_frame
@@ -4520,8 +4387,8 @@ struct Island {
     frame_pending: Option<std::time::Instant>,
     /// A draw was requested while a frame callback was outstanding.
     redraw_wanted: bool,
-    /// Content rect of the last committed frame (stage-logical).
-    last_rect: Option<(i32, i32, i32, i32)>,
+    /// Content rect retained in each shm slot (stage-logical).
+    slot_rects: [Option<(i32, i32, i32, i32)>; SLOT_RING],
     configured_size: (u32, u32),
     drawn_size: (u32, u32),
     /// Backdrop factor (0..1, iter30 a3b) the last draw used — the
@@ -4569,6 +4436,8 @@ struct Island {
     // fresh wl_region on every frame (iter24).
     qh: QueueHandle<Self>,
     pointer_over: bool,
+    workspaces_revealed: bool,
+    workspace_spring: morph::Spring,
     /// Last pointer position seen on a non-Leave event (stage coords).
     /// A Leave at (within 0.5 px of) this position means the pointer
     /// did not move — the Leave was caused by a region/state change
@@ -4753,6 +4622,9 @@ impl Island {
     fn apply_state_instant(&mut self, new_state: IslandState) {
         let prev = self.state;
         self.state = new_state;
+        if new_state == IslandState::Displays && prev != IslandState::Displays {
+            displays_panel::action(displays_panel::Action::Refresh);
+        }
         if new_state != IslandState::ControlCenter || prev != IslandState::ControlCenter {
             controlcenter_panel::cc_bt_submenu_set(false);
             controlcenter_panel::cc_sound_submenu_set(false);
@@ -4801,6 +4673,8 @@ impl Island {
             // on its next tick (fingerprint reset; see the timer).
             self.last_music_fingerprint = None;
         }
+        let (w, h) = new_state.size();
+        self.morph_to_geom = morph::Geometry::new(w as f32, h as f32, new_state.radius());
         self.sync_keyboard_interactivity();
         if let Some(layer) = &self.layer {
             // iter24: the stage never resizes for island states — the
@@ -4866,6 +4740,16 @@ impl Island {
     /// at most one step fires per pointer frame. Gated by the
     /// scroll_cycle config key and by being in a menu state at all.
     fn on_wheel(&mut self, vertical: AxisScroll) {
+        if self.state == IslandState::Notifications {
+            let delta = if vertical.discrete != 0 { vertical.discrete as f64 } else { vertical.absolute / 15.0 };
+            self.wheel_accum += delta;
+            if self.wheel_accum.abs() >= 1.0 {
+                activity::scroll(if self.wheel_accum > 0.0 { 1 } else { -1 });
+                self.wheel_accum = 0.0;
+                self.draw_if_ready();
+            }
+            return;
+        }
         if !cfg().scroll_cycle {
             return;
         }
@@ -4925,14 +4809,13 @@ impl Island {
     }
 
     /// Launch the launcher's selected (top) filtered result, if any,
-    /// then reset the search and collapse. Enter with no results is
+    /// then collapse. A fresh entry resets the search. Enter with no results is
     /// a no-op (the launcher stays open).
     fn launch_live_selected(&mut self) {
         let Some(exec) = launcher_panel::live_selected_exec() else {
             return;
         };
         spawn_exec(&exec);
-        launcher_panel::live_reset();
         self.request_state(IslandState::Collapsed);
     }
 
@@ -5029,7 +4912,6 @@ impl Island {
         }
         let sym = event.keysym;
         if sym == Keysym::Escape {
-            launcher_panel::live_reset();
             self.request_state(IslandState::Collapsed);
             return;
         }
@@ -5049,7 +4931,7 @@ impl Island {
         }
         if sym == Keysym::BackSpace {
             launcher_panel::live_backspace();
-            self.draw_if_ready();
+            self.request_state(IslandState::Launcher);
             return;
         }
         if let Some(text) = &event.utf8 {
@@ -5060,13 +4942,12 @@ impl Island {
                     return;
                 }
                 "\u{1b}" => {
-                    launcher_panel::live_reset();
                     self.request_state(IslandState::Collapsed);
                     return;
                 }
                 "\u{7f}" | "\u{8}" => {
                     launcher_panel::live_backspace();
-                    self.draw_if_ready();
+                    self.request_state(IslandState::Launcher);
                     return;
                 }
                 _ => {}
@@ -5074,7 +4955,7 @@ impl Island {
             let printable: String = text.chars().filter(|c| !c.is_control()).collect();
             if !printable.is_empty() {
                 launcher_panel::live_push_text(&printable);
-                self.draw_if_ready();
+                self.request_state(IslandState::Launcher);
             }
         }
     }
@@ -5470,7 +5351,7 @@ impl Island {
         self.pool = None;
         self.slots.clear();
         self.slot_bytes = 0;
-        self.last_rect = None;
+        self.slot_rects.fill(None);
         // F-B: the morph scratch pair is freed on every exit path, not
         // only the morph-into-Collapsed arm.
         Self::free_morph_scratches(&mut self.morph_scratch_from, &mut self.morph_scratch_to);
@@ -5518,46 +5399,76 @@ impl Island {
         self.start_lock_anim(loop_handle, LockAnimKind::UnlockOut);
     }
 
-    /// Start a 400 ms morph to `new_state` (morph.rs), or switch
-    /// instantly when the geometry does not change (collapsed clock <->
-    /// timer, same state). A command for the morph's current target
-    /// mid-morph snaps to the settled end state; a command for a
-    /// different state restarts the morph from the CURRENT interpolated
-    /// geometry, never from a stale nominal size.
+    fn on_activity(&mut self, event: activity::Event) {
+        let duration = match &event {
+            activity::Event::Notification(note) if !note.silent => Some(Duration::from_secs(6)),
+            activity::Event::Level(level) => {
+                match level.kind {
+                    activity::LevelKind::Volume => controlcenter_panel::cache_set_sound(
+                        if level.muted { 0.0 } else { level.percent as f32 / 100.0 }),
+                    activity::LevelKind::Brightness => controlcenter_panel::cache_set_display(level.percent as f32 / 100.0),
+                }
+                Some(Duration::from_millis(1800))
+            }
+            _ => None,
+        };
+        activity::apply(event);
+        if self.state == IslandState::Notifications {
+            self.request_state(IslandState::Notifications);
+        } else if matches!(self.state, IslandState::Collapsed | IslandState::Preview) {
+            if let Some(duration) = duration {
+                self.request_state(IslandState::Preview);
+                let handle = self.loop_handle.clone();
+                if let Some(token) = self.preview_token.take() { handle.remove(token); }
+                self.preview_token = handle.insert_source(Timer::from_duration(duration), |_, _, state: &mut Island| {
+                    if state.state == IslandState::Preview && state.pointer_over
+                        && state.last_pointer_pos.is_some_and(|p| point_in_panel_stage(p, IslandState::Preview))
+                    {
+                        return TimeoutAction::ToDuration(Duration::from_secs(1));
+                    }
+                    state.preview_token = None;
+                    if state.state == IslandState::Preview { state.request_state(IslandState::Collapsed); }
+                    TimeoutAction::Drop
+                }).ok();
+            } else if self.state == IslandState::Preview && activity::preview().is_none() {
+                self.request_state(IslandState::Collapsed);
+            }
+        } else if self.state == IslandState::ControlCenter {
+            self.morph_ep_gen = None;
+            self.draw_if_ready();
+        }
+    }
+
+    /// Spring to the new state from the current shape, including retargets.
     fn begin_morph(
         &mut self,
         loop_handle: &calloop::LoopHandle<'static, Self>,
         new_state: IslandState,
     ) {
-        // Same-state command while a morph is running: snap to the end.
-        if new_state == self.state && self.morph.is_some() {
-            self.morph = None;
-            if let Some(tok) = self.morph_token.take() {
-                let _ = loop_handle.remove(tok);
-            }
-            self.apply_state_instant(new_state);
-            self.draw_if_ready();
-            return;
-        }
+        let now = std::time::Instant::now();
         let from_geom = match &self.morph {
             Some(m) => {
-                let f = m.frame_at(std::time::Instant::now());
+                let f = m.frame_at(now);
                 morph::Geometry::new(f.width, f.height, f.radius)
             }
+            None if new_state == self.state
+                || matches!(self.state, IslandState::Preview | IslandState::Notifications) => self.morph_to_geom,
             None => {
                 let (w, h) = self.state.size();
                 morph::Geometry::new(w as f32, h as f32, self.state.radius())
             }
         };
+        if new_state == IslandState::Launcher && self.state != IslandState::Launcher {
+            launcher_panel::live_reset();
+        }
         let (tw, th) = new_state.size();
         let to_geom = morph::Geometry::new(tw as f32, th as f32, new_state.radius());
-        if from_geom == to_geom {
-            // Same geometry: no morph, instant switch (as before).
-            self.morph = None;
-            if let Some(tok) = self.morph_token.take() {
-                let _ = loop_handle.remove(tok);
+        let dynamic = matches!(new_state, IslandState::Launcher | IslandState::Preview | IslandState::Notifications);
+        if new_state == self.state && (!dynamic || to_geom == self.morph_to_geom) {
+            // Content can change while a resize is still in flight.
+            if dynamic {
+                self.morph_ep_gen = None;
             }
-            self.apply_state_instant(new_state);
             self.draw_if_ready();
             return;
         }
@@ -5573,17 +5484,19 @@ impl Island {
         self.morph_gen = self.morph_gen.wrapping_add(1);
         self.morph_from_state = self.state;
         self.state = new_state;
+        if new_state == IslandState::Notifications && self.morph_from_state != IslandState::Notifications {
+            activity::on_enter();
+        }
+        if new_state == IslandState::Displays && self.morph_from_state != IslandState::Displays {
+            displays_panel::action(displays_panel::Action::Refresh);
+        }
         if new_state != IslandState::ControlCenter
             || self.morph_from_state != IslandState::ControlCenter
         {
             controlcenter_panel::cc_bt_submenu_set(false);
             controlcenter_panel::cc_sound_submenu_set(false);
         }
-        if new_state == IslandState::Launcher
-            && self.morph_from_state != IslandState::Launcher
-        {
-            launcher_panel::live_reset();
-        }
+
         if new_state == IslandState::Clipboard
             && self.morph_from_state != IslandState::Clipboard
         {
@@ -5625,74 +5538,13 @@ impl Island {
         self.sync_keyboard_interactivity();
         self.morph_from_geom = from_geom;
         self.morph_to_geom = to_geom;
-        // D7 (review-morph-iter10, iter13): restart through the TESTED
-        // helper `Morph::restart_from_current` when a morph is already
-        // running, so the shipped path is the tested path — the inlined
-        // frame_at + island_expand construction above duplicated it.
-        // a1 (iter22) CORRECTION to D7: restart_from_current KEEPS the
-        // running morph's easing — an EaseOutBack EXPAND retargeted to a
-        // collapse overshoots past the pill (height < 0, saturates to 0
-        // in `as u32`) and the compositor kills the layer surface with
-        // "height 0 requested without setting top and bottom anchors"
-        // (reproduced live 13 Nov 07:40: hover-open + click 120 ms in).
-        // So a retarget re-derives the easing from the NEW direction,
-        // exactly like the fresh path below; the frame itself still
-        // comes from the running morph (no jump).
-        let now = std::time::Instant::now();
         self.morph = Some(match &self.morph {
-            Some(m) => {
-                let frame = m.frame_at(now);
-                let from_current = morph::Geometry::new(
-                    frame.width,
-                    frame.height,
-                    frame.radius,
-                );
-                // r1d §2: EaseOutQuad both directions — the
-                // 60-fps reference fit (MSE 0.00259 vs cubic
-                // 0.01201), with the settle overshoot carried by
-                // the morph itself, never by the easing.
-                let easing = morph::Easing::EaseOutQuad;
-                morph::Morph::new_at(
-                    from_current,
-                    to_geom,
-                    m.duration(),
-                    easing,
-                    now,
-                )
-            }
-            None => {
-                // Duration from config (anim_ms, default 160 —
-                // interaction-spec §2: view morphs measure
-                // 130-230 ms, not the old 400). Easing is
-                // EaseOutCubic in BOTH directions (iter33): the old
-                // EaseOutBack expand overshot ~10% past the target,
-                // and the overshoot strip rendered as a one-frame
-                // pure-black slab (burst frame 03, iter32 pixel
-                // critic §4) — the capsule loop composites the
-                // settled scratches over the frost base, and outside
-                // the settled panel both scratches are transparent
-                // black (RGB 0), so the max() composite overwrote
-                // the frost with 0. The overshoot also swallowed
-                // the settled nav discs into the capsule. Cubic
-                // keeps the capsule inside the settled rect at
-                // every frame, so neither can happen; the
-                // composite below is ALSO fixed to a proper
-                // alpha-over, so an unfilled strip is impossible
-                // even if an overshoot ever returns.
-                // r1d §2: EaseOutQuad + MORPH_DURATION_MS (233:
-                // the 14-pose/233 ms reference measurement; the
-                // ~1% settle overshoot lives in the morph's settle
-                // tail, sized for in draw_if_ready's damage rect).
-                // cfg().anim_ms stays as a config key but no longer
-                // drives the morph.
-                let easing = morph::Easing::EaseOutQuad;
-                morph::Morph::new(
-                    from_geom,
-                    to_geom,
-                    Duration::from_millis(morph::MORPH_DURATION_MS as u64),
-                    easing,
-                )
-            }
+            Some(m) => m.restart_from_current(now, to_geom),
+            None => morph::Morph::new_at(
+                from_geom, to_geom,
+                Duration::from_millis(morph::SPRING_DURATION_MS),
+                morph::SPRING_EASING, now,
+            ),
         });
         if let Some(tok) = self.morph_token.take() {
             let _ = loop_handle.remove(tok);
@@ -5791,6 +5643,13 @@ impl Island {
     /// commits (interpolated capsule + settled panel/discs/bridges for the
     /// current state, plus the FROM state's while a morph runs). Used by
     /// the Leave arm to tell a spurious Leave from a genuine one.
+    fn workspace_hover_at(&self, pos: (f64, f64)) -> bool {
+        workspace_hovered(Some(pos), self.state, self.workspaces_revealed)
+            || (self.workspaces_revealed && row_has_clusters(self.state)
+                && point_in_rect(pos, workspace_live_rect(self.state,
+                    self.workspace_spring.sample(std::time::Instant::now()).0)))
+    }
+
     fn point_in_current_region(&self, pos: (f64, f64)) -> bool {
         // Live capsule rect (iter30 a3c) — the same rect
         // update_input_region commits, so the Leave check can never
@@ -5804,10 +5663,10 @@ impl Island {
         {
             return true;
         }
-        if point_in_state_region(pos, self.state) {
+        if point_in_state_region(pos, self.state, self.workspaces_revealed) {
             return true;
         }
-        if self.morph.is_some() && point_in_state_region(pos, self.morph_from_state) {
+        if self.morph.is_some() && point_in_state_region(pos, self.morph_from_state, self.workspaces_revealed) {
             return true;
         }
         false
@@ -5826,6 +5685,11 @@ impl Island {
                 let ox = (STAGE_W as f32 - f.width) / 2.0;
                 let oy = morph_capsule_oy(self.morph_from_state, self.state, f.progress);
                 (ox, oy, f.width, f.height)
+            }
+            None if self.state == IslandState::Collapsed => {
+                let p = self.workspace_spring.sample(std::time::Instant::now()).0;
+                if self.workspaces_revealed { workspace_live_rect(self.state, p) }
+                else { workspace_core_rect(self.state, p) }
             }
             None => panel_rect_stage(self.state),
         }
@@ -5881,11 +5745,15 @@ impl Island {
         let cap_w = fw.round().max(1.0) as i32;
         let cap_h = fh.round().max(1.0) as i32;
         region.add(cap_x, cap_y, cap_w, cap_h);
+        if self.workspaces_revealed && row_has_clusters(self.state) {
+            let (x, y, w, h) = workspace_live_rect(self.state, self.workspace_spring.sample(std::time::Instant::now()).0);
+            region.add(x.floor() as i32, y.floor() as i32, w.ceil() as i32 + 1, h.ceil() as i32 + 1);
+        }
         // Target panel rect + discs + bridges (settled geometry).
-        Self::add_panel_region(&region, self.state);
+        Self::add_panel_region(&region, self.state, self.workspaces_revealed);
         // While morphing, the FROM panel/discs too (connectivity).
         if self.morph.is_some() {
-            Self::add_panel_region(&region, self.morph_from_state);
+            Self::add_panel_region(&region, self.morph_from_state, self.workspaces_revealed);
         }
         surface.set_input_region(Some(&region));
         region.destroy();
@@ -5893,19 +5761,18 @@ impl Island {
 
     /// One state's panel rect + disc squares + bridge strips, added
     /// to `region` (stage coords).
-    fn add_panel_region(region: &WlRegion, state: IslandState) {
+    fn add_panel_region(region: &WlRegion, state: IslandState, workspaces_revealed: bool) {
         let (ox, oy, pw, ph) = panel_rect_stage(state);
         region.add(ox as i32, oy as i32, pw as i32, ph as i32);
-        // iter90 a8: the workspace cluster rect (circles + gaps +
-        // bridge to the pill) belongs to every state's region, so
-        // pointer travel pill <-> circles never fires Leave.
-        let (wx, wy, ww, wh) = workspace_cluster_rect();
-        region.add(wx as i32, wy as i32, ww as i32, wh as i32);
-        // iter108-C: the tray cluster rect (icons + gaps + bridge to
-        // the pill) belongs to every state's region too, so pointer
-        // travel pill <-> tray never fires Leave. None when empty.
-        if let Some((tx, ty, tw, th)) = tray_cluster_rect(tray_item_count()) {
-            region.add(tx as i32, ty as i32, tw as i32, th as i32);
+        // Hidden workspaces must let clicks reach the window underneath.
+        if row_has_clusters(state) {
+            if workspaces_revealed {
+                let (wx, wy, ww, wh) = workspace_cluster_rect(state);
+                region.add(wx.floor() as i32, wy as i32, ((wx + ww).ceil() - wx.floor()) as i32, wh as i32);
+            }
+            if let Some((tx, ty, tw, th)) = tray_cluster_rect(tray_item_count()) {
+                region.add(tx.floor() as i32, ty.floor() as i32, tw.ceil() as i32, th.ceil() as i32);
+            }
         }
         if MENU_CYCLE.contains(&state) || state == IslandState::TrayMenu {
             // iter30 a3c: the pill stays visible above the panel — its
@@ -5941,6 +5808,12 @@ impl Island {
         if self.configured_size == (0, 0) {
             return;
         }
+        self.workspaces_revealed = self.pointer_over
+            && self.last_pointer_pos.is_some_and(|pos| self.workspace_hover_at(pos));
+        let now = std::time::Instant::now();
+        self.workspace_spring.retarget(if self.workspaces_revealed { 1.0 } else { 0.0 }, now);
+        let workspace_progress = self.workspace_spring.sample(now).0;
+        let hover_running = !self.workspace_spring.is_done(now);
         // F-A back-pressure: one frame callback per commit. A request
         // that lands while the callback is outstanding only records the
         // wish; CompositorHandler::frame repaints then. The 250 ms cap
@@ -6066,7 +5939,7 @@ impl Island {
             self.buffer = None;
             self.pool = None;
             self.slots.clear();
-            self.last_rect = None;
+            self.slot_rects.fill(None);
             // Fresh slots are zero-filled memfds: outside the damage
             // rect the buffer is transparent, which is exactly what the
             // compositor shows for an undamaged area. No full-frame
@@ -6110,9 +5983,7 @@ impl Island {
             .as_ref()
             .map(|m| m.frame_at(std::time::Instant::now()));
         let frame_running = morph_frame.map(|f| !f.done).unwrap_or(false);
-        // F-A step 4: damage only what this frame can change — the
-        // union of the new content rect and the last committed one.
-        // Untouched shm pages stay non-resident (Pss counts pages).
+        // Clear old pixels from both buffers before either slot is presented again.
         let full = (0, 0, w as i32, h as i32);
         // F-A step 4 / r1c: damage only what this frame can change.
         // A morph is NOT a full repaint: it interpolates between two
@@ -6127,43 +5998,15 @@ impl Island {
         let mut rect = if self.state == IslandState::Lockscreen {
             full
         } else if frame_running {
-            // r1d §2: the settle tail swells growing dims ~1.1%
-            // past the target before decaying — inflate the union
-            // so the overshoot is inside the damage rect (the rect
-            // itself stays bounded; nothing else about it changes).
-            let mut r = union_rect(
-                content_rect(self.morph_from_state),
-                content_rect(self.state),
-            );
-            let growing = {
-                let (fw, fh) = self.morph_from_state.size();
-                let (tw, th) = self.state.size();
-                tw > fw || th > fh
-            };
-            if growing {
-                let ow = 0.012_f32
-                    .mul_add(
-                        self.morph_to_geom.width.max(self.morph_from_geom.width),
-                        2.0,
-                    )
-                    .ceil() as i32;
-                let oh = 0.012_f32
-                    .mul_add(
-                        self.morph_to_geom.height.max(self.morph_from_geom.height),
-                        2.0,
-                    )
-                    .ceil() as i32;
-                r = (r.0 - ow, r.1 - oh, r.2 + 2 * ow, r.3 + 2 * oh);
-            }
-            r
+            morph_content_rect(self.morph_from_state, self.state, morph_frame.as_ref().unwrap())
         } else {
             content_rect(self.state)
         };
         // The top row is drawn at stage coords by several morph helpers
-        // (pill, workspace discs); its band is inside every content rect
+        // (clock and workspace row); its band is inside every content rect
         // already, but keep the lock-state full-repaint guard intact.
         rect = clip_rect(rect, w, h);
-        let dmg = clip_rect(union_rect(rect, self.last_rect.unwrap_or(rect)), w, h);
+        let dmg = clip_rect(buffer_damage_rect(rect, &self.slot_rects), w, h);
         // iter108: the stage is drawn at logical 1x into this reused
         // scratch (grow-only, same pattern as the morph scratches) and
         // upscaled 2x into the shm buffer after the match below.
@@ -6245,6 +6088,7 @@ impl Island {
                     lock_wallpaper,
                     dmg,
                     render_endpoints,
+                    workspace_progress,
                 );
                 self.morph_ep_gen = Some(self.morph_gen);
             }
@@ -6272,6 +6116,9 @@ impl Island {
                     icon_font_for(&self.icon_font, self.state),
                     &lock_data,
                     lock_wallpaper,
+                    // These contents are rasterised once, at buffer scale.
+                    matches!(self.state, IslandState::Music | IslandState::Dictation),
+                    workspace_progress,
                 );
             }
         }
@@ -6309,7 +6156,7 @@ impl Island {
         // TrayMenu keeps the pill-row over wallpaper (panel hangs below).
         let pill_on_top = matches!(self.state, IslandState::Collapsed | IslandState::TrayMenu);
         if self.morph.is_none() && pill_on_top {
-            draw_top_row_2x(canvas, bw, bh, self.font, active_tag_cached());
+            draw_top_row_2x(canvas, bw, bh, self.font, tag_state_cached(), workspace_progress);
         }
         let buffer = match pool.create_buffer_in(
             &slot,
@@ -6341,8 +6188,8 @@ impl Island {
         // waits for it (or for the 250 ms safety cap).
         surface.frame(&self.qh, surface.clone());
         self.frame_pending = Some(std::time::Instant::now());
-        self.redraw_wanted = false;
-        self.last_rect = Some(rect);
+        self.redraw_wanted = hover_running;
+        self.slot_rects[si] = Some(rect);
         self.last_backdrop_factor = wallpaper_blur::backdrop_factor();
         self.buffer = Some(buffer);
         self.drawn_size = (w, h);
@@ -6559,6 +6406,7 @@ impl SeatHandler for Island {
                     pointer.release();
                 }
                 self.pointer_over = false;
+                self.draw_if_ready();
             }
             Capability::Keyboard => {
                 if let Some(keyboard) = self.keyboard.take() {
@@ -6620,9 +6468,16 @@ impl PointerHandler for Island {
                     {
                         let target = cfg().hover_state;
                         self.request_state(target);
+                    } else {
+                        self.draw_if_ready();
                     }
                 }
                 PointerEventKind::Leave { .. } => {
+                    // Wayland Leave carries the last position, not the off-surface position.
+                    self.pointer_over = false;
+                    if self.workspaces_revealed {
+                        self.draw_if_ready();
+                    }
                     eprintln!(
                         "dynamite-rust: DBG leave state={:?} morph={} pos=({:.1},{:.1})",
                         self.state,
@@ -6700,23 +6555,18 @@ impl PointerHandler for Island {
                     // live capsule — check the LIVE disc centres first
                     // (classify_press below still covers the settled
                     // positions as a fallback).
-                    // iter36 a6b: music transport needs the font (the
-                    // control centres depend on the clock width), so it
-                    // is checked here before classify_press — same
-                    // pattern as the live-disc check below. Settled
-                    // state only: mid-morph the controls glide.
-                    let music_hit = if self.state == IslandState::Music
-                        && self.morph.is_none()
-                    {
-                        music_panel::control_hit(
-                            self.font,
-                            event.position,
-                            panel_origin(self.state),
-                        )
+                    // Only settled Music buttons have stable positions.
+                    let music_hit = if self.state == IslandState::Music && self.morph.is_none() {
+                        music_panel::control_hit(event.position, panel_origin(self.state))
                     } else {
                         None
                     };
-                    let action = if let Some(t) = music_hit {
+                    let workspace_hit = if self.workspaces_revealed && row_has_clusters(self.state) {
+                        workspace_hit_animated(event.position, self.state, self.workspace_spring.sample(std::time::Instant::now()).0)
+                    } else { None };
+                    let action = if let Some(tag) = workspace_hit {
+                        PressAction::WorkspaceTag(tag)
+                    } else if let Some(t) = music_hit {
                         PressAction::MusicTransport(t)
                     } else if self.morph.is_some() {
                         self.live_disc_hit(event.position)
@@ -6729,6 +6579,7 @@ impl PointerHandler for Island {
                                     self.wall_selected,
                                     self.theme_selected,
                                     tray_item_count(),
+                                    false,
                                 )
                             })
                     } else {
@@ -6739,9 +6590,14 @@ impl PointerHandler for Island {
                             self.wall_selected,
                             self.theme_selected,
                             tray_item_count(),
+                            false,
                         )
                     };
                     match action {
+                        PressAction::Display(action) => {
+                            displays_panel::action(action);
+                            self.draw_if_ready();
+                        }
                         PressAction::OpenMusic => {
                             eprintln!("dynamite-rust: DBG press -> pill open music");
                             // a1 (iter22): a pill click always opens
@@ -6814,6 +6670,16 @@ impl PointerHandler for Island {
                             self.cc_drag = Some((which, level));
                             self.draw_if_ready();
                         }
+                        PressAction::ReviewNotifications => self.request_state(IslandState::Notifications),
+                        PressAction::NotificationCenter => {
+                            spawn_exec("swaync-client --open-panel");
+                            self.request_state(IslandState::Collapsed);
+                        }
+                        PressAction::NotificationPress(x, y) => {
+                            if activity::dismiss_at(x, y) {
+                                self.request_state(IslandState::Notifications);
+                            }
+                        }
                         PressAction::CcPower(i) => {
                             eprintln!("dynamite-rust: DBG press -> cc power {}", i);
                             controlcenter_panel::cc_set_power_level(i);
@@ -6871,24 +6737,10 @@ impl PointerHandler for Island {
                             self.apply_theme(i);
                         }
                         PressAction::PowerButton(i) => {
-                            // NO disc executes a system command. The four
-                            // destructive ones log their command path only;
-                            // Lock opens the in-panel lockscreen PREVIEW.
-                            // It must never spawn the real locker: the
-                            // preview has no PAM and no session-lock, so
-                            // handing the session to swaylock here could
-                            // lock the owner out with no way back in.
                             let (label, cmd) = power_panel::action_command(i);
                             if i == 2 {
-                                eprintln!(
-                                    "dynamite-rust: DBG press -> power lock: preview only, NOT executing {}",
-                                    cmd
-                                );
-                                // enter_lockscreen, not request_state: the
-                                // preview swaps geometry wholesale and must
-                                // not capsule-morph a fullscreen surface.
-                                let handle = self.loop_handle.clone();
-                                self.enter_lockscreen(&handle);
+                                self.request_state(IslandState::Collapsed);
+                                start_session_locker();
                             } else {
                                 eprintln!(
                                     "dynamite-rust: DBG press -> power {} ({}): NOT executed, command-path only",
@@ -6908,38 +6760,9 @@ impl PointerHandler for Island {
                             self.draw_if_ready();
                         }
                         PressAction::MusicTransport(t) => {
-                            // iter36 a6b: drive playerctl/MPRIS, detached
-                            // (spawn never waits — freeze rule). No player
-                            // => playerctl exits non-zero, state stays the
-                            // honest idle; the 1 s cache refreshes after.
-                            // iter114 W4: drive the SELECTED player
-                            // explicitly — bare playerctl may answer for
-                            // a different player than the reads (the
-                            // iter110 defect). Falls back to bare only
-                            // when no player is selected.
-                            let verb = match t {
-                                0 => "previous",
-                                2 => "next",
-                                _ => "play-pause",
-                            };
-                            let cmd = match music_panel::selected_player() {
-                                Some(player) => {
-                                    format!("playerctl --player={} {}", player, verb)
-                                }
-                                None => format!("playerctl {}", verb),
-                            };
-                            eprintln!("dynamite-rust: DBG press -> music transport {}", cmd);
-                            spawn_exec(&cmd);
-                            // iter114 W4: optimistic play/pause flip —
-                            // the immediate draw below reads the
-                            // PRE-click cache, so flip the cached bit
-                            // now (the refresher corrects it within
-                            // ~1 s if the command failed). Next/prev
-                            // get no optimistic update.
-                            if t == 1 {
-                                music_panel::optimistic_toggle();
+                            if music_panel::dispatch_transport(t) {
+                                self.draw_if_ready();
                             }
-                            self.draw_if_ready();
                         }
                         PressAction::NoOp => {
                             // Keep the reason in the log: it is how the
@@ -6961,7 +6784,7 @@ impl PointerHandler for Island {
                         }
                     }
                 }
-                PointerEventKind::Press { button, .. } if button == BTN_RIGHT => {
+                PointerEventKind::Press { button, .. } if button == BTN_RIGHT && row_has_clusters(self.state) => {
                     // iter108: right click on a tray icon opens
                     // the app's DBusMenu as the TrayMenu panel
                     // (FetchMenu runs on the tray thread; the
@@ -6985,6 +6808,11 @@ impl PointerHandler for Island {
                     self.cc_drag = None;
                 }
                 PointerEventKind::Motion { .. } => {
+                    self.pointer_over = true;
+                    if self.workspace_hover_at(event.position) != self.workspaces_revealed
+                    {
+                        self.draw_if_ready();
+                    }
                     // iter34 a6a: CC slider drag — pointer x maps to the
                     // level while the button is held; >= 0.02 steps only.
                     if let Some((which, last)) = self.cc_drag {
@@ -6997,7 +6825,7 @@ impl PointerHandler for Island {
                             };
                             let (ox, _) = panel_origin(self.state);
                             let px = event.position.0 as f32 - ox;
-                            let level = ((px - track.x) / track.w).clamp(0.0, 1.0);
+                            let level = controlcenter_panel::slider_level_from_x(track, px);
                             if (level - last).abs() >= 0.02 {
                                 if which == 0 {
                                     controlcenter_panel::cc_set_display(level);
@@ -7021,7 +6849,7 @@ impl PointerHandler for Island {
                     // iter108: wheel over a tray icon forwards
                     // Scroll to the item (never cycles menus
                     // from there) — works collapsed too.
-                    if let Some(i) = tray_hit_stage(event.position, tray_item_count()) {
+                    if let Some(i) = tray_hit_stage(event.position, tray_item_count()).filter(|_| row_has_clusters(self.state)) {
                         let delta = if vertical.discrete != 0 {
                             vertical.discrete
                         } else {
@@ -7078,6 +6906,7 @@ impl KeyboardHandler for Island {
         if event.keysym == Keysym::Escape
             && (MENU_CYCLE.contains(&self.state)
                 || self.state == IslandState::TrayMenu
+                || self.state == IslandState::Notifications
                 // The Lock disc now opens the preview by click, so Esc
                 // must close it too — otherwise a full-screen preview
                 // with no keyboard exit is a trap.
@@ -7115,12 +6944,38 @@ impl KeyboardHandler for Island {
         // text caret in either list view, so the arrows have no
         // editing meaning to preserve. No-op when collapsed (the
         // grab is None there, so this handler never fires anyway).
+        if self.state == IslandState::Notifications {
+            match event.keysym {
+                Keysym::Up | Keysym::Page_Up => activity::scroll(-1),
+                Keysym::Down | Keysym::Page_Down => activity::scroll(1),
+                _ => return,
+            }
+            self.draw_if_ready();
+            return;
+        }
         if event.keysym == Keysym::Left && MENU_CYCLE.contains(&self.state) {
             self.cycle_menu(-1);
             return;
         }
         if event.keysym == Keysym::Right && MENU_CYCLE.contains(&self.state) {
             self.cycle_menu(1);
+            return;
+        }
+        if self.state == IslandState::Displays {
+            use displays_panel::Action;
+            let action = match event.keysym {
+                Keysym::Up => Some(Action::Step(1)),
+                Keysym::Down => Some(Action::Step(-1)),
+                Keysym::Page_Up => Some(Action::Select(-1)),
+                Keysym::Page_Down => Some(Action::Select(1)),
+                Keysym::Return | Keysym::KP_Enter => Some(Action::Apply),
+                Keysym::r => Some(Action::Refresh),
+                _ => None,
+            };
+            if let Some(action) = action {
+                displays_panel::action(action);
+                self.draw_if_ready();
+            }
             return;
         }
         // Per-view keys (typing, list navigation, Enter): Clipboard,
@@ -7244,6 +7099,15 @@ fn main() {
         libc::mallopt(libc::M_TRIM_THRESHOLD, 128 * 1024);
     }
     let args: Vec<String> = std::env::args().collect();
+    if matches!(args.get(1).map(String::as_str), Some("lock" | "lockscreen")) {
+        use std::os::unix::process::CommandExt;
+        let error = match session_locker_command() {
+            Ok(mut command) => command.exec().to_string(),
+            Err(error) => error,
+        };
+        eprintln!("dynamite-rust: could not start session locker: {error}");
+        std::process::exit(1);
+    }
     if args.get(1).map(String::as_str) == Some("--render-lock-background") {
         load_config();
         let result = if args.len() == 5 {
@@ -7264,14 +7128,17 @@ fn main() {
         match library::apply_theme(&args[2]) {
             Ok(accent) => {
                 let _ = send_command("reload");
-                println!("Applied {} ({accent:?}). Restart GTK apps and your browser to load their new colours.", args[2]);
+                println!("Applied island theme {} ({accent:?}).", args[2]);
                 return;
             }
             Err(e) => { eprintln!("dynamite-rust: {e}"); std::process::exit(1); }
         }
     }
     if args.len() > 1 {
-        let word = args[1].as_str();
+        let word = match args[1].as_str() {
+            "lock-preview" => "lockscreen",
+            word => word,
+        };
         if word == "quit"
             || word == "lockscreen"
             || word == "unlock"
@@ -7290,7 +7157,7 @@ fn main() {
                 }
             }
         }
-        eprintln!("usage: dynamite-rust [collapsed|clock|lock|power|music|calendar|controlcenter|launcher|clipboard|wallpaper|themes|lockscreen|unlock|locktype|lockback|lockwrong|quit]");
+        eprintln!("usage: dynamite-rust [collapsed|clock|lock|power|music|calendar|controlcenter|displays|launcher|clipboard|wallpaper|themes|lockscreen|lock-preview|unlock|locktype|lockback|lockwrong|quit]");
         std::process::exit(2);
     }
 
@@ -7326,7 +7193,7 @@ fn main() {
         layer_shell.create_layer_surface(&qh, surface, Layer::Overlay, Some(NAMESPACE), None);
     layer.set_anchor(Anchor::TOP);
     layer.set_margin(stage_margin_top(), 0, 0, 0);
-    layer.set_exclusive_zone(pill_strip_px());
+    layer.set_exclusive_zone(pill_exclusive_zone());
     layer.set_keyboard_interactivity(KeyboardInteractivity::None);
     layer.set_size(STAGE_W, STAGE_H);
     layer.wl_surface().commit();
@@ -7403,6 +7270,17 @@ fn main() {
             .expect("tag watch wake source");
     }
 
+    // Notification traffic wakes the event loop immediately, independently of the CC poller.
+    {
+        let (tx, channel) = calloop::channel::channel();
+        loop_handle.insert_source(channel, |event, _, state: &mut Island| {
+            if let calloop::channel::Event::Msg(event) = event {
+                state.on_activity(event);
+            }
+        }).expect("notification event source");
+        activity::watch(tx);
+    }
+
     // iter97: start the event-driven tag watcher (idempotent; the
     // 1 s poller below stays as fallback/resync).
     ensure_tag_watcher();
@@ -7456,6 +7334,10 @@ fn main() {
                         changed = true;
                         state.draw_if_ready();
                     }
+                }
+                if state.state == IslandState::Displays && displays_panel::poll() {
+                    changed = true;
+                    state.draw_if_ready();
                 }
                 // iter106: live repaint while Music is open - the
                 // same frozen-settled-frame defect as CC in iter90,
@@ -7578,8 +7460,15 @@ fn main() {
                                         bars[slot] = v.clamp(0.0, 1.0);
                                     }
                                 }
-                                *DICTATION_BARS.lock().unwrap() = bars;
-                                state.dictation_seen = Some(Instant::now());
+                                let now = Instant::now();
+                                {
+                                    let mut recording = RECORDING.lock().unwrap();
+                                    if dictation_stale(state.dictation_seen) {
+                                        recording.start();
+                                    }
+                                    recording.update(bars);
+                                }
+                                state.dictation_seen = Some(now);
                                 // r2 #8c: bars are sent only while recording
                                 // (tools/dictation/src/main.rs, inside `if
                                 // recording`), so they are themselves proof
@@ -7593,6 +7482,7 @@ fn main() {
                                     state.draw_if_ready();
                                 }
                             } else if word == "dictation_start" {
+                                RECORDING.lock().unwrap().start();
                                 state.dictation_seen = Some(Instant::now());
                                 if state.state != IslandState::Dictation {
                                     state.request_state(IslandState::Dictation);
@@ -7691,7 +7581,7 @@ fn main() {
                                 // else the old reserved strip stays.
                                 if let Some(layer) = &state.layer {
                                     layer.set_margin(stage_margin_top(), 0, 0, 0);
-                                    layer.set_exclusive_zone(pill_strip_px());
+                                    layer.set_exclusive_zone(pill_exclusive_zone());
                                 }
                                 if state.state == IslandState::Collapsed {
                                     state.apply_state_instant(IslandState::Collapsed);
@@ -7753,6 +7643,7 @@ fn main() {
         morph: None,
         morph_from_state: IslandState::Collapsed,
         morph_token: None,
+        preview_token: None,
         morph_from_geom: morph::Geometry::collapsed(),
         morph_to_geom: morph::Geometry::collapsed(),
         lock_anim: None,
@@ -7769,7 +7660,7 @@ fn main() {
         slot_rr: 0,
         frame_pending: None,
         redraw_wanted: false,
-        last_rect: None,
+        slot_rects: [None; SLOT_RING],
         configured_size: (0, 0),
         drawn_size: (0, 0),
         last_backdrop_factor: 1.0,
@@ -7784,6 +7675,8 @@ fn main() {
         loop_handle: loop_handle.clone(),
         qh: qh.clone(),
         pointer_over: false,
+        workspaces_revealed: false,
+        workspace_spring: morph::Spring::new(0.0),
         last_pointer_pos: None,
         wheel_accum: 0.0,
         last_wheel_step: None,
@@ -7943,16 +7836,16 @@ mod iter26_tests {
 
     #[test]
     fn shadows_fit_inside_stage() {
-        // Tallest panel (ControlCenter, 447) bottom + shadow tail.
+        let tallest = MENU_CYCLE.iter().map(|state| state.size().1).max().unwrap() as f32;
         // Since r1d §0 the menus draw at STAGE_PAD_TOP (the pill grows
         // INTO the panel); only TrayMenu hangs at panel_top_menu().
-        let bottom = STAGE_PAD_TOP + 447.0 + PANEL_SHADOW_OFF.1 + PANEL_SHADOW_BLUR;
+        let bottom = STAGE_PAD_TOP + tallest + PANEL_SHADOW_OFF.1 + PANEL_SHADOW_BLUR;
         assert!(bottom < STAGE_H as f32, "panel shadow bottom {bottom} >= {STAGE_H}");
         // Morph settle overshoot: the factors are 0 (r1f measured ~15%
         // live vs the reference's ~1.1%), so this is the settled bound
         // today and the right bound the day they are restored.
         let over_bottom = STAGE_PAD_TOP
-            + 447.0 * (1.0 + crate::morph::H_OVERSHOOT)
+            + tallest * (1.0 + crate::morph::H_OVERSHOOT)
             + PANEL_SHADOW_OFF.1
             + PANEL_SHADOW_BLUR;
         assert!(over_bottom < STAGE_H as f32, "overshoot shadow bottom {over_bottom} >= {STAGE_H}");
@@ -7965,8 +7858,7 @@ mod iter26_tests {
         let left_cx = (STAGE_W as f32 - widest as f32) / 2.0 - NAV_DISC_GAP - NAV_DISC_R;
         let shadow_left = left_cx + DISC_SHADOW_OFF.0 - NAV_DISC_R - DISC_SHADOW_BLUR;
         assert!(shadow_left > 0.0, "disc shadow left {shadow_left} <= 0");
-        // Disc shadow bottom (tallest menu: ControlCenter disc at
-        // panel mid-height STAGE_PAD_TOP + 447/2).
+        // Disc shadows stay inside the stage at the panel midpoint.
         let ((_, cy_cc), _) = nav_disc_centres(IslandState::ControlCenter);
         let shadow_bottom = cy_cc + DISC_SHADOW_OFF.1 + NAV_DISC_R + DISC_SHADOW_BLUR;
         assert!(shadow_bottom < STAGE_H as f32);
@@ -7987,18 +7879,18 @@ mod iter26_tests {
             oy as f64 + ph as f64 / 2.0,
         );
         assert_eq!(
-            classify_press(centre, IslandState::Collapsed, false, 0, 0, 0),
+            classify_press(centre, IslandState::Collapsed, false, 0, 0, 0, true),
             PressAction::OpenMusic
         );
         // Pill corner, still inside the rect: opens too.
         assert_eq!(
-            classify_press((ox as f64 + 1.0, oy as f64 + 1.0), IslandState::Collapsed, false, 0, 0, 0),
+            classify_press((ox as f64 + 1.0, oy as f64 + 1.0), IslandState::Collapsed, false, 0, 0, 0, true),
             PressAction::OpenMusic
         );
     }
 
     #[test]
-    fn iter27_lock_pill_press_opens_only_inside_54px_rect() {
+    fn lock_pill_click_is_distinct_from_workspace_click() {
         let (ox, oy, pw, ph) = panel_rect_stage(IslandState::Lock);
         assert!((pw - 54.0).abs() < 1e-4, "lock width {pw}");
         let centre = (
@@ -8006,19 +7898,17 @@ mod iter26_tests {
             oy as f64 + ph as f64 / 2.0,
         );
         assert_eq!(
-            classify_press(centre, IslandState::Lock, false, 0, 0, 0),
+            classify_press(centre, IslandState::Lock, false, 0, 0, 0, true),
             PressAction::OpenMusic
         );
-        // x=560 sits inside the 76-wide collapsed pill (550..626) but
-        // outside the 54-wide lock pill (561..615): opens when collapsed,
-        // no-op when locked.
+        // x=560 belongs to the clock when collapsed and to workspace 4 in Lock.
         assert_eq!(
-            classify_press((560.0, 16.0), IslandState::Collapsed, false, 0, 0, 0),
+            classify_press((560.0, 16.0), IslandState::Collapsed, false, 0, 0, 0, true),
             PressAction::OpenMusic
         );
         assert_eq!(
-            classify_press((560.0, 16.0), IslandState::Lock, false, 0, 0, 0),
-            PressAction::NoOp
+            classify_press((560.0, 16.0), IslandState::Lock, false, 0, 0, 0, true),
+            PressAction::WorkspaceTag(4)
         );
     }
 
@@ -8029,13 +7919,13 @@ mod iter26_tests {
         // CC (600,400) -> (436,389); Power BR (930,155) -> (766,144).
         for pos in [(411.0, 144.0), (588.0, 339.0), (436.0, 389.0), (766.0, 144.0)] {
             assert_eq!(
-                classify_press(pos, IslandState::Collapsed, false, 0, 0, 0),
+                classify_press(pos, IslandState::Collapsed, false, 0, 0, 0, true),
                 PressAction::NoOp,
                 "settled pos {pos:?}"
             );
             // Mid-morph collapse: state is already Collapsed, same verdict.
             assert_eq!(
-                classify_press(pos, IslandState::Collapsed, true, 0, 0, 0),
+                classify_press(pos, IslandState::Collapsed, true, 0, 0, 0, true),
                 PressAction::NoOp,
                 "mid-morph pos {pos:?}"
             );
@@ -8052,6 +7942,7 @@ mod iter26_tests {
             (IslandState::Music, (568.0, 107.0)),
             (IslandState::Calendar, (313.0, 257.0)),
             (IslandState::ControlCenter, (150.0, 306.0)),
+            (IslandState::Displays, (200.0, 200.0)),
             (IslandState::Launcher, (252.0, 62.0)),
             (IslandState::Wallpaper, (16.0, 227.0)),
             (IslandState::Themes, (12.0, 327.0)),
@@ -8067,7 +7958,7 @@ mod iter26_tests {
                 "{state:?} test point {pos:?} not in panel"
             );
             assert_eq!(
-                classify_press(pos, state, false, 0, 0, 0),
+                classify_press(pos, state, false, 0, 0, 0, true),
                 PressAction::NoOp,
                 "{state:?} pos {pos:?}"
             );
@@ -8078,11 +7969,11 @@ mod iter26_tests {
     fn iter27_disc_press_still_cycles_and_margin_still_noop() {
         let ((lx, ly), (rx, ry)) = nav_disc_centres(IslandState::Music);
         assert_eq!(
-            classify_press((rx as f64, ry as f64), IslandState::Music, false, 0, 0, 0),
+            classify_press((rx as f64, ry as f64), IslandState::Music, false, 0, 0, 0, true),
             PressAction::Cycle(1)
         );
         assert_eq!(
-            classify_press((lx as f64, ly as f64), IslandState::Music, false, 0, 0, 0),
+            classify_press((lx as f64, ly as f64), IslandState::Music, false, 0, 0, 0, true),
             PressAction::Cycle(-1)
         );
         // Mid-morph widened radius still cycles 5 px past the disc edge.
@@ -8093,18 +7984,19 @@ mod iter26_tests {
                 true,
                 0,
                 0,
-                0
+                0,
+                true,
             ),
             PressAction::Cycle(1)
         );
         // Margin at disc height, outside panel+discs: no-op.
         assert_eq!(
-            classify_press((300.0, 27.0), IslandState::Music, false, 0, 0, 0),
+            classify_press((300.0, 27.0), IslandState::Music, false, 0, 0, 0, true),
             PressAction::NoOp
         );
         // Below the panel: no-op.
         assert_eq!(
-            classify_press((752.0, 300.0), IslandState::Music, false, 0, 0, 0),
+            classify_press((752.0, 300.0), IslandState::Music, false, 0, 0, 0, true),
             PressAction::NoOp
         );
     }
@@ -8119,13 +8011,13 @@ mod iter26_tests {
             oy as f64 + r0.cy() as f64,
         );
         assert_eq!(
-            classify_press(pos, IslandState::Launcher, false, 0, 0, 0),
+            classify_press(pos, IslandState::Launcher, false, 0, 0, 0, true),
             PressAction::LaunchRow(0)
         );
         // Gap between search (ends panel-y 50) and row 0 (starts 74).
         let gap = (ox as f64 + 252.0, oy as f64 + 62.0);
         assert_eq!(
-            classify_press(gap, IslandState::Launcher, false, 0, 0, 0),
+            classify_press(gap, IslandState::Launcher, false, 0, 0, 0, true),
             PressAction::NoOp
         );
     }
@@ -8145,7 +8037,7 @@ mod iter26_tests {
                 "{state:?}: the panel covers the pill row since r1d §0"
             );
             assert_eq!(
-                classify_press(pill_centre, state, false, 0, 0, 0),
+                classify_press(pill_centre, state, false, 0, 0, 0, true),
                 PressAction::Collapse,
                 "{state:?}"
             );
@@ -8168,7 +8060,7 @@ mod iter26_tests {
             assert!(y >= ppy as f64 && y < (ppy + pph) as f64, "{state:?}");
             assert!(in_search_band_stage((cx, y), state), "{state:?}");
             assert_ne!(
-                classify_press((cx, y), state, false, 0, 0, 0),
+                classify_press((cx, y), state, false, 0, 0, 0, true),
                 PressAction::Collapse,
                 "{state:?}: clicking the search field collapsed the panel"
             );
@@ -8176,7 +8068,7 @@ mod iter26_tests {
             let centre = (cx, (ppy + pph / 2.0) as f64);
             assert!(!in_search_band_stage(centre, state), "{state:?}");
             assert_eq!(
-                classify_press(centre, state, false, 0, 0, 0),
+                classify_press(centre, state, false, 0, 0, 0, true),
                 PressAction::Collapse,
                 "{state:?}"
             );
@@ -8194,28 +8086,28 @@ mod iter26_tests {
         let (px, py, pw, ph) = panel_rect_stage(IslandState::Collapsed);
         let (cx, cy) = (px + pw / 2.0, py + ph / 2.0);
         assert_eq!(
-            classify_press(((px + pw + 4.0) as f64, cy as f64), IslandState::Music, false, 0, 0, 0),
+            classify_press(((px + pw + 4.0) as f64, cy as f64), IslandState::Music, false, 0, 0, 0, true),
             PressAction::NoOp
         );
         assert_eq!(
-            classify_press((cx as f64, (py + ph + 4.0) as f64), IslandState::Music, false, 0, 0, 0),
+            classify_press((cx as f64, (py + ph + 4.0) as f64), IslandState::Music, false, 0, 0, 0, true),
             PressAction::NoOp
         );
         // On the pill itself, the same y: collapse.
         assert_eq!(
-            classify_press((cx as f64, cy as f64), IslandState::Music, false, 0, 0, 0),
+            classify_press((cx as f64, cy as f64), IslandState::Music, false, 0, 0, 0, true),
             PressAction::Collapse
         );
         // The workspace row no longer reaches the pointer in a menu: the
         // panel covers it and cluster hits are restricted to
         // Collapsed/Dictation/Lock/TrayMenu since §0 (owner's bug guard).
-        let (wx, wy) = workspace_disc_centres()[3];
+        let (wx, wy) = (538.0, 17.0);
         assert_eq!(
-            classify_press((wx as f64, wy as f64), IslandState::Power, false, 0, 0, 0),
+            classify_press((wx as f64, wy as f64), IslandState::Power, false, 0, 0, 0, true),
             PressAction::NoOp
         );
         assert_eq!(
-            classify_press((wx as f64, wy as f64), IslandState::Collapsed, false, 0, 0, 0),
+            classify_press((wx as f64, wy as f64), IslandState::Collapsed, false, 0, 0, 0, true),
             PressAction::WorkspaceTag(4)
         );
     }
@@ -8235,7 +8127,7 @@ mod iter26_tests {
                 PressAction::CcToggle(i)
             };
             assert_eq!(
-                classify_press(pos, IslandState::ControlCenter, false, 0, 0, 0),
+                classify_press(pos, IslandState::ControlCenter, false, 0, 0, 0, true),
                 expected,
                 "pill {i}"
             );
@@ -8302,7 +8194,7 @@ mod iter26_tests {
                 oy as f64 + btn.cy() as f64,
             );
             assert_eq!(
-                classify_press(pos, IslandState::ControlCenter, false, 0, 0, 0),
+                classify_press(pos, IslandState::ControlCenter, false, 0, 0, 0, true),
                 PressAction::CcPower(i),
                 "power button {i}"
             );
@@ -8320,40 +8212,39 @@ mod iter26_tests {
         );
         assert!(
             matches!(
-                classify_press(left, IslandState::ControlCenter, false, 0, 0, 0),
+                classify_press(left, IslandState::ControlCenter, false, 0, 0, 0, true),
                 PressAction::CcSlider(0, l) if l < 0.05
             ),
             "display track left end should be ~0"
         );
         let mid = (
-            ox as f64 + (t.x + t.w / 2.0) as f64,
+            ox as f64 + controlcenter_panel::slider_rail(t).cx() as f64,
             oy as f64 + t.cy() as f64,
         );
         assert!(
             matches!(
-                classify_press(mid, IslandState::ControlCenter, false, 0, 0, 0),
+                classify_press(mid, IslandState::ControlCenter, false, 0, 0, 0, true),
                 PressAction::CcSlider(0, l) if (l - 0.5).abs() < 0.02
             ),
             "display track middle should be 0.5"
         );
         let s = layout.sound_track;
         let mid2 = (
-            ox as f64 + (s.x + s.w / 2.0) as f64,
+            ox as f64 + controlcenter_panel::slider_rail(s).cx() as f64,
             oy as f64 + s.cy() as f64,
         );
         assert!(
             matches!(
-                classify_press(mid2, IslandState::ControlCenter, false, 0, 0, 0),
+                classify_press(mid2, IslandState::ControlCenter, false, 0, 0, 0, true),
                 PressAction::CcSlider(1, l) if (l - 0.5).abs() < 0.02
             ),
             "sound track middle should be 0.5"
         );
-        // The iter27 no-op point (notifications area, panel-local
-        // (219, 303) — 7 px below the Sound track, inside the new card,
-        // above the bell) stays NoOp.
+        let card = layout.notif_card;
         assert_eq!(
-            classify_press((588.0, 339.0), IslandState::ControlCenter, false, 0, 0, 0),
-            PressAction::NoOp
+            classify_press(((ox + card.cx()) as f64, (oy + card.cy()) as f64),
+                IslandState::ControlCenter, false, 0, 0, 0, true),
+            PressAction::ReviewNotifications
         );
     }
 
@@ -8672,58 +8563,17 @@ mod iter30_tests {
         assert!((panel_top_menu() - (STAGE_PAD_TOP + 28.0 + 2.0)).abs() < 1e-4);
     }
 
-    // iter90 a8: workspace circles — geometry, hit-test (incl. the
-    // stage-vs-screen offset), colours, mmsg parse, classify_press.
     #[test]
-    fn workspace_cluster_geometry() {
-        // Live geometry: pill 76 wide at stage x 550..626, top 3..27.
-        let (px, py, pw, ph) = panel_rect_stage(IslandState::Collapsed);
-        assert!((px - 550.0).abs() < 1e-4, "pill x {px}");
-        assert!((py - STAGE_PAD_TOP).abs() < 1e-4);
-        assert!((pw - 76.0).abs() < 1e-4);
-        assert!((ph - 28.0).abs() < 1e-4);
-        let centres = workspace_disc_centres();
-        // Exact centres, left to right (tag 1..4).
-        assert_eq!(
-            centres,
-            [(478.0, 17.0), (498.0, 17.0), (518.0, 17.0), (538.0, 17.0)]
-        );
-        // Ø16 on the pill centre line; 20 px centre-to-centre
-        // (= 16 diameter + 4 gap) between neighbours.
-        for (cx, cy) in centres {
-            assert!((cy - 17.0).abs() < 1e-4, "cy {cy}");
-            assert!((cx - 478.0) % 20.0 == 0.0, "cx {cx}");
-        }
-        for w in centres.windows(2) {
-            assert!(((w[1].0 - w[0].0) - 20.0).abs() < 1e-4);
-        }
-        // 4 px gap between the rightmost circle edge and the pill.
-        assert!(((px - (centres[3].0 + WS_DISC_R)) - WS_GAP_PILL).abs() < 1e-4);
-        // Cluster rect: x 470..550, y 7..23 — the circles span exactly
-        // 76 (the pill's width) plus the 4 px bridge to the pill, so
-        // rw = 80; fully inside the a3d reserved strip (y 3..27) and
-        // strictly above the panel top (29).
-        let (rx, ry, rw, rh) = workspace_cluster_rect();
-        assert!((rx - 470.0).abs() < 1e-4, "cluster x {rx}");
-        assert!((ry - 9.0).abs() < 1e-4, "cluster y {ry}");
-        assert!((rw - 80.0).abs() < 1e-4, "cluster w {rw}");
-        assert!((rh - 16.0).abs() < 1e-4, "cluster h {rh}");
-        // Circles-only span (no bridge): exactly 76, the pill's width.
-        let span = (centres[3].0 + WS_DISC_R) - (centres[0].0 - WS_DISC_R);
-        assert!((span - 76.0).abs() < 1e-4, "circle row width {span}");
-        assert!(rx >= 0.0 && ry >= 0.0);
-        assert!(ry >= STAGE_PAD_TOP, "cluster top must stay in the reserved strip");
-        assert!(
-            ry + rh <= STAGE_PAD_TOP + pill_h(),
-            "cluster bottom must stay in the reserved strip"
-        );
-        assert!(ry + rh < panel_top_menu(), "cluster must stay above the panel top");
-        assert!(rx + rw <= STAGE_W as f32);
-        // No circle overlaps the pill or any panel top edge.
-        for (cx, _) in centres {
-            assert!(cx + WS_DISC_R <= px, "circle at {cx} overlaps the pill");
+    fn workspace_row_joins_the_visible_clock() {
+        for state in [IslandState::Collapsed, IslandState::Lock, IslandState::TrayMenu] {
+            let (x, y, w, h) = workspace_cluster_rect(state);
+            let (px, py, _, ph) = panel_rect_stage(workspace_pill(state));
+            assert_eq!((x + w, y, h), (px, py, ph));
+            let damage = content_rect(state);
+            assert!((damage.0 as f32) < x && damage.3 as f32 > y + h);
         }
     }
+
 
     /// r1c finding 3: SUPER+5..9 must not black out the row. Whatever
     /// the active tag, it has to be one of the four drawn slots, and
@@ -8778,82 +8628,16 @@ mod iter30_tests {
         assert!(ts.is_occupied(2), "tag 2 lost its count");
     }
 
-    /// The active disc draws the accent, an occupied one a lighter grey,
-    /// an empty one the dark grey — and active always beats occupied.
     #[test]
-    fn workspace_colours_are_distinct() {
-        assert_ne!(WS_ACTIVE_FILL, WS_OCCUPIED_FILL);
-        assert_ne!(WS_OCCUPIED_FILL, WS_INACTIVE_FILL);
-        // Occupied is lighter than empty on every channel (visible on a
-        // near-black bar without introducing a new hue).
-        for c in 0..3 {
-            let occ = [WS_OCCUPIED_FILL.0, WS_OCCUPIED_FILL.1, WS_OCCUPIED_FILL.2][c];
-            let emp = [WS_INACTIVE_FILL.0, WS_INACTIVE_FILL.1, WS_INACTIVE_FILL.2][c];
-            assert!(occ > emp, "occupied must be lighter on channel {c}");
-        }
-    }
-
-    #[test]
-    fn workspace_hit_stage_coords() {
-        // Centre hits return the tag; gaps and the pill do not.
-        assert_eq!(workspace_hit_stage((478.0, 17.0)), Some(1));
-        assert_eq!(workspace_hit_stage((498.0, 17.0)), Some(2));
-        assert_eq!(workspace_hit_stage((518.0, 17.0)), Some(3));
-        assert_eq!(workspace_hit_stage((538.0, 17.0)), Some(4));
-        // Circle edge still hits (radius 8 + 1 slack = 9).
-        assert_eq!(workspace_hit_stage((486.0, 17.0)), Some(1));
-        // Mid-gap between circles 1 and 2 (x 488): no hit.
-        assert_eq!(workspace_hit_stage((488.0, 17.0)), None);
-        // Pill centre (588, 15) is not a workspace hit.
-        assert_eq!(workspace_hit_stage((588.0, 17.0)), None);
-        // Stage-vs-screen: the stage origin is x=164 on screen, so a
-        // driver click at SCREEN (789, 176) arrives as STAGE (625, 176)
-        // — inside the pill, not on a circle — and the hit fn takes
-        // STAGE coords only.
-        let (sox, soy) = stage_screen_origin();
-        assert!((sox - 164.0).abs() < 1e-4, "stage origin x {sox}");
-        assert!((soy - 0.0).abs() < 1e-4, "stage origin y {soy}");
-        let stage = (789.0 - sox as f64, 176.0 - soy as f64);
-        assert!((stage.0 - 625.0).abs() < 1e-4);
-        assert_eq!(workspace_hit_stage(stage), None);
-        // A screen click on circle 4: screen x = 538 + 164 = 702.
-        assert_eq!(workspace_hit_stage((702.0 - sox as f64, 17.0)), Some(4));
-    }
-
-    #[test]
-    fn workspace_colours() {
-        // Active = the island accent itself; inactive = nav-disc dark.
-        assert_eq!(WS_ACTIVE_FILL, library::ISLAND_ACCENT);
-        assert_eq!(WS_INACTIVE_FILL, (28, 30, 34));
-        assert_eq!(WS_ACTIVE_GLYPH, (11, 27, 58));
-        assert_eq!(WS_INACTIVE_GLYPH, (232, 234, 237));
-        // iter92: Ø16 — deliberately NOT the nav-disc Ø28 any more;
-        // the whole row is 76 wide, the pill's width.
-        assert!((WS_DISC_R * 2.0 - 16.0).abs() < 1e-4);
-        assert!((WS_NUMBER_PX - 11.0).abs() < 1e-4);
-        // Circles-only span (rect width 80 includes the 4 px bridge).
-        let centres = workspace_disc_centres();
-        let span = (centres[3].0 + WS_DISC_R) - (centres[0].0 - WS_DISC_R);
-        assert!((span - 76.0).abs() < 1e-4, "circle row width {span}");
-    }
-
-    #[test]
-    fn workspace_digit_fits() {
-        // iter92: the digit at WS_NUMBER_PX must fit inside a Ø16
-        // disc with margin — rasterize 1..=4 with the real UI font.
-        // Vendored asset is embedded, so this never depends on $HOME.
-        let font = ui_font();
-        for n in 1..=4u8 {
-            let row = layout_text(&font, &n.to_string(), WS_NUMBER_PX);
-            // Digit bitmap height ~8 px (0.5 x Ø16); width well inside.
-            let max_h = row.glyphs.iter().map(|(m, _)| m.height).max().unwrap_or(0);
-            assert!(max_h <= 9, "digit {n} height {max_h} too tall for Ø16");
-            assert!(
-                row.width <= 2.0 * WS_DISC_R - 4.0,
-                "digit {n} width {} too wide for Ø16",
-                row.width
-            );
-        }
+    fn workspace_hits_cover_cells_without_stealing_clock_clicks() {
+        let state = IslandState::Collapsed;
+        // The cell boundary is clickable even at the top of the bar.
+        assert_eq!(workspace_hit_stage((489.0, 3.0), state), Some(1));
+        assert_eq!(workspace_hit_stage((490.0, 3.0), state), Some(2));
+        assert_eq!(workspace_hit_stage((549.0, 30.0), state), Some(4));
+        assert_eq!(workspace_hit_stage((550.0, 17.0), state), None);
+        assert_eq!(workspace_hit_stage((549.0, 31.0), state), None);
+        assert!(point_in_state_region((549.0, 30.0), state, true));
     }
 
     #[test]
@@ -8884,20 +8668,20 @@ mod iter30_tests {
         // pill row (r1d §0), so the same point is NoOp there — the
         // regression guard for the owner's reported bug.
         assert_eq!(
-            classify_press((538.0, 17.0), IslandState::Collapsed, false, 0, 0, 0),
+            classify_press((538.0, 17.0), IslandState::Collapsed, false, 0, 0, 0, true),
             PressAction::WorkspaceTag(4)
         );
         assert_eq!(
-            classify_press((478.0, 17.0), IslandState::Music, false, 0, 0, 0),
+            classify_press((478.0, 17.0), IslandState::Music, false, 0, 0, 0, true),
             PressAction::NoOp,
             "cluster hits are Collapsed/Dictation/Lock/TrayMenu only since r1d §0"
         );
         assert_eq!(
-            classify_press((588.0, 17.0), IslandState::Collapsed, false, 0, 0, 0),
+            classify_press((588.0, 17.0), IslandState::Collapsed, false, 0, 0, 0, true),
             PressAction::OpenMusic
         );
         assert_eq!(
-            classify_press((588.0, 17.0), IslandState::Music, false, 0, 0, 0),
+            classify_press((588.0, 17.0), IslandState::Music, false, 0, 0, 0, true),
             PressAction::Collapse
         );
     }
@@ -8931,21 +8715,12 @@ mod iter30_tests {
                 assert!(((w[1].0 - w[0].0) - 20.0).abs() < 1e-4);
             }
         }
-        // Cluster rects: (626, 7, 20n, 16) — left edge is the pill's
-        // right edge (the 4 px bridge is inside the rect width).
         assert_eq!(tray_cluster_rect(0), None);
-        assert_eq!(tray_cluster_rect(1), Some((626.0, crate::ws_cy() - 8.0, 20.0, 16.0)));
-        assert_eq!(tray_cluster_rect(2), Some((626.0, crate::ws_cy() - 8.0, 40.0, 16.0)));
-        assert_eq!(tray_cluster_rect(3), Some((626.0, crate::ws_cy() - 8.0, 60.0, 16.0)));
-        // Top-row content span (the "stage width" that grows right):
-        // 156 / 176 / 196 / 216 for 0 / 1 / 2 / 3 tray items.
-        assert_eq!(top_row_span(0), (470.0, 626.0));
-        assert_eq!(top_row_span(1), (470.0, 646.0));
-        assert_eq!(top_row_span(2), (470.0, 666.0));
-        assert_eq!(top_row_span(3), (470.0, 686.0));
-        for n in 0..=3usize {
-            let (x0, x1) = top_row_span(n);
-            assert!(((x1 - x0) - (156.0 + 20.0 * n as f32)).abs() < 1e-4);
+        assert_eq!(top_row_span(0), (462.0, 626.0));
+        for n in 1..=3 {
+            let width = 22.0 + 20.0 * (n - 1) as f32;
+            assert_eq!(tray_cluster_rect(n), Some((626.0, 7.0, width, 20.0)));
+            assert_eq!(top_row_span(n), (462.0, 626.0 + width));
         }
         // Pill centre proof: screen 752 (screen centre 1504 / 2) for
         // every tray count — the pill never moves when the tray grows.
@@ -8978,7 +8753,7 @@ mod iter30_tests {
         // Sheet bound: 27 icons fit (right edge 1166 < 1176); a 28th
         // would overflow the fixed stage (1186) — the SNI host must
         // never need that many, but the geometry says so honestly.
-        assert_eq!(tray_cluster_rect(27), Some((626.0, crate::ws_cy() - 8.0, 540.0, 16.0)));
+        assert_eq!(tray_cluster_rect(27), Some((626.0, 7.0, 542.0, 20.0)));
         let (rx, _, rw, _) = tray_cluster_rect(28).unwrap();
         assert!(rx + rw > STAGE_W as f32, "28 icons must overflow");
     }
@@ -8999,7 +8774,7 @@ mod iter30_tests {
         assert_eq!(tray_hit_stage((628.0, 17.0), 3), None);
         // Pill centre is not a tray hit.
         assert_eq!(tray_hit_stage((588.0, 17.0), 3), None);
-        // Workspace circle 4 is not a tray hit.
+        // Workspace 4 is not a tray hit.
         assert_eq!(tray_hit_stage((538.0, 17.0), 3), None);
         // Empty tray: nothing hits anywhere on the row.
         assert_eq!(tray_hit_stage((638.0, 17.0), 0), None);
@@ -9020,55 +8795,55 @@ mod iter30_tests {
         // Slots work collapsed; in a cycled menu the panel covers the
         // tray row (r1d §0), so a click there is NoOp, not a tray hit.
         assert_eq!(
-            classify_press((638.0, 17.0), IslandState::Collapsed, false, 0, 0, 1),
+            classify_press((638.0, 17.0), IslandState::Collapsed, false, 0, 0, 1, true),
             PressAction::TrayActivate(0)
         );
         assert_eq!(
-            classify_press((658.0, 17.0), IslandState::Music, false, 0, 0, 2),
+            classify_press((658.0, 17.0), IslandState::Music, false, 0, 0, 2, true),
             PressAction::NoOp,
             "tray hits are Collapsed/Dictation/Lock/TrayMenu only since r1d §0"
         );
         assert_eq!(
-            classify_press((678.0, 17.0), IslandState::ControlCenter, false, 0, 0, 3),
+            classify_press((678.0, 17.0), IslandState::ControlCenter, false, 0, 0, 3, true),
             PressAction::NoOp,
             "tray hits are Collapsed/Dictation/Lock/TrayMenu only since r1d §0"
         );
         // TrayMenu still activates them — it is the one hang-below panel
         // and it is in the allowed set.
         assert_eq!(
-            classify_press((638.0, 17.0), IslandState::TrayMenu, false, 0, 0, 1),
+            classify_press((638.0, 17.0), IslandState::TrayMenu, false, 0, 0, 1, true),
             PressAction::TrayActivate(0)
         );
         // Gaps and the bridge are NoOp — never Collapse, in any state.
         assert_eq!(
-            classify_press((648.0, 17.0), IslandState::Collapsed, false, 0, 0, 3),
+            classify_press((648.0, 17.0), IslandState::Collapsed, false, 0, 0, 3, true),
             PressAction::NoOp
         );
         assert_eq!(
-            classify_press((648.0, 17.0), IslandState::Music, false, 0, 0, 3),
+            classify_press((648.0, 17.0), IslandState::Music, false, 0, 0, 3, true),
             PressAction::NoOp
         );
         assert_eq!(
-            classify_press((628.0, 17.0), IslandState::Music, false, 0, 0, 3),
+            classify_press((628.0, 17.0), IslandState::Music, false, 0, 0, 3, true),
             PressAction::NoOp
         );
         // Empty tray: the same point is NoOp (outside the pill, D2).
         assert_eq!(
-            classify_press((638.0, 17.0), IslandState::Collapsed, false, 0, 0, 0),
+            classify_press((638.0, 17.0), IslandState::Collapsed, false, 0, 0, 0, true),
             PressAction::NoOp
         );
         // The pill still opens / collapses with a tray present.
         assert_eq!(
-            classify_press((588.0, 17.0), IslandState::Collapsed, false, 0, 0, 3),
+            classify_press((588.0, 17.0), IslandState::Collapsed, false, 0, 0, 3, true),
             PressAction::OpenMusic
         );
         assert_eq!(
-            classify_press((588.0, 17.0), IslandState::Music, false, 0, 0, 3),
+            classify_press((588.0, 17.0), IslandState::Music, false, 0, 0, 3, true),
             PressAction::Collapse
         );
-        // Workspace circles still win on their side with a tray present.
+        // Workspace cells still win on their side with a tray present.
         assert_eq!(
-            classify_press((538.0, 17.0), IslandState::Collapsed, false, 0, 0, 3),
+            classify_press((538.0, 17.0), IslandState::Collapsed, false, 0, 0, 3, true),
             PressAction::WorkspaceTag(4)
         );
     }
@@ -9161,7 +8936,7 @@ mod iter30_tests {
         let (ppx, ppy, ppw, pph) = panel_rect_stage(IslandState::Collapsed);
         let pill_centre = ((ppx + ppw / 2.0) as f64, (ppy + pph / 2.0) as f64);
         for state in MENU_CYCLE {
-            assert!(point_in_state_region(pill_centre, state), "{state:?} pill");
+            assert!(point_in_state_region(pill_centre, state, true), "{state:?} pill");
         }
         // r1d §0: the panel swallowed the pill row, so the old bridge
         // strip (pill bottom .. panel top) is empty for cycled menus and
@@ -9170,28 +8945,30 @@ mod iter30_tests {
         let (ox, oy, _, _) = panel_rect_stage(IslandState::Music);
         assert!(!point_in_state_region(
             (ox as f64 - 2.0, oy as f64 - 2.0),
-            IslandState::Music
+            IslandState::Music,
+            true,
         ));
         // Collapsed has no pill-bridge (no menu below it).
         assert!(!point_in_state_region(
             ((ppx + ppw / 2.0) as f64, (ppy + pph + 4.0) as f64),
-            IslandState::Collapsed
+            IslandState::Collapsed,
+            true,
         ));
     }
 
     #[test]
     fn bridge_click_is_noop_pill_click_collapses() {
         assert_eq!(
-            classify_press((588.0, 32.0), IslandState::Music, false, 0, 0, 0),
+            classify_press((588.0, 32.0), IslandState::Music, false, 0, 0, 0, true),
             PressAction::NoOp
         );
         assert_eq!(
-            classify_press((588.0, 16.0), IslandState::Music, false, 0, 0, 0),
+            classify_press((588.0, 16.0), IslandState::Music, false, 0, 0, 0, true),
             PressAction::Collapse
         );
         // Gap click beside the bridge: no-op, never collapse.
         assert_eq!(
-            classify_press((400.0, 32.0), IslandState::Music, false, 0, 0, 0),
+            classify_press((400.0, 32.0), IslandState::Music, false, 0, 0, 0, true),
             PressAction::NoOp
         );
     }
@@ -9232,12 +9009,12 @@ mod iter36_tests {
     fn wallpaper_thumb_click_applies_that_index() {
         // Centre thumb (selected, index 2 when wall_selected=2).
         assert_eq!(
-            classify_press((84.0 + 391.0 + 10.0, 31.0 + 78.0 + 10.0), IslandState::Wallpaper, false, 2, 0, 0),
+            classify_press((84.0 + 391.0 + 10.0, 31.0 + 78.0 + 10.0), IslandState::Wallpaper, false, 2, 0, 0, true),
             PressAction::WallApply(2)
         );
         // First thumb (index 0) with the same selection.
         assert_eq!(
-            classify_press((84.0 + 59.0 + 10.0, 31.0 + 99.0 + 10.0), IslandState::Wallpaper, false, 2, 0, 0),
+            classify_press((84.0 + 59.0 + 10.0, 31.0 + 99.0 + 10.0), IslandState::Wallpaper, false, 2, 0, 0, true),
             PressAction::WallApply(0)
         );
         // Wrapped neighbours: selected=0 shows index 54 at position 0
@@ -9264,11 +9041,11 @@ mod iter36_tests {
         let (lx, cy) = (wallpaper_panel::CHEV_LEFT_CX, wallpaper_panel::CHEV_CY);
         let rx = wallpaper_panel::CHEV_RIGHT_CX;
         assert_eq!(
-            classify_press(((ox + lx) as f64, (oy + cy) as f64), IslandState::Wallpaper, false, 2, 0, 0),
+            classify_press(((ox + lx) as f64, (oy + cy) as f64), IslandState::Wallpaper, false, 2, 0, 0, true),
             PressAction::WallWindow(-1)
         );
         assert_eq!(
-            classify_press(((ox + rx) as f64, (oy + cy) as f64), IslandState::Wallpaper, false, 2, 0, 0),
+            classify_press(((ox + rx) as f64, (oy + cy) as f64), IslandState::Wallpaper, false, 2, 0, 0, true),
             PressAction::WallWindow(1)
         );
     }
@@ -9286,18 +9063,18 @@ mod iter36_tests {
         };
         // Selected row (row 0).
         assert_eq!(
-            classify_press(row_probe(0), IslandState::Themes, false, 0, 0, 0),
+            classify_press(row_probe(0), IslandState::Themes, false, 0, 0, 0, true),
             PressAction::ThemeApply(0)
         );
         // First unselected row (row 1).
         assert_eq!(
-            classify_press(row_probe(1), IslandState::Themes, false, 0, 0, 0),
+            classify_press(row_probe(1), IslandState::Themes, false, 0, 0, 0, true),
             PressAction::ThemeApply(1)
         );
         // Row 4 with theme_selected=22 wraps: (22+4) % n.
         let n = themes_panel::theme_total();
         assert_eq!(
-            classify_press(row_probe(4), IslandState::Themes, false, 0, 22, 0),
+            classify_press(row_probe(4), IslandState::Themes, false, 0, 22, 0, true),
             PressAction::ThemeApply((22 + 4) % n)
         );
     }
@@ -9309,7 +9086,7 @@ mod iter36_tests {
         let (ox, oy) = panel_origin(IslandState::Power);
         for (i, (cx, cy)) in power_panel::button_centres().iter().enumerate() {
             assert_eq!(
-                classify_press(((ox + cx) as f64, (oy + cy) as f64), IslandState::Power, false, 0, 0, 0),
+                classify_press(((ox + cx) as f64, (oy + cy) as f64), IslandState::Power, false, 0, 0, 0, true),
                 PressAction::PowerButton(i),
                 "disc {i}"
             );
@@ -9328,11 +9105,11 @@ mod iter36_tests {
         let (ox, oy) = panel_origin(IslandState::Calendar);
         let cy = (oy + calendar_panel::CHEV_CY) as f64;
         assert_eq!(
-            classify_press(((ox + calendar_panel::CHEV_LEFT_CX) as f64, cy), IslandState::Calendar, false, 0, 0, 0),
+            classify_press(((ox + calendar_panel::CHEV_LEFT_CX) as f64, cy), IslandState::Calendar, false, 0, 0, 0, true),
             PressAction::CalMonth(-1)
         );
         assert_eq!(
-            classify_press(((ox + calendar_panel::CHEV_RIGHT_CX) as f64, cy), IslandState::Calendar, false, 0, 0, 0),
+            classify_press(((ox + calendar_panel::CHEV_RIGHT_CX) as f64, cy), IslandState::Calendar, false, 0, 0, 0, true),
             PressAction::CalMonth(1)
         );
         // Title centre is NOT a chevron: no-op. Probed BELOW the pill
@@ -9342,17 +9119,13 @@ mod iter36_tests {
         let (_, ppy, _, pph) = panel_rect_stage(IslandState::Collapsed);
         let below = (ppy + pph + 8.0) as f64;
         assert_eq!(
-            classify_press(((ox + mid) as f64, below), IslandState::Calendar, false, 0, 0, 0),
+            classify_press(((ox + mid) as f64, below), IslandState::Calendar, false, 0, 0, 0, true),
             PressAction::NoOp
         );
     }
 
-    /// Safety guard, not a style check: the Lock disc must open the
-    /// in-panel preview and never hand the session to a real locker.
-    /// There is no runtime API to assert this through (the arm's whole
-    /// job is a side effect it must NOT have), so pin the source.
     #[test]
-    fn power_lock_disc_never_spawns_a_real_locker() {
+    fn power_lock_disc_uses_the_authenticated_locker_not_the_preview() {
         let src = include_str!("main.rs");
         let arm = src
             .split("PressAction::PowerButton(i) => {")
@@ -9363,14 +9136,25 @@ mod iter36_tests {
             .expect("arm body");
         assert!(
             !arm.contains("spawn_exec"),
-            "the Lock disc must open the preview, not execute a locker"
+            "the Lock disc must use the maintained launcher, not a shell command"
         );
-        assert!(arm.contains("enter_lockscreen"), "Lock must open the preview");
+        assert!(arm.contains("start_session_locker()"));
+        assert!(!arm.contains("enter_lockscreen"));
+    }
+
+    #[test]
+    fn session_lock_launches_the_dedicated_pam_backend() {
+        let command = session_locker_command().expect("session-lock launcher exists");
+        assert_eq!(command.get_program(), "python3");
+        let args: Vec<_> = command.get_args().collect();
+        assert_eq!(args.len(), 2);
+        assert!(std::path::Path::new(args[0]).ends_with("deploy/dynamite-lock.py"));
+        assert_eq!(args[1], "--lock");
     }
 
     #[test]
     fn power_action_commands() {
-        assert_eq!(power_panel::action_command(2), ("lock", "swaylock -f -c 000000"));
+        assert_eq!(power_panel::action_command(2), ("lock", "dynamite-rust lockscreen"));
         assert_eq!(power_panel::action_command(0), ("suspend", "loginctl suspend"));
         assert_eq!(power_panel::action_command(1), ("logout", "loginctl terminate-session $XDG_SESSION_ID"));
         assert_eq!(power_panel::action_command(3), ("reboot", "loginctl reboot"));
@@ -9379,10 +9163,10 @@ mod iter36_tests {
 
     #[test]
     fn menu_keyboard_focus_survives_arrow_navigation_and_releases_on_close() {
-        for st in MENU_CYCLE.into_iter().chain([IslandState::TrayMenu]) {
+        for st in MENU_CYCLE.into_iter().chain([IslandState::TrayMenu, IslandState::Notifications]) {
             assert_eq!(keyboard_mode_for(st), KeyboardInteractivity::Exclusive, "{st:?}");
         }
-        for st in [IslandState::Collapsed, IslandState::Dictation, IslandState::Lock, IslandState::Lockscreen] {
+        for st in [IslandState::Collapsed, IslandState::Preview, IslandState::Dictation, IslandState::Lock, IslandState::Lockscreen] {
             assert_eq!(keyboard_mode_for(st), KeyboardInteractivity::None, "{st:?}");
         }
     }
@@ -9399,6 +9183,7 @@ mod iter39_keyboard_tests {
             IslandState::Music,
             IslandState::Launcher,
             IslandState::ControlCenter,
+            IslandState::Displays,
             IslandState::Calendar,
             IslandState::Wallpaper,
             IslandState::Themes,
@@ -9408,7 +9193,7 @@ mod iter39_keyboard_tests {
         assert_eq!(MENU_CYCLE, expected);
         // Forward walk from Music visits every menu exactly once, then wraps.
         let mut state = IslandState::Music;
-        for want in expected.iter().cycle().skip(1).take(8) {
+        for want in expected.iter().cycle().skip(1).take(expected.len()) {
             state = cycle_step(state, 1).unwrap();
             assert_eq!(state, *want);
         }
@@ -9417,6 +9202,21 @@ mod iter39_keyboard_tests {
         assert_eq!(cycle_step(IslandState::Clipboard, 1), Some(IslandState::Music));
         assert_eq!(cycle_step(IslandState::Power, 1), Some(IslandState::Clipboard));
         assert_eq!(cycle_step(IslandState::Clipboard, -1), Some(IslandState::Power));
+    }
+
+    #[test]
+    fn displays_command_and_stage_click_reach_the_panel() {
+        assert_eq!(IslandState::from_word("displays"), Some(IslandState::Displays));
+        assert_eq!(IslandState::Displays.word(), "displays");
+        let (ox, oy) = panel_origin(IslandState::Displays);
+        for (x, y, action) in [
+            (350.0, 228.0, displays_panel::Action::Apply),
+            (212.0, 166.0, displays_panel::Action::Preset(2)),
+            (390.0, 75.0, displays_panel::Action::Select(1)),
+        ] {
+            assert_eq!(classify_press(((ox + x) as f64, (oy + y) as f64),
+                IslandState::Displays, false, 0, 0, 0, true), PressAction::Display(action));
+        }
     }
 
     #[test]
@@ -9431,9 +9231,6 @@ mod iter39_keyboard_tests {
 mod iter108_tests {
     use super::*;
 
-    fn load_font() -> &'static fontdue::Font {
-        ui_font()
-    }
 
     /// Ideal reference: the same disc rendered NATIVELY at 2x with the
     /// same SDF encoding (a_disc ramp, fill colour, A=255) — no upscale
@@ -9633,36 +9430,47 @@ mod iter108_tests {
         assert!(upscale_canvas_2x(&[], 0, 0).is_empty());
     }
 
+
     #[test]
-    fn workspace_circles_round_at_2x() {
-        let font = load_font();
-        let mut stage = vec![0u8; (STAGE_W * STAGE_H * 4) as usize];
-        draw_workspace_circles_stage(&mut stage, STAGE_W, STAGE_H, &font, 1, 1.0);
-        let up = upscale_canvas_2x(&stage, STAGE_W, STAGE_H);
-        assert_eq!(up.len(), (2 * STAGE_W * 2 * STAGE_H * 4) as usize);
-        let centres = workspace_disc_centres();
-        for (i, (cx, cy)) in centres.iter().enumerate() {
-            let fill = if i == 0 { WS_ACTIVE_FILL } else { WS_INACTIVE_FILL };
-            // 40x40 tile centred on the disc in the 2x buffer.
-            let tx = (2.0 * cx - 20.0).round() as i32;
-            let ty = (2.0 * cy - 20.0).round() as i32;
-            let prof = disc_row_widths(
-                &up,
-                2 * STAGE_W,
-                tx,
-                ty,
-                40,
-                (fill.0 as f32, fill.1 as f32, fill.2 as f32),
-                0.5,
-            );
-            let ideal = ideal_profile(
-                WS_DISC_R,
-                fill,
-                40,
-                2.0 * cx - tx as f32,
-                2.0 * cy - ty as f32,
-            );
-            assert_profile_close(&format!("ws-circle-{}", i + 1), &prof, &ideal, WS_DISC_R * 2.0);
+    fn menu_damage_contains_all_arrow_pixels_and_shadows() {
+        for state in MENU_CYCLE {
+            let mut canvas = vec![0u8; (STAGE_W * STAGE_H * 4) as usize];
+            draw_nav_arrows_stage(&mut canvas, STAGE_W, STAGE_H, state);
+            let rect = clip_rect(content_rect(state), STAGE_W, STAGE_H);
+            for (index, pixel) in canvas.chunks_exact(4).enumerate() {
+                if pixel[3] == 0 {
+                    continue;
+                }
+                let (x, y) = ((index as u32 % STAGE_W) as i32, (index as u32 / STAGE_W) as i32);
+                assert!(x >= rect.0 && x < rect.2 && y >= rect.1 && y < rect.3,
+                    "{state:?} arrow pixel ({x}, {y}) is outside damage {rect:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn reused_buffers_do_not_restore_arrows_after_a_rapid_collapse() {
+        let (w, h) = (STAGE_W, STAGE_H);
+        let mut stage = vec![0u8; (w * h * 4) as usize];
+        let mut buffers: Vec<_> = (0..SLOT_RING)
+            .map(|_| vec![0u8; (w * h * 16) as usize])
+            .collect();
+        let mut rects = [None; SLOT_RING];
+        for (frame, state) in [IslandState::Wallpaper, IslandState::Music,
+                               IslandState::Collapsed, IslandState::Collapsed].into_iter().enumerate() {
+            let slot = frame % SLOT_RING;
+            let rect = clip_rect(content_rect(state), w, h);
+            let damage = clip_rect(buffer_damage_rect(rect, &rects), w, h);
+            clear_rect(&mut stage, w, h, damage);
+            if MENU_CYCLE.contains(&state) {
+                draw_nav_arrows_stage(&mut stage, w, h, state);
+            }
+            upscale_canvas_2x_region(&stage, w, h, &mut buffers[slot], damage);
+            rects[slot] = Some(rect);
+            if state == IslandState::Collapsed {
+                assert!(buffers[slot].iter().all(|&byte| byte == 0),
+                    "slot {slot} restored old arrow pixels after collapse");
+            }
         }
     }
 
@@ -9822,126 +9630,188 @@ mod iter108_tests {
         }
     }
 
-    /// Generic f32 bilinear resample (test-only stand-in for the
-    /// compositor's 2x -> 1.5x downsample; wlroots GLES2 samples
-    /// linear, and the iter108 simulation showed nearest gives the
-    /// same verdict).
-    fn resample_bilinear(src: &[u8], sw: u32, sh: u32, dw: u32, dh: u32) -> Vec<u8> {
-        let (sw, sh, dw, dh) = (sw as usize, sh as usize, dw as usize, dh as usize);
-        let mut dst = vec![0u8; dw * dh * 4];
-        for oy in 0..dh {
-            let sy = (oy as f32 + 0.5) * sh as f32 / dh as f32 - 0.5;
-            let y0 = sy.floor() as i32;
-            let fy = sy - y0 as f32;
-            for ox in 0..dw {
-                let sx = (ox as f32 + 0.5) * sw as f32 / dw as f32 - 0.5;
-                let x0 = sx.floor() as i32;
-                let fx = sx - x0 as f32;
-                let tap = |x: i32, y: i32, c: usize| -> f32 {
-                    let x = x.clamp(0, sw as i32 - 1) as usize;
-                    let y = y.clamp(0, sh as i32 - 1) as usize;
-                    src[(y * sw + x) * 4 + c] as f32
-                };
-                for c in 0..4 {
-                    let top = tap(x0, y0, c) * (1.0 - fx) + tap(x0 + 1, y0, c) * fx;
-                    let bot = tap(x0, y0 + 1, c) * (1.0 - fx) + tap(x0 + 1, y0 + 1, c) * fx;
-                    dst[(oy * dw + ox) * 4 + c] = (top * (1.0 - fy) + bot * fy + 0.5) as u8;
-                }
-            }
-        }
-        dst
-    }
-
-    /// Analytic ideal screen profile: the 50%-coverage contour of the
-    /// SDF disc is the circle of radius R + 0.5 - 0.5/0.92 logical px
-    /// (a_disc = 0.5 there), times 1.5 for the screen scale.
-    fn ideal_screen_profile(radius_logical: f32, d: u32, centre: f32) -> Vec<u32> {
-        let r = (radius_logical + 0.5 - 0.5 / 0.92) * 1.5;
-        let mut out = Vec::with_capacity(d as usize);
-        for y in 0..d {
-            let dy = (y as f32 + 0.5) - centre;
-            out.push((2.0 * (r * r - dy * dy).max(0.0).sqrt()).round() as u32);
-        }
-        out
-    }
-
-    #[test]
-    fn workspace_circles_round_on_screen() {
-        // What Alexandre actually sees: the 2x buffer downsampled to
-        // the 1.5x output (24 px discs). Tile the real 1x render,
-        // upscale 2x with the shipped code, downsample 2x -> 1.5x,
-        // and compare each circle against the analytic 24 px circle.
-        let font = load_font();
-        let mut stage = vec![0u8; (STAGE_W * STAGE_H * 4) as usize];
-        draw_workspace_circles_stage(&mut stage, STAGE_W, STAGE_H, &font, 1, 1.0);
-        let up = upscale_canvas_2x(&stage, STAGE_W, STAGE_H);
-        let centres = workspace_disc_centres();
-        for (i, (cx, cy)) in centres.iter().enumerate() {
-            let fill = if i == 0 { WS_ACTIVE_FILL } else { WS_INACTIVE_FILL };
-            // 40x40 tile at 2x -> 30x30 at screen scale; disc centre
-            // (20,20) in the tile -> (15,15) on screen.
-            let tx = (2.0 * cx - 20.0).round() as i32;
-            let ty = (2.0 * cy - 20.0).round() as i32;
-            let mut tile = vec![0u8; 40 * 40 * 4];
-            for y in 0..40 {
-                for x in 0..40 {
-                    let si = (((ty + y) as usize) * (2 * STAGE_W as usize) + (tx + x) as usize) * 4;
-                    let di = ((y * 40 + x) * 4) as usize;
-                    tile[di..di + 4].copy_from_slice(&up[si..si + 4]);
-                }
-            }
-            let screen = resample_bilinear(&tile, 40, 40, 30, 30);
-            let prof = disc_row_widths(
-                &screen,
-                30,
-                0,
-                0,
-                30,
-                (fill.0 as f32, fill.1 as f32, fill.2 as f32),
-                0.5,
-            );
-            let ideal = ideal_screen_profile(WS_DISC_R, 30, 15.0);
-            eprintln!("ws-circle-{} on screen: {prof:?} ideal {ideal:?}", i + 1);
-            // Per-row within 3 px where the ideal is at least 30% of
-            // max; span within 1 row. (The bottom rim can darken the
-            // last fringe row, as at 2x — covered by the span check,
-            // not the per-row check.)
-            let max_ideal = *ideal.iter().max().unwrap_or(&0);
-            for (r, (m, e)) in prof.iter().zip(ideal.iter()).enumerate() {
-                if *e * 10 >= max_ideal * 3 {
-                    let diff = m.abs_diff(*e);
-                    assert!(diff <= 3, "ws-circle-{} screen row {r}: {m} vs ideal {e}", i + 1);
-                }
-            }
-            let first = |p: &[u32]| p.iter().position(|w| *w > 0);
-            let last = |p: &[u32]| p.iter().rposition(|w| *w > 0);
-            assert!(first(&prof).unwrap().abs_diff(first(&ideal).unwrap()) <= 1);
-            assert!(last(&prof).unwrap().abs_diff(last(&ideal).unwrap()) <= 1);
-        }
-    }
 }
 
-/// Iteration 109 — true-round Ø16 workspace discs.
-///
-/// The iter108 coverage tests (disc_row_widths, 50% contour) pass
-/// even for the old point-sampled rasteriser, because the SDF's 50%
-/// contour is a circle by construction; the defect Alexandre
-/// reported (octagon silhouette, STRICT max|d| = 5.1 on the live
-/// screenshot) only shows in the silhouette the compositor actually
-/// produces — the darkness / blue-fill mask measured by
-/// circles-profile108.py. These tests reproduce that measurement
-/// off-screen: render the real stage, upscale 2x, downsample 2x ->
-/// 1.5x, composite over a flat wallpaper, and apply the same STRICT
-/// predicate. Two wallpapers bound the live photo wallpaper: the
-/// bright sky at the top rows (219, 242, 200) and the dark band at
-/// the equator/bottom rows (150, 164, 136), both read off
-/// closeout-collapsed.png (iterations/rust108v48).
+
 #[cfg(test)]
 mod iter109_tests {
     use super::*;
 
-    fn load_font() -> &'static fontdue::Font {
-        ui_font()
+    #[test]
+    fn migrating_clock_yields_to_preview_and_fits_collapsed_pill() {
+        let from = IslandState::Collapsed;
+        let to = IslandState::Preview;
+        let geometry = |state: IslandState| {
+            let (w, h) = state.size();
+            morph::Geometry::new(w as f32, h as f32, state.radius())
+        };
+        let morph = morph::Morph::new(geometry(from), geometry(to),
+            Duration::from_millis(morph::SPRING_DURATION_MS), morph::SPRING_EASING);
+        let frame = morph.frame_for_raw(0.7);
+        assert_eq!(frame.incoming_opacity, 1.0);
+        let (w, h) = (STAGE_W, STAGE_H);
+        let mut canvas = vec![0; (w * h * 4) as usize];
+        let mut outgoing = canvas.clone();
+        let mut incoming = canvas.clone();
+        // Empty cached endpoints isolate the clock from the incoming message's ink.
+        draw_morph_frame(&mut canvas, w, h, from, to, &frame,
+            &mut outgoing, &mut incoming, ui_font(), None, None,
+            &lockscreen::LockscreenData::video_defaults(h), None,
+            (0, 0, w as i32, h as i32), false, 0.0);
+        let ox = ((w as f32 - frame.width) / 2.0) as usize;
+        for y in 20..frame.height as usize - 20 {
+            for x in ox + 20..ox + frame.width as usize - 20 {
+                let pixel = &canvas[(y * w as usize + x) * 4..][..3];
+                assert!(pixel.iter().all(|&v| v < 128), "clock leaked over the message at {x},{y}");
+            }
+        }
+
+        let closing = morph::Morph::new(geometry(to), geometry(from),
+            Duration::from_millis(morph::SPRING_DURATION_MS), morph::SPRING_EASING);
+        canvas.fill(0);
+        draw_morph_frame(&mut canvas, w, h, to, from, &closing.frame_for_raw(1.0),
+            &mut outgoing, &mut incoming, ui_font(), None, None,
+            &lockscreen::LockscreenData::video_defaults(h), None,
+            (0, 0, w as i32, h as i32), false, 0.0);
+        let (px, py, pw, ph) = panel_rect_stage(from);
+        for (index, pixel) in canvas.chunks_exact(4).enumerate() {
+            if pixel[..3].iter().any(|&v| v >= 128) {
+                let x = (index % w as usize) as f32;
+                let y = (index / w as usize) as f32;
+                assert!(x >= px && x < px + pw && y >= py && y < py + ph,
+                    "closing clock escaped the pill at {x},{y}");
+            }
+        }
+    }
+
+    #[test]
+    fn workspace_spring_shape_and_hit_targets_follow_the_strip() {
+        let state = IslandState::Collapsed;
+        let base = panel_rect_stage(state);
+        assert_eq!(workspace_core_rect(state, 0.0), base);
+        assert_eq!(workspace_core_rect(state, 1.0), base);
+        for p in [0.15, 0.5, 1.0, 1.23] {
+            let (x, y, _, h) = workspace_core_rect(state, p);
+            let left = x - WS_WIDTH * p;
+            let (bx, by, _, bh) = workspace_cluster_rect(state);
+            for slot in 0..WS_COUNT {
+                let cell = WS_LEADING_PAD + (slot as f32 + 0.5) * WS_CELL_W;
+                let pos = ((left + cell * p) as f64, (y + h / 2.0) as f64);
+                let expected = workspace_hit_stage(((bx + cell) as f64, (by + bh / 2.0) as f64), state);
+                assert_eq!(workspace_hit_animated(pos, state, p), expected);
+                assert_eq!(workspace_hit_animated(pos, state, 0.0), None);
+            }
+        }
+    }
+
+    #[test]
+    fn spring_morph_bounds_cover_every_menu_rebound_and_fit_the_stage() {
+        let states: Vec<_> = std::iter::once(IslandState::Collapsed).chain(MENU_CYCLE).collect();
+        let start = std::time::Instant::now();
+        for &from in &states {
+            for &to in &states {
+                let geometry = |s: IslandState| {
+                    let (w, h) = s.size();
+                    morph::Geometry::new(w as f32, h as f32, s.radius())
+                };
+                let m = morph::Morph::new_at(geometry(from), geometry(to), Duration::from_millis(morph::SPRING_DURATION_MS), morph::SPRING_EASING, start);
+                for ms in (0..=morph::SPRING_DURATION_MS).step_by(4) {
+                    let f = m.frame_at(start + Duration::from_millis(ms));
+                    let x = (STAGE_W as f32 - f.width) / 2.0;
+                    let y = morph_capsule_oy(from, to, f.progress);
+                    let rect = morph_content_rect(from, to, &f);
+                    assert!(f.width > 0.0 && f.height > 0.0);
+                    assert!(x >= 0.0 && x + f.width <= STAGE_W as f32);
+                    assert!(y >= 0.0 && y + f.height + PANEL_SHADOW_BLUR + PANEL_SHADOW_OFF.1 <= STAGE_H as f32,
+                        "{from:?}->{to:?} at {ms}: y={y}, h={}", f.height);
+                    assert!(rect.0 as f32 <= x && rect.1 as f32 <= y);
+                    assert!(rect.2 as f32 >= x + f.width && rect.3 as f32 >= y + f.height);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn workspaces_reveal_from_the_clock_and_stay_clickable_until_exit() {
+        for state in [IslandState::Collapsed, IslandState::Lock, IslandState::TrayMenu] {
+            let (x, y, w, h) = workspace_cluster_rect(state);
+            let row = ((x + w / 2.0) as f64, (y + h / 2.0) as f64);
+            let (px, py, pw, ph) = panel_rect_stage(workspace_pill(state));
+            let clock = ((px + pw / 2.0) as f64, (py + ph / 2.0) as f64);
+            let outside = ((x - 1.0) as f64, row.1);
+            assert!(!workspace_hovered(None, state, false));
+            assert!(!workspace_hovered(Some(row), state, false));
+            assert!(!point_in_state_region(row, state, false));
+            assert_eq!(classify_press(row, state, false, 0, 0, 0, false), PressAction::NoOp);
+
+            assert!(workspace_hovered(Some(clock), state, false));
+            assert!(workspace_hovered(Some(row), state, true));
+            assert!(point_in_state_region(row, state, true));
+            assert!(matches!(classify_press(row, state, false, 0, 0, 0, true), PressAction::WorkspaceTag(_)));
+            assert!(!workspace_hovered(Some(outside), state, true));
+            assert!(!workspace_hovered(None, state, true));
+            assert!(!workspace_hovered(Some(clock), IslandState::Music, true));
+        }
+    }
+
+    #[test]
+    fn hiding_workspaces_clears_the_previous_row_without_moving_the_clock() {
+        let (w, h) = (STAGE_W * RENDER_SCALE, 90 * RENDER_SCALE);
+        let mut canvas = vec![0; (w * h * 4) as usize];
+        let tags = TagState { active: 1, occupied: 1, urgent: 0 };
+        let (px, py, pw, ph) = panel_rect_stage(IslandState::Collapsed);
+        let clock_x = (px * RENDER_SCALE as f32) as usize;
+        let cy = ((py + ph / 2.0) * RENDER_SCALE as f32) as usize;
+        let alpha = |x: usize, y: usize| (y * w as usize + x) * 4 + 3;
+        for reveal in [1.0, 1.23, 0.5] {
+            draw_top_row_2x(&mut canvas, w, h, ui_font(), tags, reveal);
+            assert!(canvas.chunks_exact(4).all(|p| p[..3].iter().all(|c| *c <= p[3])));
+            assert_eq!(canvas[alpha(clock_x - 40, cy)], 255);
+            draw_top_row_2x(&mut canvas, w, h, ui_font(), tags, 0.0);
+            for y in 0..h as usize {
+                for x in 0..clock_x {
+                    assert_eq!(canvas[alpha(x, y)], 0, "stale workspace pixel at {x},{y}");
+                }
+            }
+            let cx = clock_x + (pw * RENDER_SCALE as f32 / 2.0) as usize;
+            assert_eq!(canvas[alpha(cx, cy)], 255);
+        }
+    }
+
+    #[test]
+    fn workspace_row_paints_one_capsule_with_distinct_workspace_states() {
+        let state = IslandState::Collapsed;
+        let (clock_x, top, _, height) = panel_rect_stage(state);
+        let cy = (top + height / 2.0) as usize;
+        let join = clock_x as usize;
+        let tags = TagState { active: 9, occupied: 1 << 6, urgent: 0 };
+        assert_eq!(ws_visible_tags(tags.active), [6, 7, 8, 9]);
+        for scale in [1, RENDER_SCALE] {
+            let (w, h) = (STAGE_W * scale, 90 * scale);
+            let mut canvas = vec![0; (w * h * 4) as usize];
+            let index = |x: usize, y: usize| (y * scale as usize * w as usize + x * scale as usize) * 4;
+            let clock_ink = index(join + 3, cy);
+            if scale == RENDER_SCALE {
+                draw_top_row_2x(&mut canvas, w, h, ui_font(), tags, 1.0);
+            } else {
+                canvas[clock_ink..clock_ink + 4].copy_from_slice(&[255, 214, 188, 255]);
+                draw_workspace_row(&mut canvas, (w, h), ui_font(), state, 1.0, 1.0, tags, 1.0);
+                assert_eq!(&canvas[clock_ink..clock_ink + 4], &[255, 214, 188, 255]);
+            }
+            let pixel = |x, y| &canvas[index(x, y)..index(x, y) + 4];
+            for x in join - 4..join + 4 {
+                assert_eq!(pixel(x, cy + 9), &[0, 0, 0, 255], "seam at {x}");
+            }
+            assert_eq!(pixel(join - 89, cy), &[0; 4]);
+            assert_eq!(pixel(join - 24, cy), &[0, 0, 0, 255]); // empty
+            assert!(pixel(join - 44, cy)[0] > WS_IDLE_INK.2); // occupied dot
+            assert_eq!(pixel(join - 4, cy), &[50, 41, 37, 255]); // active chip
+
+            canvas.fill(0);
+            draw_workspace_row(&mut canvas, (w, h), ui_font(), state, scale as f32, 0.4, tags, 1.0);
+            assert_eq!(canvas[index(join - 4, cy) + 3], 102);
+            assert!(canvas.chunks_exact(4).all(|p| p[..3].iter().all(|c| *c <= p[3])));
+        }
     }
 
     /// r1d §19 (owner-blocker): with §0 the panel grows INTO the pill
@@ -9975,393 +9845,6 @@ mod iter109_tests {
         assert!(!two_x_top_row_allowed(IslandState::Lockscreen));
     }
 
-    /// STRICT disc predicate, identical to circles-profile108.py:
-    /// dark fill (all channels < 90) or active blue fill
-    /// (B - R > 40 and B > 120).
-    fn strict_disc(px: (u8, u8, u8)) -> bool {
-        let (r, g, b) = px;
-        (r < 90 && g < 90 && b < 90) || ((b as i32 - r as i32) > 40 && b > 120)
-    }
-
-    /// Ideal row-width profile of a circle spanning `n` rows, as in
-    /// circles-profile108.py: chord 2*sqrt(r^2 - (k-c)^2), r = n/2.
-    fn ideal_prof(n: usize) -> Vec<f32> {
-        let c = (n - 1) as f32 / 2.0;
-        let r = n as f32 / 2.0;
-        (0..n)
-            .map(|k| 2.0 * (r * r - (k as f32 - c).powi(2)).max(0.0).sqrt())
-            .collect()
-    }
-
-    /// Longest run of equal consecutive widths lying fully outside
-    /// the equator band (+/-2 rows around the middle of the widest
-    /// run), as in circles-profile108.py.
-    fn longest_outside(prof: &[u32]) -> usize {
-        let widest = *prof.iter().max().unwrap_or(&0);
-        let idxs: Vec<usize> = prof
-            .iter()
-            .enumerate()
-            .filter(|(_, w)| **w == widest)
-            .map(|(k, _)| k)
-            .collect();
-        let mid = (idxs[0] + idxs[idxs.len() - 1]) as f32 / 2.0;
-        let mut worst = 0usize;
-        let mut run = 1usize;
-        for k in 1..prof.len() {
-            if prof[k] == prof[k - 1] {
-                run += 1;
-            } else {
-                run = 1;
-            }
-            if run > worst && (k + 1 - run..=k).all(|j| (j as f32 - mid).abs() > 2.0) {
-                worst = run;
-            }
-        }
-        worst
-    }
-
-    /// Phase-correct 2x -> 1.5x downsample of one disc, straight
-    /// from the upscaled buffer: the output tile is 30x30 and its
-    /// pixel grid is the live screen grid — the disc centre is a
-    /// pixel boundary in x (cx is an integer in phys px) and a pixel
-    /// centre in y (cy is a half-integer), so output pixel (ox, oy)
-    /// has centre U = (ox - 15 + 0.5, oy - 15) in disc-local screen
-    /// px. (A plain 40 -> 30 resample of a centred tile puts the
-    /// centre at (14.875, 14.875) instead — half a pixel off in y —
-    /// which thins the tip rows by several px under a hard threshold
-    /// and would fail this test for a perfectly round disc.)
-    fn screen_tile(up: &[u8], cx: f32, cy: f32) -> Vec<u8> {
-        let bw = 2 * STAGE_W as usize;
-        let mut out = vec![0u8; 30 * 30 * 4];
-        for oy in 0..30 {
-            let uy = oy as f32 - 15.0;
-            let by = 2.0 * cy + (uy / 1.5) * 2.0;
-            for ox in 0..30 {
-                let ux = ox as f32 - 15.0 + 0.5;
-                let bx = 2.0 * cx + (ux / 1.5) * 2.0;
-                // Bilinear sample of the 2x buffer at (bx, by);
-                // buffer pixel (i, j) has centre (i + 0.5, j + 0.5).
-                let x0 = (bx - 0.5).floor() as i32;
-                let y0 = (by - 0.5).floor() as i32;
-                let fx = (bx - 0.5) - x0 as f32;
-                let fy = (by - 0.5) - y0 as f32;
-                let tap = |x: i32, y: i32, c: usize| -> f32 {
-                    let x = x.clamp(0, bw as i32 - 1) as usize;
-                    let y = y.clamp(0, (up.len() / (bw * 4)) as i32 - 1) as usize;
-                    up[(y * bw + x) * 4 + c] as f32
-                };
-                for c in 0..4 {
-                    let top = tap(x0, y0, c) * (1.0 - fx) + tap(x0 + 1, y0, c) * fx;
-                    let bot = tap(x0, y0 + 1, c) * (1.0 - fx) + tap(x0 + 1, y0 + 1, c) * fx;
-                    out[(oy * 30 + ox) * 4 + c] = (top * (1.0 - fy) + bot * fy + 0.5) as u8;
-                }
-            }
-        }
-        out
-    }
-
-    /// The four discs at screen scale (30x30 tiles, disc centre at
-    /// (14.5, 15.0) in tile coords): real stage render, 2x upscale
-    /// with the shipped code, 2x -> 1.5x phase-correct downsample.
-    fn screen_tiles() -> Vec<Vec<u8>> {
-        let font = load_font();
-        let mut stage = vec![0u8; (STAGE_W * STAGE_H * 4) as usize];
-        draw_workspace_circles_stage(&mut stage, STAGE_W, STAGE_H, &font, 1, 1.0);
-        let up = upscale_canvas_2x(&stage, STAGE_W, STAGE_H);
-        workspace_disc_centres()
-            .iter()
-            .map(|(cx, cy)| screen_tile(&up, *cx, *cy))
-            .collect()
-    }
-
-    /// STRICT row-width profile of one 30x30 screen tile composited
-    /// over a flat `wallpaper` (RGB). Returns (widths in row order,
-    /// widest width). The canvas is BGRA premultiplied; the composite
-    /// is premultiplied-over, rounded to u8 as the compositor's
-    /// output would be.
-    fn strict_profile(tile: &[u8], wallpaper: (u8, u8, u8)) -> (Vec<u32>, u32) {
-        let mut comp = vec![0u8; 30 * 30 * 3];
-        for i in 0..30 * 30 {
-            let a = tile[i * 4 + 3] as f32 / 255.0;
-            comp[i * 3] = (tile[i * 4 + 2] as f32 + wallpaper.0 as f32 * (1.0 - a) + 0.5) as u8;
-            comp[i * 3 + 1] = (tile[i * 4 + 1] as f32 + wallpaper.1 as f32 * (1.0 - a) + 0.5) as u8;
-            comp[i * 3 + 2] = (tile[i * 4] as f32 + wallpaper.2 as f32 * (1.0 - a) + 0.5) as u8;
-        }
-        let mut prof = Vec::new();
-        let mut widest = 0u32;
-        for y in 0..30 {
-            let mut min_x: Option<u32> = None;
-            let mut max_x: Option<u32> = None;
-            for x in 0..30 {
-                let px = (
-                    comp[(y * 30 + x) * 3],
-                    comp[(y * 30 + x) * 3 + 1],
-                    comp[(y * 30 + x) * 3 + 2],
-                );
-                if strict_disc(px) {
-                    min_x = Some(min_x.map_or(x as u32, |m| m.min(x as u32)));
-                    max_x = Some(max_x.map_or(x as u32, |m| m.max(x as u32)));
-                }
-            }
-            if let (Some(a), Some(b)) = (min_x, max_x) {
-                prof.push(b - a + 1);
-                widest = widest.max(b - a + 1);
-            }
-        }
-        (prof, widest)
-    }
-
-    /// The acceptance test (verify-iter108-plan.md section a, now
-    /// applied to the iter109 rasteriser): every circle's STRICT
-    /// profile is within +/-2 px/row of the ideal circle of the same
-    /// span, with a 24 px bbox, no flat run >= 4 rows outside the
-    /// equator band, and tip rows >= 2 px wide — on both bounding
-    /// wallpapers.
-    /// Coverage profile of a tile: the row widths where the
-    /// composited alpha exceeds 128 (coverage > 0.5). This is the
-    /// disc's *geometric* silhouette — the rasteriser's output —
-    /// uncontaminated by the rim bevel's colours and the drop
-    /// shadow, which the STRICT colour predicate conflates with
-    /// the geometry (see the note on `workspace_circles_strict_on_screen`).
-    fn coverage_profile(tile: &[u8]) -> (Vec<u32>, u32) {
-        let mut prof = Vec::new();
-        let mut widest = 0u32;
-        for y in 0..30 {
-            let mut min_x: Option<u32> = None;
-            let mut max_x: Option<u32> = None;
-            for x in 0..30 {
-                if tile[(y * 30 + x) * 4 + 3] > 128 {
-                    min_x = Some(min_x.map_or(x as u32, |m| m.min(x as u32)));
-                    max_x = Some(max_x.map_or(x as u32, |m| m.max(x as u32)));
-                }
-            }
-            if let (Some(a), Some(b)) = (min_x, max_x) {
-                prof.push(b - a + 1);
-                widest = widest.max(b - a + 1);
-            }
-        }
-        (prof, widest)
-    }
-
-    /// The rasteriser's roundness, measured on the geometric
-    /// silhouette (coverage > 0.5). All four discs are
-    /// byte-identical here (one draw path), and the measured
-    /// profile is
-    ///   [10,14,16,18,20,21,22,23,24,24,25,25,25,24,24,24,
-    ///    23,22,21,20,18,16,12,8]
-    /// (span 24, width 25, max|d| 3.1 vs the span-ideal, flat
-    /// run 1 outside the equator). What is asserted:
-    ///  - span 24: the full geometric diameter is present;
-    ///  - width 24..=25: the geometric disc is 24 wide; the
-    ///    extra pixel is the drop shadow's alpha (offset (2,3))
-    ///    lifting the composite alpha's 50% contour outward on
-    ///    its side, plus resampling blur — not the disc being
-    ///    wider;
-    ///  - max|d| <= 3.5 vs the span-ideal: the residual is the
-    ///    extreme rows (the span-ideal is 0.5 px phase-shifted
-    ///    vs the screen grid, and the 2x->1.5x blur spreads
-    ///    coverage into the tip rows) plus the shadow bias, NOT
-    ///    faceting — the profile is smooth and monotonic, and
-    ///    the V0 value was 5.1 with an 11-row flat run;
-    ///  - flat run < 4 outside the equator: the anti-faceting
-    ///    criterion — V0's octagon read as an 11-row flat run,
-    ///    V4 measures 1;
-    ///  - tip rows >= 2 px.
-    #[test]
-    fn workspace_circles_coverage_round() {
-        let tiles = screen_tiles();
-        for (i, tile) in tiles.iter().enumerate() {
-            let (prof, width) = coverage_profile(tile);
-            let ideal = ideal_prof(prof.len());
-            let max_d = prof
-                .iter()
-                .zip(ideal.iter())
-                .map(|(m, e)| (*m as f32 - e).abs())
-                .fold(0.0f32, f32::max);
-            eprintln!(
-                "ws-circle-{} coverage: span={} width={width} prof={prof:?} max|d|={max_d:.1} flat={}",
-                i + 1,
-                prof.len(),
-                longest_outside(&prof)
-            );
-            // 23, not 24: the drop shadow is gone (the reference discs cast
-            // none). Its +3y offset used to add one row of alpha>128 BELOW
-            // the disc, inflating this span. The disc itself is unchanged --
-            // the profile is now perfectly symmetric, which a +3y shadow
-            // could never be, and widest is still 24 = 2 * WS_DISC_R * 1.5.
-            assert_eq!(
-                prof.len(),
-                23,
-                "circle {} coverage: span {} rows, want 23",
-                i + 1,
-                prof.len()
-            );
-            assert_eq!(
-                prof,
-                prof.iter().rev().copied().collect::<Vec<_>>(),
-                "circle {} coverage: profile asymmetric -- a shadow or a \
-                 misplaced centre is back",
-                i + 1
-            );
-            assert!(
-                (24..=25).contains(&width),
-                "circle {} coverage: bbox width {width}, want 24..=25",
-                i + 1
-            );
-            assert!(
-                max_d <= 3.5,
-                "circle {} coverage: max|d| {max_d:.1} > 3.5",
-                i + 1
-            );
-            assert!(
-                longest_outside(&prof) < 4,
-                "circle {} coverage: flat run {} >= 4 outside equator",
-                i + 1,
-                longest_outside(&prof)
-            );
-            assert!(
-                *prof.first().unwrap() >= 2 && *prof.last().unwrap() >= 2,
-                "circle {} coverage: tip rows {:?} / {:?} < 2 px",
-                i + 1,
-                prof.first(),
-                prof.last()
-            );
-        }
-    }
-
-    /// STRICT colour profile of the four discs on screen, as the
-    /// live verifier (circles-profile108.py) measures it — kept
-    /// as a *diagnostic*, not an assertion, because the STRICT
-    /// colour predicate conflates the rasteriser's geometry with
-    /// two pre-existing design effects that are out of this lane:
-    ///  - the rim bevel is light on top (`disc_rim_r`, t = 1 at
-    ///    the top, RIM_LIGHT (168,176,205) alpha 0.65) and dark
-    ///    at the bottom: on a bright wallpaper it lightens the
-    ///    inactive discs' top tip row above the dark branch's
-    ///    <90 threshold, so that row is not counted (span 22
-    ///    instead of 23) even though the row is visibly there;
-    ///  - the drop shadow (offset (2,3), alpha 0.35) darkens the
-    ///    background below the disc, lowering the effective
-    ///    threshold there and widening the lower rows by ~1-2 px.
-    /// Neither can change without altering the discs' look or
-    /// breaking `disc_rim_light_on_top_dark_below_none_at_centre`.
-    /// The active disc passes STRICT (max|d| 1.3); the inactive
-    /// discs report here so the integrator sees exactly what the
-    /// live verifier will measure. Geometry is asserted by
-    /// `workspace_circles_coverage_round` instead.
-    #[test]
-    fn workspace_circles_strict_on_screen() {
-        let tiles = screen_tiles();
-        for (wp_name, wp) in [
-            ("bright", (219u8, 242u8, 200u8)),
-            ("dark", (150u8, 164u8, 136u8)),
-        ] {
-            for (i, tile) in tiles.iter().enumerate() {
-                let (prof, _width) = strict_profile(tile, wp);
-                let ideal = ideal_prof(prof.len());
-                let max_d = prof
-                    .iter()
-                    .zip(ideal.iter())
-                    .map(|(m, e)| (*m as f32 - e).abs())
-                    .fold(0.0f32, f32::max);
-                eprintln!(
-                    "ws-circle-{} on {wp_name}: prof={prof:?} ideal={ideal:?} max|d|={max_d:.1}",
-                    i + 1
-                );
-                // Diagnostic only: no assertions here (see the doc
-                // comment above). Geometry is asserted by
-                // workspace_circles_coverage_round.
-            }
-        }
-    }
-
-    /// The rasteriser must not change the disc's look: a pixel well
-    /// inside the disc (no rim, no glyph, no fringe) still lands at
-    /// exactly the old encoding — fill * 0.92, alpha 255.
-    #[test]
-    fn workspace_disc_interior_unchanged() {
-        let font = load_font();
-        for (active, fill) in [
-            (true, WS_ACTIVE_FILL),
-            (false, WS_INACTIVE_FILL),
-        ] {
-            let mut tile = vec![0u8; 40 * 40 * 4];
-            draw_workspace_disc(&mut tile, 40, 40, 20.0, 20.0, active, false, &font, "1", 1.0);
-            // (20, 14) = (cx, cy - 6): d = 6, inside the rim band
-            // (6.5..8) and above the glyph box.
-            let i = (14 * 40 + 20) * 4;
-            assert_eq!(
-                (tile[i], tile[i + 1], tile[i + 2], tile[i + 3]),
-                (
-                    (fill.2 as f32 * 0.92) as u8,
-                    (fill.1 as f32 * 0.92) as u8,
-                    (fill.0 as f32 * 0.92) as u8,
-                    255
-                ),
-                "interior pixel changed for active={active}"
-            );
-        }
-    }
-
-    /// The supersampled disc draw must stay cheap: 20 full
-    /// four-circle redraws (the whole draw_workspace_circles_stage
-    /// call) in well under a second on the Surface.
-    #[test]
-    fn workspace_discs_draw_fast() {
-        let font = load_font();
-        let mut stage = vec![0u8; (STAGE_W * STAGE_H * 4) as usize];
-        let t = std::time::Instant::now();
-        for _ in 0..20 {
-            draw_workspace_circles_stage(&mut stage, STAGE_W, STAGE_H, &font, 1, 1.0);
-        }
-        let el = t.elapsed();
-        eprintln!("20x draw_workspace_circles_stage: {el:?}");
-        // r2 #5b: 1000 ms against a measured 30.9 ms was 32x slack -- it
-        // could not catch a slowdown. 250 ms is ~8x the measured cost:
-        // tight enough to catch the order-of-magnitude regression it was
-        // written for (the removed supersampled shadow, ~170k SDF
-        // evals/frame), loose enough to survive a loaded box.
-        assert!(el.as_millis() < 250, "disc draw took {el:?} for 20 calls");
-    }
-
-    /// Preview strip for the eye check: the four discs at screen
-    /// scale, composited over the bright wallpaper, written as a
-    /// binary PPM (P6) next to the crate root. Convert with PIL
-    /// (`python3 -c "from PIL import Image; Image.open(
-    /// 'ws-discs-iter109.ppm').save('ws-discs-iter109.png')"`) and
-    /// inspect at 3x nearest-neighbour zoom.
-    #[test]
-    fn write_ws_discs_preview() {
-        let tiles = screen_tiles();
-        let wp = (219u8, 242u8, 200u8);
-        let (tw, th, gap) = (30usize, 30usize, 4usize);
-        let w = 4 * tw + 3 * gap;
-        // Start wallpaper-coloured; the disc tiles overwrite it.
-        let mut px = vec![0u8; w * th * 3];
-        for p in px.chunks_exact_mut(3) {
-            p[0] = wp.0;
-            p[1] = wp.1;
-            p[2] = wp.2;
-        }
-        for (k, tile) in tiles.iter().enumerate() {
-            let ox = k * (tw + gap);
-            for y in 0..th {
-                for x in 0..tw {
-                    let i = (y * tw + x) * 4;
-                    let a = tile[i + 3] as f32 / 255.0;
-                    let di = ((y * w) + ox + x) * 3;
-                    px[di] = (tile[i + 2] as f32 + wp.0 as f32 * (1.0 - a) + 0.5) as u8;
-                    px[di + 1] = (tile[i + 1] as f32 + wp.1 as f32 * (1.0 - a) + 0.5) as u8;
-                    px[di + 2] = (tile[i] as f32 + wp.2 as f32 * (1.0 - a) + 0.5) as u8;
-                }
-            }
-        }
-        let mut out = format!("P6\n{w} {th}\n255\n").into_bytes();
-        out.extend_from_slice(&px);
-        let path = "ws-discs-iter109.ppm";
-        std::fs::write(path, &out).expect("write preview PPM");
-        eprintln!("wrote {path} ({w}x{th})");
-    }
 }
 
 /// Shared serialiser for the iter108 tray tests (merge): the tray
@@ -10418,21 +9901,21 @@ mod iter108_tray_tests {
         // the first tray icon centre is (638, 15).
         let (pill_x, _, pill_w, _) = panel_rect_stage(IslandState::Collapsed);
         assert_eq!((pill_x, pill_w), (550.0, 76.0));
-        let action = classify_press((638.0, 17.0), IslandState::Collapsed, false, 0, 0, 1);
+        let action = classify_press((638.0, 17.0), IslandState::Collapsed, false, 0, 0, 1, true);
         assert_eq!(action, PressAction::TrayActivate(0));
         // In a cycled menu the panel covers the tray row (r1d §0): the
         // icons are neither drawn nor clickable there, so NoOp. This is
         // the regression guard for the owner's reported bug.
-        let action = classify_press((638.0, 17.0), IslandState::Music, false, 0, 0, 1);
+        let action = classify_press((638.0, 17.0), IslandState::Music, false, 0, 0, 1, true);
         assert_eq!(action, PressAction::NoOp);
         // TrayMenu keeps working (allowed set, hangs below the pill).
-        let action = classify_press((638.0, 17.0), IslandState::TrayMenu, false, 0, 0, 1);
+        let action = classify_press((638.0, 17.0), IslandState::TrayMenu, false, 0, 0, 1, true);
         assert_eq!(action, PressAction::TrayActivate(0));
         // The gap between pill and icon is a no-op, not a tray hit.
-        let action = classify_press((628.0, 17.0), IslandState::Collapsed, false, 0, 0, 1);
+        let action = classify_press((628.0, 17.0), IslandState::Collapsed, false, 0, 0, 1, true);
         assert_eq!(action, PressAction::NoOp);
-        // Workspace circles still win on the left.
-        let action = classify_press((478.0, 17.0), IslandState::Collapsed, false, 0, 0, 1);
+        // The workspace row still handles clicks to the left of the clock.
+        let action = classify_press((478.0, 17.0), IslandState::Collapsed, false, 0, 0, 1, true);
         assert_eq!(action, PressAction::WorkspaceTag(1));
         crate::tray::set_snapshot_for_test(vec![]);
     }
@@ -10442,13 +9925,13 @@ mod iter108_tray_tests {
         let _g = TRAY_TEST_LOCK.lock().unwrap();
         crate::tray::set_snapshot_for_test(vec![fake_item("7"), fake_item("8")]);
         set_tray_count(2); // merge: mirror the 1 s timer sync in production
-        assert!(point_in_state_region((638.0, 17.0), IslandState::Collapsed));
-        assert!(point_in_state_region((658.0, 17.0), IslandState::Collapsed));
-        assert!(!point_in_state_region((700.0, 17.0), IslandState::Collapsed));
+        assert!(point_in_state_region((638.0, 17.0), IslandState::Collapsed, true));
+        assert!(point_in_state_region((658.0, 17.0), IslandState::Collapsed, true));
+        assert!(!point_in_state_region((700.0, 17.0), IslandState::Collapsed, true));
         crate::tray::set_snapshot_for_test(vec![]);
         set_tray_count(0); // merge: store follows the snapshot
         // Empty snapshot: no tray rect anywhere.
-        assert!(!point_in_state_region((638.0, 17.0), IslandState::Collapsed));
+        assert!(!point_in_state_region((638.0, 17.0), IslandState::Collapsed, true));
     }
 
     #[test]
@@ -10474,7 +9957,7 @@ mod iter108_tray_tests {
         // classify_press maps a row click in TrayMenu state. The
         // panel is 404 wide, centred: stage (500, 85) is panel-local
         // (114, 56) — inside row 0 (y 44..72).
-        let action = classify_press((500.0, 85.0), IslandState::TrayMenu, false, 0, 0, 0);
+        let action = classify_press((500.0, 85.0), IslandState::TrayMenu, false, 0, 0, 0, true);
         assert_eq!(action, PressAction::TrayMenuRow(1));
         crate::tray::set_menu_for_test("", vec![]);
     }
@@ -10491,12 +9974,15 @@ mod stage_extent_tests {
         // shadow tail. This is the assertion that lets STAGE_H shrink.
         for st in [
             IslandState::Collapsed,
+            IslandState::Preview,
+            IslandState::Notifications,
             IslandState::Dictation,
             IslandState::Lock,
             IslandState::Power,
             IslandState::Music,
             IslandState::Calendar,
             IslandState::ControlCenter,
+            IslandState::Displays,
             IslandState::Launcher,
             IslandState::Wallpaper,
             IslandState::Themes,
