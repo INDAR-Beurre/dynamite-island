@@ -24,9 +24,25 @@ Single binary · Direct `wlr-layer-shell` · Zero GTK / Qt / QML · ~30–45 MB 
 | :---: | :---: |
 | ![Collapsed Pill](assets/screenshots/pill.png) | ![Brightness OSD](assets/screenshots/osd-brightness.png) |
 
-| Control Center | Music Panel |
+| Control Center | Notifications |
 | :---: | :---: |
-| ![Control Center](assets/screenshots/controlcenter.png) | ![Music Panel](assets/screenshots/music.png) |
+| ![Control Center](assets/screenshots/controlcenter.png) | ![Notifications](assets/screenshots/notifications.png) |
+
+| Music | Calendar |
+| :---: | :---: |
+| ![Music](assets/screenshots/music.png) | ![Calendar](assets/screenshots/calendar.png) |
+
+| Displays | Clipboard |
+| :---: | :---: |
+| ![Displays](assets/screenshots/displays.png) | ![Clipboard](assets/screenshots/clipboard.png) |
+
+| Themes | Wallpapers |
+| :---: | :---: |
+| ![Themes](assets/screenshots/themes.png) | ![Wallpapers](assets/screenshots/wallpapers.png) |
+
+| App Launcher | Power & Lock |
+| :---: | :---: |
+| ![App Launcher](assets/screenshots/launcher.png) | ![Power Menu](assets/screenshots/power.png) |
 
 ---
 
