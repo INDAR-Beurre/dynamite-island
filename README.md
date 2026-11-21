@@ -18,6 +18,18 @@ Single binary · Direct `wlr-layer-shell` · Zero GTK / Qt / QML · ~30–45 MB 
 
 ---
 
+## 📸 Screenshots
+
+| Collapsed Pill | Brightness / Volume OSD |
+| :---: | :---: |
+| ![Collapsed Pill](assets/screenshots/pill.png) | ![Brightness OSD](assets/screenshots/osd-brightness.png) |
+
+| Control Center | Music Panel |
+| :---: | :---: |
+| ![Control Center](assets/screenshots/controlcenter.png) | ![Music Panel](assets/screenshots/music.png) |
+
+---
+
 ## ⚡ One-Line Install
 
 On **Arch / Artix** (with MangoWM):
