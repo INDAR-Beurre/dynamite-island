@@ -29,6 +29,35 @@ What it installs:
 Then add `~/.config/mango/scripts/dynamite_autostart.sh` to your autostart and
 reload Mango.
 
+## Dynamite Settings
+
+The **Dynamite Settings** control panel is the plain-English GUI for the
+island: one-click panel previews, dictation & key bindings, shortcut
+browsing, and look & behaviour (size, motion, clock, theme, wallpaper).
+It is Python 3 + GTK 4 — no build step — and appears in the panel's
+launcher with its own settings icon.
+
+```sh
+./deploy/install-settings.sh          # or --check to see what it would do
+```
+
+`install-settings.sh` mirrors `install.sh`: absent files are installed,
+existing files are preserved, and `--check` reports without writing. It
+never touches `bind.conf`, `rule.conf`, or the island's autostart wrapper.
+
+| file | contents |
+|---|---|
+| `~/.local/share/dynamite-settings/dynamite_settings.py` | the app; copied from `deploy/dynamite-settings/` when the checkout bundles it, otherwise kept from its installed location |
+| `~/.local/bin/dynamite-settings` | launcher: `python3` + the app path |
+| `~/.local/share/applications/dynamite-settings.desktop` | what the panel's launcher reads to show the settings icon |
+
+Run it with `~/.local/bin/dynamite-settings` (or `python3
+~/.local/share/dynamite-settings/dynamite_settings.py`). The app writes
+`~/.config/dynamite-rust/config.conf`; the island ignores keys the settings
+app owns (the settings-app contract). If dependencies are missing on
+Arch/Artix: `sudo pacman -S python python-gobject gtk4` — the installer
+reports them but never installs packages for you.
+
 ## If you would rather do it by hand
 
 `bind.conf` — two spawn lines, using the absolute path to the built binary:

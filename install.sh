@@ -40,6 +40,9 @@ echo "==> Building binaries"
 echo "==> Installing MangoWM bindings, layer rules, and autostart"
 ./deploy/install.sh
 
+echo "==> Installing the Dynamite Settings control panel"
+./deploy/install-settings.sh || echo "    settings install incomplete — see deploy/README.md"
+
 echo ""
 echo "Done! Start now with:"
 echo "  $INSTALL_DIR/target/release/dynamite-rust &"
